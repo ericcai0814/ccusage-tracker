@@ -1,0 +1,28 @@
+# Spectra app data
+.spectra/
+openspec/.vector-search.db*
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment
+.env
+.env.local
+
+# Database
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Local settings
+.claude/settings.local.json
+
+# Auto-dev state
+.auto-dev/
+
+# OS
+.DS_Store

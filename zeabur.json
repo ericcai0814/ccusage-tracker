@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.zeabur.app/template.json",
+  "build": {
+    "type": "dockerfile",
+    "dockerfile": "Dockerfile"
+  },
+  "port": 3000,
+  "volumes": [
+    {
+      "id": "data",
+      "dir": "/data"
+    }
+  ],
+  "env": {
+    "ADMIN_API_KEY": {
+      "description": "Admin API key for member management",
+      "required": true
+    },
+    "DASHBOARD_PASSWORD": {
+      "description": "Optional password for dashboard access",
+      "required": false
+    },
+    "DB_PATH": {
+      "description": "SQLite database file path",
+      "default": "/data/ccusage-tracker.db"
+    }
+  }
+}
