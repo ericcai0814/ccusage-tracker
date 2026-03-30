@@ -1,0 +1,12 @@
+node_modules
+.git
+.auto-dev
+.spectra
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.env
+.env.local
+dist
+.DS_Store
