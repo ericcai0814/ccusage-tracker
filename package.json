@@ -1,0 +1,16 @@
+{
+  "name": "ccusage-tracker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --filter @ccusage-tracker/server dev",
+    "build": "pnpm --filter @ccusage-tracker/server build",
+    "test": "pnpm -r test",
+    "test:server": "pnpm --filter @ccusage-tracker/server test",
+    "test:cli": "pnpm --filter @ccusage-tracker/cli test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
