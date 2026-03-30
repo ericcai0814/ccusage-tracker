@@ -2,6 +2,16 @@ import { Hono } from "hono";
 import { memberAuth, type MemberAuthEnv } from "../middleware/member-auth";
 import { insertUsageRecord, type IngestPayload } from "../queries";
 
+const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidTokenCount(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0;
+}
+
+function isValidCost(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0;
+}
+
 const ingest = new Hono<MemberAuthEnv>();
 
 ingest.use("*", memberAuth());
@@ -11,23 +21,23 @@ ingest.post("/", async (c) => {
 
   const errors: string[] = [];
 
-  if (!body.date || typeof body.date !== "string") {
-    errors.push("date is required and must be a string");
+  if (!body.date || !DATE_REGEX.test(body.date)) {
+    errors.push("date must be in YYYY-MM-DD format");
   }
-  if (typeof body.input_tokens !== "number") {
-    errors.push("input_tokens is required and must be a number");
+  if (!isValidTokenCount(body.input_tokens)) {
+    errors.push("input_tokens must be a non-negative finite number");
   }
-  if (typeof body.output_tokens !== "number") {
-    errors.push("output_tokens is required and must be a number");
+  if (!isValidTokenCount(body.output_tokens)) {
+    errors.push("output_tokens must be a non-negative finite number");
   }
-  if (typeof body.cache_creation_tokens !== "number") {
-    errors.push("cache_creation_tokens is required and must be a number");
+  if (!isValidTokenCount(body.cache_creation_tokens)) {
+    errors.push("cache_creation_tokens must be a non-negative finite number");
   }
-  if (typeof body.cache_read_tokens !== "number") {
-    errors.push("cache_read_tokens is required and must be a number");
+  if (!isValidTokenCount(body.cache_read_tokens)) {
+    errors.push("cache_read_tokens must be a non-negative finite number");
   }
-  if (typeof body.total_cost_usd !== "number") {
-    errors.push("total_cost_usd is required and must be a number");
+  if (!isValidCost(body.total_cost_usd)) {
+    errors.push("total_cost_usd must be a non-negative finite number");
   }
   if (!Array.isArray(body.models)) {
     errors.push("models is required and must be an array");

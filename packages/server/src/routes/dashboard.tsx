@@ -2,33 +2,12 @@ import { Hono } from "hono";
 import type { FC } from "hono/jsx";
 import { dashboardAuth } from "../middleware/dashboard-auth";
 import { aggregateUsage, type UsageSummary } from "../queries";
+import { validatePeriod, getDateRange, VALID_PERIODS } from "../utils/date-range";
 import type { AppEnv } from "../app";
 
 const dashboard = new Hono<AppEnv>();
 
 dashboard.use("*", dashboardAuth());
-
-function getDateRange(period: string): { from: string; to: string } {
-  const now = new Date();
-  const to = now.toISOString().split("T")[0];
-
-  switch (period) {
-    case "today":
-      return { from: to, to };
-    case "week": {
-      const dayOfWeek = now.getDay();
-      const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-      const monday = new Date(now);
-      monday.setDate(now.getDate() - mondayOffset);
-      return { from: monday.toISOString().split("T")[0], to };
-    }
-    case "month":
-    default: {
-      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { from: firstOfMonth.toISOString().split("T")[0], to };
-    }
-  }
-}
 
 function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
@@ -147,7 +126,7 @@ const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
 
 dashboard.get("/", (c) => {
   const db = c.get("db");
-  const period = c.req.query("period") || "month";
+  const period = validatePeriod(c.req.query("period"));
   const { from, to } = getDateRange(period);
 
   const members = aggregateUsage(db, { from, to });
@@ -158,14 +137,12 @@ dashboard.get("/", (c) => {
     0
   );
 
-  const periods = ["today", "week", "month"] as const;
-
   return c.html(
     <Layout title="ccusage-tracker Dashboard">
       <h1>ccusage-tracker</h1>
       <div class="period-nav">
-        {periods.map((p) => (
-          <a href={`/?period=${p}`} class={p === period ? "active" : ""}>
+        {VALID_PERIODS.map((p) => (
+          <a href={`/?period=${encodeURIComponent(p)}`} class={p === period ? "active" : ""}>
             {p.charAt(0).toUpperCase() + p.slice(1)}
           </a>
         ))}

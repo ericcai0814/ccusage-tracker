@@ -1,4 +1,6 @@
-import app from "./app";
+import { createApp } from "./app";
+
+const app = createApp();
 
 const server = Bun.serve({
   fetch: app.fetch,

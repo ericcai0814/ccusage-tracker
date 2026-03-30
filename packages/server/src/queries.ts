@@ -65,9 +65,16 @@ export function listMembers(db: Database): Omit<Member, "api_key_hash">[] {
 
 export function insertUsageRecord(db: Database, memberId: string, payload: IngestPayload): void {
   db.run(
-    `INSERT OR REPLACE INTO usage_records
+    `INSERT INTO usage_records
      (member_id, date, session_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, total_cost_usd, models)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(member_id, date, session_id) DO UPDATE SET
+       input_tokens = excluded.input_tokens,
+       output_tokens = excluded.output_tokens,
+       cache_creation_tokens = excluded.cache_creation_tokens,
+       cache_read_tokens = excluded.cache_read_tokens,
+       total_cost_usd = excluded.total_cost_usd,
+       models = excluded.models`,
     [
       memberId,
       payload.date,
@@ -80,6 +87,10 @@ export function insertUsageRecord(db: Database, memberId: string, payload: Inges
       JSON.stringify(payload.models),
     ]
   );
+}
+
+export function findMemberByName(db: Database, name: string): Member | null {
+  return db.query("SELECT * FROM members WHERE name = ?").get(name) as Member | null;
 }
 
 export function queryUsageRecords(

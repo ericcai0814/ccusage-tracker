@@ -18,7 +18,12 @@ export function adminAuth(): MiddlewareHandler<AppEnv> {
 
     const a = Buffer.from(adminKey);
     const b = Buffer.from(providedKey);
-    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    const maxLen = Math.max(a.length, b.length);
+    const aPadded = Buffer.concat([a, Buffer.alloc(maxLen - a.length)]);
+    const bPadded = Buffer.concat([b, Buffer.alloc(maxLen - b.length)]);
+    const lengthsMatch = a.length === b.length;
+    const valuesMatch = timingSafeEqual(aPadded, bPadded);
+    if (!lengthsMatch || !valuesMatch) {
       return c.json({ error: "unauthorized" }, 401);
     }
 

@@ -12,14 +12,19 @@ if [ ! -f "$CONFIG_FILE" ]; then
   exit 0
 fi
 
+# Exit silently if jq is not installed (required for safe JSON handling)
+if ! command -v jq &> /dev/null; then
+  exit 0
+fi
+
 # Exit silently if ccusage is not installed
 if ! command -v ccusage &> /dev/null; then
   exit 0
 fi
 
-# Read config
-SERVER_URL=$(cat "$CONFIG_FILE" | grep -o '"server_url"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"server_url"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/')
-API_KEY=$(cat "$CONFIG_FILE" | grep -o '"api_key"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"api_key"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/')
+# Read config safely with jq
+SERVER_URL=$(jq -r '.server_url // empty' "$CONFIG_FILE" 2>/dev/null || true)
+API_KEY=$(jq -r '.api_key // empty' "$CONFIG_FILE" 2>/dev/null || true)
 
 # Exit if config is incomplete
 if [ -z "$SERVER_URL" ] || [ -z "$API_KEY" ]; then
@@ -29,7 +34,7 @@ fi
 # Read hook payload from stdin (may be empty or malformed)
 SESSION_ID=""
 if read -t 1 PAYLOAD 2>/dev/null; then
-  SESSION_ID=$(echo "$PAYLOAD" | grep -o '"session_id"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' 2>/dev/null || true)
+  SESSION_ID=$(echo "$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null || true)
 fi
 
 # Call ccusage to get session data
@@ -40,29 +45,35 @@ if [ -z "$CCUSAGE_OUTPUT" ]; then
   exit 0
 fi
 
-# Extract token data from ccusage output (expects JSON)
+# Extract token data safely with jq, defaulting to 0
 DATE=$(date +%Y-%m-%d)
-INPUT_TOKENS=$(echo "$CCUSAGE_OUTPUT" | grep -o '"input_tokens"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$' || echo "0")
-OUTPUT_TOKENS=$(echo "$CCUSAGE_OUTPUT" | grep -o '"output_tokens"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$' || echo "0")
-CACHE_CREATION=$(echo "$CCUSAGE_OUTPUT" | grep -o '"cache_creation_tokens"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$' || echo "0")
-CACHE_READ=$(echo "$CCUSAGE_OUTPUT" | grep -o '"cache_read_tokens"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$' || echo "0")
-TOTAL_COST=$(echo "$CCUSAGE_OUTPUT" | grep -o '"total_cost_usd"[[:space:]]*:[[:space:]]*[0-9.]*' | head -1 | grep -o '[0-9.]*$' || echo "0")
-MODELS=$(echo "$CCUSAGE_OUTPUT" | grep -o '"models"[[:space:]]*:[[:space:]]*\[[^]]*\]' | head -1 | sed 's/"models"[[:space:]]*:[[:space:]]*//' || echo "[]")
+INPUT_TOKENS=$(echo "$CCUSAGE_OUTPUT" | jq -r '.input_tokens // 0' 2>/dev/null || echo "0")
+OUTPUT_TOKENS=$(echo "$CCUSAGE_OUTPUT" | jq -r '.output_tokens // 0' 2>/dev/null || echo "0")
+CACHE_CREATION=$(echo "$CCUSAGE_OUTPUT" | jq -r '.cache_creation_tokens // 0' 2>/dev/null || echo "0")
+CACHE_READ=$(echo "$CCUSAGE_OUTPUT" | jq -r '.cache_read_tokens // 0' 2>/dev/null || echo "0")
+TOTAL_COST=$(echo "$CCUSAGE_OUTPUT" | jq -r '.total_cost_usd // 0' 2>/dev/null || echo "0")
+MODELS=$(echo "$CCUSAGE_OUTPUT" | jq -c '.models // []' 2>/dev/null || echo "[]")
 
-# Build JSON payload — only token counts, no conversation content
-BODY=$(cat <<EOF
-{
-  "date": "${DATE}",
-  "session_id": "${SESSION_ID}",
-  "input_tokens": ${INPUT_TOKENS:-0},
-  "output_tokens": ${OUTPUT_TOKENS:-0},
-  "cache_creation_tokens": ${CACHE_CREATION:-0},
-  "cache_read_tokens": ${CACHE_READ:-0},
-  "total_cost_usd": ${TOTAL_COST:-0},
-  "models": ${MODELS:-[]}
-}
-EOF
-)
+# Build JSON payload safely with jq — only token counts, no conversation content
+BODY=$(jq -n \
+  --arg date "$DATE" \
+  --arg session_id "$SESSION_ID" \
+  --argjson input_tokens "${INPUT_TOKENS}" \
+  --argjson output_tokens "${OUTPUT_TOKENS}" \
+  --argjson cache_creation_tokens "${CACHE_CREATION}" \
+  --argjson cache_read_tokens "${CACHE_READ}" \
+  --argjson total_cost_usd "${TOTAL_COST}" \
+  --argjson models "${MODELS}" \
+  '{
+    date: $date,
+    session_id: $session_id,
+    input_tokens: $input_tokens,
+    output_tokens: $output_tokens,
+    cache_creation_tokens: $cache_creation_tokens,
+    cache_read_tokens: $cache_read_tokens,
+    total_cost_usd: $total_cost_usd,
+    models: $models
+  }')
 
 # POST to server in background — non-blocking
 curl -s -X POST \

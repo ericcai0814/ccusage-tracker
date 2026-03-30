@@ -35,15 +35,9 @@ export function installHook(hookScriptSource: string): { installed: boolean; bac
     backedUp = true;
   }
 
-  if (!settings.hooks) {
-    settings.hooks = {};
-  }
-  if (!settings.hooks.SessionEnd) {
-    settings.hooks.SessionEnd = [];
-  }
-
   const hookCommand = getHookCommand();
-  const alreadyInstalled = settings.hooks.SessionEnd.some(
+  const existingHooks = settings.hooks?.SessionEnd ?? [];
+  const alreadyInstalled = existingHooks.some(
     (h) => h.command === hookCommand
   );
 
@@ -51,12 +45,16 @@ export function installHook(hookScriptSource: string): { installed: boolean; bac
     return { installed: false, backedUp };
   }
 
-  settings.hooks.SessionEnd.push({
-    type: "command",
-    command: hookCommand,
-  });
+  const newHook = { type: "command", command: hookCommand };
+  const updatedSettings: ClaudeSettings = {
+    ...settings,
+    hooks: {
+      ...settings.hooks,
+      SessionEnd: [...existingHooks, newHook],
+    },
+  };
 
-  writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  writeFileSync(settingsPath, JSON.stringify(updatedSettings, null, 2) + "\n");
 
   // Copy hook script to config directory
   const destDir = join(homedir(), ".config", "ccusage-tracker");

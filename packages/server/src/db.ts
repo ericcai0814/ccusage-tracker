@@ -34,7 +34,3 @@ export function createDatabase(path: string = "data.db"): Database {
   return db;
 }
 
-export function getDatabase(): Database {
-  const dbPath = process.env.DB_PATH || "data.db";
-  return createDatabase(dbPath);
-}

@@ -33,4 +33,3 @@ export function createApp(db?: Database): Hono<AppEnv> {
   return app;
 }
 
-export default createApp();
