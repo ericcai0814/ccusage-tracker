@@ -15,6 +15,7 @@ describe("Dashboard", () => {
 
     insertMember(db, "m1", "Eric", hashApiKey("key1"));
     insertUsageRecord(db, "m1", {
+      member_name: "Eric",
       date: new Date().toISOString().split("T")[0],
       session_id: "s1",
       input_tokens: 1000,
@@ -68,6 +69,53 @@ describe("Dashboard", () => {
     expect(html).toContain("No usage data");
 
     emptyDb.close();
+  });
+
+  it("should show share-bar in member table", async () => {
+    const res = await app.request("/");
+    const html = await res.text();
+    expect(html).toContain("share-bar");
+    expect(html).toContain("Share");
+  });
+
+  it("should show daily-chart when data exists", async () => {
+    const res = await app.request("/");
+    const html = await res.text();
+    expect(html).toContain('class="daily-chart"');
+    expect(html).toContain("Daily Usage Trend");
+  });
+
+  it("should not show daily-chart element when no data", async () => {
+    const emptyDb = createDatabase(":memory:");
+    const emptyApp = createApp(emptyDb);
+
+    const res = await emptyApp.request("/?period=today");
+    const html = await res.text();
+    expect(html).not.toContain('class="daily-chart"');
+
+    emptyDb.close();
+  });
+
+  it("should show peak marker when multiple days exist", async () => {
+    insertUsageRecord(db, "m1", {
+      member_name: "Eric",
+      date: (() => {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return d.toISOString().split("T")[0];
+      })(),
+      session_id: "s-yesterday",
+      input_tokens: 500,
+      output_tokens: 250,
+      cache_creation_tokens: 50,
+      cache_read_tokens: 100,
+      total_cost_usd: 0.10,
+      models: ["claude-sonnet-4-6"],
+    });
+
+    const res = await app.request("/?period=month");
+    const html = await res.text();
+    expect(html).toContain("← peak");
   });
 
   it("should require auth when DASHBOARD_PASSWORD is set", async () => {

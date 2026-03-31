@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { FC } from "hono/jsx";
 import { dashboardAuth } from "../middleware/dashboard-auth";
-import { aggregateUsage, type UsageSummary } from "../queries";
+import { aggregateUsage, aggregateUsageByDate, type UsageSummary, type DailyUsage } from "../queries";
 import { validatePeriod, getDateRange, VALID_PERIODS } from "../utils/date-range";
 import type { AppEnv } from "../app";
 
@@ -329,7 +329,7 @@ const STYLES = `
     text-transform: uppercase;
   }
 
-  td:last-child {
+  td:nth-child(6) {
     color: var(--brand-primary);
   }
 
@@ -354,10 +354,121 @@ const STYLES = `
     text-shadow: 0 0 10px var(--brand-glow);
   }
 
-  .total-row td:last-child {
+  .total-row td:nth-child(6) {
     color: var(--brand-primary);
     text-shadow: 0 0 10px var(--brand-glow);
     font-size: 0.8rem;
+  }
+
+  /* Share bar */
+  .share-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 120px;
+  }
+
+  .share-bar-track {
+    flex: 1;
+    height: 6px;
+    background: var(--brand-glow-soft);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .share-bar-fill {
+    height: 100%;
+    background: var(--brand-primary);
+    box-shadow: 0 0 8px var(--brand-glow);
+    transition: width 0.3s ease;
+  }
+
+  .share-bar-pct {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-secondary);
+    min-width: 3em;
+    text-align: right;
+  }
+
+  /* Daily chart */
+  .daily-chart {
+    border: 1px solid var(--border-glow);
+    background: var(--bg-card);
+    padding: 1.25rem;
+    margin-bottom: 2rem;
+    position: relative;
+  }
+
+  .daily-chart::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: 0;
+    width: 80px;
+    height: 1px;
+    background: var(--brand-primary);
+    box-shadow: var(--neon-shadow);
+  }
+
+  .daily-chart-title {
+    font-family: var(--font-mono);
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--text-dim);
+    margin-bottom: 1rem;
+  }
+
+  .daily-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.3rem 0;
+  }
+
+  .daily-row + .daily-row {
+    border-top: 1px solid var(--border-dim);
+  }
+
+  .daily-date {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-secondary);
+    min-width: 3.5em;
+    flex-shrink: 0;
+  }
+
+  .daily-bar-track {
+    flex: 1;
+    height: 8px;
+    background: var(--brand-glow-faint);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .daily-bar {
+    height: 100%;
+    background: var(--brand-primary);
+    box-shadow: 0 0 10px var(--brand-glow);
+    transition: width 0.3s ease;
+  }
+
+  .daily-cost {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-secondary);
+    min-width: 4.5em;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .daily-peak {
+    font-family: var(--font-mono);
+    font-size: 0.55rem;
+    color: var(--brand-primary);
+    text-shadow: 0 0 8px var(--brand-glow);
+    flex-shrink: 0;
   }
 
   /* Empty state */
@@ -461,7 +572,39 @@ const SummaryCards: FC<{ totalCost: number; totalTokens: number; activeMembers: 
   </div>
 );
 
-const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
+function formatDateShort(dateStr: string): string {
+  const [, month, day] = dateStr.split("-");
+  return `${month}/${day}`;
+}
+
+const DailyChart: FC<{ dailyData: DailyUsage[] }> = ({ dailyData }) => {
+  if (dailyData.length === 0) return <></>;
+
+  const maxCost = Math.max(...dailyData.map((d) => d.total_cost_usd));
+  const peakDate = dailyData.find((d) => d.total_cost_usd === maxCost)!.date;
+
+  return (
+    <div class="daily-chart">
+      <div class="daily-chart-title">Daily Usage Trend</div>
+      {dailyData.map((d) => {
+        const pct = maxCost > 0 ? (d.total_cost_usd / maxCost) * 100 : 0;
+        const isPeak = d.date === peakDate && dailyData.length > 1;
+        return (
+          <div class="daily-row">
+            <span class="daily-date">{formatDateShort(d.date)}</span>
+            <div class="daily-bar-track">
+              <div class="daily-bar" style={`width: ${pct}%`} />
+            </div>
+            <span class="daily-cost">{formatCost(d.total_cost_usd)}</span>
+            {isPeak ? <span class="daily-peak">← peak</span> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
+const MemberTable: FC<{ members: UsageSummary[]; totalCost: number }> = ({ members, totalCost }) => {
   if (members.length === 0) {
     return <div class="empty">[ No usage data for this period ]</div>;
   }
@@ -488,19 +631,31 @@ const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
             <th>Cache Create</th>
             <th>Cache Read</th>
             <th>Cost</th>
+            <th>Share</th>
           </tr>
         </thead>
         <tbody>
-          {members.map((m) => (
-            <tr>
-              <td>{m.member_name}</td>
-              <td>{formatNumber(m.input_tokens)}</td>
-              <td>{formatNumber(m.output_tokens)}</td>
-              <td>{formatNumber(m.cache_creation_tokens)}</td>
-              <td>{formatNumber(m.cache_read_tokens)}</td>
-              <td>{formatCost(m.total_cost_usd)}</td>
-            </tr>
-          ))}
+          {members.map((m) => {
+            const sharePct = totalCost > 0 ? (m.total_cost_usd / totalCost) * 100 : 0;
+            return (
+              <tr>
+                <td>{m.member_name}</td>
+                <td>{formatNumber(m.input_tokens)}</td>
+                <td>{formatNumber(m.output_tokens)}</td>
+                <td>{formatNumber(m.cache_creation_tokens)}</td>
+                <td>{formatNumber(m.cache_read_tokens)}</td>
+                <td>{formatCost(m.total_cost_usd)}</td>
+                <td>
+                  <div class="share-bar">
+                    <div class="share-bar-track">
+                      <div class="share-bar-fill" style={`width: ${sharePct}%`} />
+                    </div>
+                    <span class="share-bar-pct">{sharePct.toFixed(0)}%</span>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
           <tr class="total-row">
             <td>Total</td>
             <td>{formatNumber(totals.input_tokens)}</td>
@@ -508,6 +663,7 @@ const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
             <td>{formatNumber(totals.cache_creation_tokens)}</td>
             <td>{formatNumber(totals.cache_read_tokens)}</td>
             <td>{formatCost(totals.total_cost_usd)}</td>
+            <td />
           </tr>
         </tbody>
       </table>
@@ -521,6 +677,7 @@ dashboard.get("/", (c) => {
   const { from, to } = getDateRange(period);
 
   const members = aggregateUsage(db, { from, to });
+  const dailyData = aggregateUsageByDate(db, { from, to });
 
   const totalCost = members.reduce((sum, m) => sum + m.total_cost_usd, 0);
   const totalTokens = members.reduce(
@@ -542,7 +699,8 @@ dashboard.get("/", (c) => {
         ))}
       </nav>
       <SummaryCards totalCost={totalCost} totalTokens={totalTokens} activeMembers={members.length} />
-      <MemberTable members={members} />
+      <DailyChart dailyData={dailyData} />
+      <MemberTable members={members} totalCost={totalCost} />
     </Layout>
   );
 });

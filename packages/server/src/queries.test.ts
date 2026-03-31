@@ -8,6 +8,7 @@ import {
   insertUsageRecord,
   queryUsageRecords,
   aggregateUsage,
+  aggregateUsageByDate,
   hashApiKey,
 } from "./queries";
 import type { Database } from "bun:sqlite";
@@ -271,6 +272,82 @@ describe("Query Helpers", () => {
       const summary = aggregateUsage(db, {});
       expect(summary[0].member_name).toBe("Alice");
       expect(summary[1].member_name).toBe("Eric");
+    });
+  });
+
+  describe("aggregateUsageByDate", () => {
+    beforeEach(() => {
+      insertMember(db, "m1", "Eric", hashApiKey("key1"));
+      insertMember(db, "m2", "Alice", hashApiKey("key2"));
+
+      insertUsageRecord(db, "m1", {
+        member_name: "Eric",
+        date: "2026-03-28",
+        session_id: "s1",
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_creation_tokens: 10,
+        cache_read_tokens: 20,
+        total_cost_usd: 0.01,
+        models: [],
+      });
+      insertUsageRecord(db, "m1", {
+        member_name: "Eric",
+        date: "2026-03-30",
+        session_id: "s2",
+        input_tokens: 200,
+        output_tokens: 100,
+        cache_creation_tokens: 20,
+        cache_read_tokens: 40,
+        total_cost_usd: 0.02,
+        models: [],
+      });
+      insertUsageRecord(db, "m2", {
+        member_name: "Alice",
+        date: "2026-03-30",
+        session_id: "s3",
+        input_tokens: 300,
+        output_tokens: 150,
+        cache_creation_tokens: 30,
+        cache_read_tokens: 60,
+        total_cost_usd: 0.03,
+        models: [],
+      });
+    });
+
+    it("should aggregate by date", () => {
+      const daily = aggregateUsageByDate(db, {});
+      expect(daily).toHaveLength(2);
+      expect(daily[0].date).toBe("2026-03-28");
+      expect(daily[1].date).toBe("2026-03-30");
+    });
+
+    it("should sum tokens across members for the same date", () => {
+      const daily = aggregateUsageByDate(db, {});
+      const march30 = daily.find((d) => d.date === "2026-03-30")!;
+
+      expect(march30.input_tokens).toBe(500);
+      expect(march30.output_tokens).toBe(250);
+      expect(march30.cache_creation_tokens).toBe(50);
+      expect(march30.cache_read_tokens).toBe(100);
+      expect(march30.total_cost_usd).toBeCloseTo(0.05);
+    });
+
+    it("should filter by date range", () => {
+      const daily = aggregateUsageByDate(db, { from: "2026-03-30", to: "2026-03-30" });
+      expect(daily).toHaveLength(1);
+      expect(daily[0].date).toBe("2026-03-30");
+    });
+
+    it("should order by date ascending", () => {
+      const daily = aggregateUsageByDate(db, {});
+      expect(daily[0].date).toBe("2026-03-28");
+      expect(daily[1].date).toBe("2026-03-30");
+    });
+
+    it("should return empty array when no data", () => {
+      const daily = aggregateUsageByDate(db, { from: "2099-01-01", to: "2099-12-31" });
+      expect(daily).toHaveLength(0);
     });
   });
 });

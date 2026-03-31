@@ -129,6 +129,50 @@ export function queryUsageRecords(
   return db.query(`SELECT * FROM usage_records ${where} ORDER BY date DESC`).all(...params) as UsageRecord[];
 }
 
+export interface DailyUsage {
+  date: string;
+  total_cost_usd: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_tokens: number;
+  cache_read_tokens: number;
+}
+
+export function aggregateUsageByDate(
+  db: Database,
+  options: { from?: string; to?: string }
+): DailyUsage[] {
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (options.from) {
+    conditions.push("date >= ?");
+    params.push(options.from);
+  }
+  if (options.to) {
+    conditions.push("date <= ?");
+    params.push(options.to);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  return db
+    .query(
+      `SELECT
+        date,
+        SUM(input_tokens) as input_tokens,
+        SUM(output_tokens) as output_tokens,
+        SUM(cache_creation_tokens) as cache_creation_tokens,
+        SUM(cache_read_tokens) as cache_read_tokens,
+        SUM(total_cost_usd) as total_cost_usd
+      FROM usage_records
+      ${where}
+      GROUP BY date
+      ORDER BY date ASC`
+    )
+    .all(...params) as DailyUsage[];
+}
+
 export function aggregateUsage(
   db: Database,
   options: { from?: string; to?: string }
