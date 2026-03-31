@@ -1,11 +1,10 @@
-export function generateSetupScript(serverUrl: string, teamKey: string): string {
+export function generateSetupScript(serverUrl: string, _teamKey: string): string {
   return `#!/usr/bin/env bash
-# ccusage-tracker 一鍵安裝
+# ccusage-tracker 安裝
 # Usage: curl -fsSL ${serverUrl}/setup.sh | bash
 set -euo pipefail
 
 SERVER_URL="${serverUrl}"
-TEAM_KEY="${teamKey}"
 CONFIG_DIR="\$HOME/.config/ccusage-tracker"
 CONFIG_FILE="\$CONFIG_DIR/config.json"
 HOOK_SCRIPT="\$CONFIG_DIR/session-end.sh"
@@ -61,6 +60,26 @@ read -r MEMBER_NAME < /dev/tty
 if [ -z "\$MEMBER_NAME" ]; then
   echo "[ERR] 名字不能為空"
   exit 1
+fi
+
+printf "Team Key (向管理員索取): "
+read -r TEAM_KEY < /dev/tty
+
+if [ -z "\$TEAM_KEY" ]; then
+  echo "[ERR] Team Key 不能為空"
+  exit 1
+fi
+
+# 驗證 Team Key 是否正確
+HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" \\
+  -H "Authorization: Bearer \$TEAM_KEY" \\
+  "\$SERVER_URL/api/report/summary?period=today" 2>/dev/null || echo "000")
+
+if [ "\$HTTP_CODE" = "401" ]; then
+  echo "[ERR] Team Key 無效，請確認後重試"
+  exit 1
+elif [ "\$HTTP_CODE" = "000" ]; then
+  echo "[WARN] 無法連線 Server，Team Key 未驗證"
 fi
 
 echo ""

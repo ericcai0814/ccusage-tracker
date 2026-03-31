@@ -49,6 +49,8 @@
 curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
 ```
 
+安裝時會要求輸入名字和 **Team Key**（向管理員索取），Team Key 會即時驗證。
+
 ### Setup 做了什麼
 
 安裝腳本會依序執行以下操作：
@@ -79,7 +81,7 @@ curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
 ```json
 {
   "server_url": "https://ccusage-tracker.zeabur.app",
-  "team_key": "（共用 team key，自動嵌入）",
+  "team_key": "（安裝時輸入，向管理員索取）",
   "member_name": "（你輸入的名字）"
 }
 ```
