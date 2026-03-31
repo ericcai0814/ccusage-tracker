@@ -56,7 +56,7 @@ fi
 # ── 設定 ──
 echo ""
 printf "你的名字: "
-read -r MEMBER_NAME
+read -r MEMBER_NAME < /dev/tty
 
 if [ -z "\$MEMBER_NAME" ]; then
   echo "❌ 名字不能為空"
