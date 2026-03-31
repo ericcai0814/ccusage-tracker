@@ -188,7 +188,7 @@ echo ""
 export function generateSessionEndScript(): string {
   return `#!/usr/bin/env bash
 # ccusage-tracker SessionEnd hook
-# 自動在 Claude Code session 結束時上報 token 用量
+# 狀態同步器：每次 session 結束時，把本機今天的用量快照同步到 server
 set -euo pipefail
 
 CONFIG_FILE="\$HOME/.config/ccusage-tracker/config.json"
@@ -209,36 +209,30 @@ MEMBER_NAME=\$(jq -r '.member_name // empty' "\$CONFIG_FILE" 2>/dev/null || true
 
 [ -z "\$SERVER_URL" ] || [ -z "\$TEAM_KEY" ] || [ -z "\$MEMBER_NAME" ] && exit 0
 
-# 讀取 hook payload（可能為空）
-SESSION_ID=""
-if read -t 1 PAYLOAD 2>/dev/null; then
-  SESSION_ID=\$(echo "\$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null || true)
-fi
+# 取得今天的用量快照（ccusage daily --jq 直接取 totals）
+DATE_YYYYMMDD=\$(date +%Y%m%d)
+DATE_DASH=\$(date +%Y-%m-%d)
 
-# 呼叫 ccusage 取得 session 數據
-CCUSAGE_OUTPUT=\$(ccusage session --json --since today 2>/dev/null || echo "")
-[ -z "\$CCUSAGE_OUTPUT" ] && exit 0
+TOTALS=\$(ccusage daily --json --since "\$DATE_YYYYMMDD" --jq '.totals' 2>/dev/null || echo "")
+[ -z "\$TOTALS" ] && exit 0
 
-# 安全擷取數據
-DATE=\$(date +%Y-%m-%d)
-INPUT_TOKENS=\$(echo "\$CCUSAGE_OUTPUT" | jq -r '.input_tokens // 0' 2>/dev/null || echo "0")
-OUTPUT_TOKENS=\$(echo "\$CCUSAGE_OUTPUT" | jq -r '.output_tokens // 0' 2>/dev/null || echo "0")
-CACHE_CREATION=\$(echo "\$CCUSAGE_OUTPUT" | jq -r '.cache_creation_tokens // 0' 2>/dev/null || echo "0")
-CACHE_READ=\$(echo "\$CCUSAGE_OUTPUT" | jq -r '.cache_read_tokens // 0' 2>/dev/null || echo "0")
-TOTAL_COST=\$(echo "\$CCUSAGE_OUTPUT" | jq -r '.total_cost_usd // 0' 2>/dev/null || echo "0")
-MODELS=\$(echo "\$CCUSAGE_OUTPUT" | jq -c '.models // []' 2>/dev/null || echo "[]")
+# 從 totals 擷取數據（camelCase 欄位）
+INPUT_TOKENS=\$(echo "\$TOTALS" | jq -r '.inputTokens // 0' 2>/dev/null || echo "0")
+OUTPUT_TOKENS=\$(echo "\$TOTALS" | jq -r '.outputTokens // 0' 2>/dev/null || echo "0")
+CACHE_CREATION=\$(echo "\$TOTALS" | jq -r '.cacheCreationTokens // 0' 2>/dev/null || echo "0")
+CACHE_READ=\$(echo "\$TOTALS" | jq -r '.cacheReadTokens // 0' 2>/dev/null || echo "0")
+TOTAL_COST=\$(echo "\$TOTALS" | jq -r '.totalCost // 0' 2>/dev/null || echo "0")
 
-# 用 jq 安全建構 JSON payload
+# 建構 JSON payload — session_id 固定為 "daily" 確保 UPSERT 冪等覆寫
 BODY=\$(jq -n \\
   --arg member_name "\$MEMBER_NAME" \\
-  --arg date "\$DATE" \\
-  --arg session_id "\$SESSION_ID" \\
+  --arg date "\$DATE_DASH" \\
+  --arg session_id "daily" \\
   --argjson input_tokens "\$INPUT_TOKENS" \\
   --argjson output_tokens "\$OUTPUT_TOKENS" \\
   --argjson cache_creation_tokens "\$CACHE_CREATION" \\
   --argjson cache_read_tokens "\$CACHE_READ" \\
   --argjson total_cost_usd "\$TOTAL_COST" \\
-  --argjson models "\$MODELS" \\
   '{
     member_name: \$member_name,
     date: \$date,
@@ -248,7 +242,7 @@ BODY=\$(jq -n \\
     cache_creation_tokens: \$cache_creation_tokens,
     cache_read_tokens: \$cache_read_tokens,
     total_cost_usd: \$total_cost_usd,
-    models: \$models
+    models: []
   }')
 
 # 背景 POST — 不阻塞 Claude Code
