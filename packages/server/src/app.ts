@@ -4,7 +4,7 @@ import admin from "./routes/admin";
 import ingest from "./routes/ingest";
 import report from "./routes/report";
 import dashboard from "./routes/dashboard";
-import { generateSetupScript, generateSessionEndScript } from "./scripts";
+import { generateSetupScript, generateUninstallScript, generateSessionEndScript } from "./scripts";
 import type { Database } from "bun:sqlite";
 
 export type AppEnv = {
@@ -33,6 +33,14 @@ export function createApp(db?: Database): Hono<AppEnv> {
     const teamKey = process.env.TEAM_KEY || "";
     c.header("Content-Type", "text/plain; charset=utf-8");
     return c.text(generateSetupScript(serverUrl, teamKey));
+  });
+
+  app.get("/uninstall.sh", (c) => {
+    const proto = c.req.header("X-Forwarded-Proto") || "https";
+    const host = c.req.header("Host") || new URL(c.req.url).host;
+    const serverUrl = process.env.SERVER_URL || `${proto}://${host}`;
+    c.header("Content-Type", "text/plain; charset=utf-8");
+    return c.text(generateUninstallScript(serverUrl));
   });
 
   app.get("/scripts/session-end.sh", (c) => {

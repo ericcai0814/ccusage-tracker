@@ -143,6 +143,48 @@ echo ""
 `;
 }
 
+export function generateUninstallScript(serverUrl: string): string {
+  return `#!/usr/bin/env bash
+# ccusage-tracker 卸載
+# Usage: curl -fsSL ${serverUrl}/uninstall.sh | bash
+set -euo pipefail
+
+CONFIG_DIR="\$HOME/.config/ccusage-tracker"
+CLAUDE_SETTINGS="\$HOME/.claude/settings.json"
+
+echo ""
+echo "  ccusage-tracker 卸載程式"
+echo "  ========================"
+echo ""
+
+# ── 移除 SessionEnd hook ──
+if [ -f "\$CLAUDE_SETTINGS" ] && command -v jq &> /dev/null; then
+  if jq -e '.hooks.SessionEnd' "\$CLAUDE_SETTINGS" > /dev/null 2>&1; then
+    UPDATED=\$(jq '.hooks.SessionEnd |= map(select(.command | contains("ccusage-tracker") | not))' "\$CLAUDE_SETTINGS")
+    echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
+    echo "[OK] SessionEnd hook 已移除"
+  else
+    echo "[--] 未發現 SessionEnd hook"
+  fi
+else
+  echo "[--] 未發現 settings.json 或 jq"
+fi
+
+# ── 移除設定檔 ──
+if [ -d "\$CONFIG_DIR" ]; then
+  rm -rf "\$CONFIG_DIR"
+  echo "[OK] 設定檔已移除 (\$CONFIG_DIR)"
+else
+  echo "[--] 未發現設定檔"
+fi
+
+echo ""
+echo "  [OK] 卸載完成"
+echo "  jq 和 ccusage 為獨立工具，已保留"
+echo ""
+`;
+}
+
 export function generateSessionEndScript(): string {
   return `#!/usr/bin/env bash
 # ccusage-tracker SessionEnd hook

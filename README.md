@@ -105,32 +105,17 @@ curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
 
 ## 卸載
 
-如果不想再使用，手動移除以下內容即可：
-
-### 1. 移除 hook
-
-編輯 `~/.claude/settings.json`，刪除 `hooks.SessionEnd` 陣列中 command 包含 `ccusage-tracker` 的那筆：
+一行指令：
 
 ```bash
-# 或直接用 jq 移除
-jq '.hooks.SessionEnd |= map(select(.command | contains("ccusage-tracker") | not))' \
-  ~/.claude/settings.json > /tmp/settings.json && \
-  mv /tmp/settings.json ~/.claude/settings.json
+curl -fsSL https://ccusage-tracker.zeabur.app/uninstall.sh | bash
 ```
 
-### 2. 移除設定檔和 hook script
+卸載會：
+1. 從 `~/.claude/settings.json` 移除 SessionEnd hook
+2. 刪除 `~/.config/ccusage-tracker/` 目錄（config + hook script）
 
-```bash
-rm -rf ~/.config/ccusage-tracker
-```
-
-### 3.（選用）還原 settings.json 備份
-
-```bash
-cp ~/.claude/settings.json.backup ~/.claude/settings.json
-```
-
-卸載不影響 ccusage 和 jq，它們是獨立工具，可自行決定是否保留。
+不影響 jq 和 ccusage，它們是獨立工具。
 
 ## 查看用量
 
