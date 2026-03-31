@@ -1,13 +1,14 @@
 import { Hono } from "hono";
-import { memberAuth, type MemberAuthEnv } from "../middleware/member-auth";
+import { teamAuth } from "../middleware/team-auth";
 import { queryUsageRecords, aggregateUsage, findMemberByName } from "../queries";
 import { validatePeriod, getDateRange } from "../utils/date-range";
+import type { AppEnv } from "../app";
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
-const report = new Hono<MemberAuthEnv>();
+const report = new Hono<AppEnv>();
 
-report.use("*", memberAuth());
+report.use("*", teamAuth());
 
 report.get("/daily", (c) => {
   const db = c.get("db");

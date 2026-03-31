@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import { nanoid } from "nanoid";
 
 export interface Member {
   id: string;
@@ -33,6 +34,7 @@ export interface UsageSummary {
 }
 
 export interface IngestPayload {
+  member_name: string;
   date: string;
   session_id?: string | null;
   input_tokens: number;
@@ -91,6 +93,16 @@ export function insertUsageRecord(db: Database, memberId: string, payload: Inges
 
 export function findMemberByName(db: Database, name: string): Member | null {
   return db.query("SELECT * FROM members WHERE name = ?").get(name) as Member | null;
+}
+
+export function findOrCreateMember(db: Database, name: string): Member {
+  const existing = findMemberByName(db, name);
+  if (existing) {
+    return existing;
+  }
+  const id = nanoid();
+  const dummyApiKeyHash = hashApiKey(`dummy-${id}`);
+  return insertMember(db, id, name, dummyApiKeyHash);
 }
 
 export function queryUsageRecords(

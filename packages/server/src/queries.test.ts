@@ -3,6 +3,7 @@ import { createDatabase } from "./db";
 import {
   insertMember,
   findMemberByApiKeyHash,
+  findOrCreateMember,
   listMembers,
   insertUsageRecord,
   queryUsageRecords,
@@ -86,6 +87,7 @@ describe("Query Helpers", () => {
     it("should insert a usage record", () => {
       insertMember(db, "m1", "Eric", hashApiKey("key1"));
       insertUsageRecord(db, "m1", {
+        member_name: "Eric",
         date: "2026-03-30",
         session_id: "sess1",
         input_tokens: 1000,
@@ -106,6 +108,7 @@ describe("Query Helpers", () => {
       insertMember(db, "m1", "Eric", hashApiKey("key1"));
 
       insertUsageRecord(db, "m1", {
+        member_name: "Eric",
         date: "2026-03-30",
         session_id: "sess1",
         input_tokens: 1000,
@@ -117,6 +120,7 @@ describe("Query Helpers", () => {
       });
 
       insertUsageRecord(db, "m1", {
+        member_name: "Eric",
         date: "2026-03-30",
         session_id: "sess1",
         input_tokens: 2000,
@@ -139,6 +143,7 @@ describe("Query Helpers", () => {
       insertMember(db, "m2", "Alice", hashApiKey("key2"));
 
       insertUsageRecord(db, "m1", {
+        member_name: "Eric",
         date: "2026-03-28",
         session_id: "s1",
         input_tokens: 100,
@@ -149,6 +154,7 @@ describe("Query Helpers", () => {
         models: [],
       });
       insertUsageRecord(db, "m1", {
+        member_name: "Eric",
         date: "2026-03-30",
         session_id: "s2",
         input_tokens: 200,
@@ -159,6 +165,7 @@ describe("Query Helpers", () => {
         models: [],
       });
       insertUsageRecord(db, "m2", {
+        member_name: "Alice",
         date: "2026-03-30",
         session_id: "s3",
         input_tokens: 300,
@@ -192,6 +199,7 @@ describe("Query Helpers", () => {
       insertMember(db, "m2", "Alice", hashApiKey("key2"));
 
       insertUsageRecord(db, "m1", {
+        member_name: "Eric",
         date: "2026-03-28",
         session_id: "s1",
         input_tokens: 100,
@@ -202,6 +210,7 @@ describe("Query Helpers", () => {
         models: [],
       });
       insertUsageRecord(db, "m1", {
+        member_name: "Eric",
         date: "2026-03-30",
         session_id: "s2",
         input_tokens: 200,
@@ -212,6 +221,7 @@ describe("Query Helpers", () => {
         models: [],
       });
       insertUsageRecord(db, "m2", {
+        member_name: "Alice",
         date: "2026-03-30",
         session_id: "s3",
         input_tokens: 300,
@@ -247,6 +257,7 @@ describe("Query Helpers", () => {
       // Eric: 0.01 + 0.02 = 0.03, Alice: 0.03 — tied, so order may vary
       // Insert extra record to make Alice clearly higher
       insertUsageRecord(db, "m2", {
+        member_name: "Alice",
         date: "2026-03-29",
         session_id: "s4",
         input_tokens: 500,

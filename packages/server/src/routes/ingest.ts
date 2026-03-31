@@ -1,6 +1,7 @@
 import { Hono } from "hono";
-import { memberAuth, type MemberAuthEnv } from "../middleware/member-auth";
-import { insertUsageRecord, type IngestPayload } from "../queries";
+import { teamAuth } from "../middleware/team-auth";
+import { insertUsageRecord, findOrCreateMember, type IngestPayload } from "../queries";
+import type { AppEnv } from "../app";
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -12,15 +13,18 @@ function isValidCost(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v) && v >= 0;
 }
 
-const ingest = new Hono<MemberAuthEnv>();
+const ingest = new Hono<AppEnv>();
 
-ingest.use("*", memberAuth());
+ingest.use("*", teamAuth());
 
 ingest.post("/", async (c) => {
   const body = await c.req.json<Partial<IngestPayload>>();
 
   const errors: string[] = [];
 
+  if (!body.member_name || typeof body.member_name !== "string") {
+    errors.push("member_name is required and must be a string");
+  }
   if (!body.date || !DATE_REGEX.test(body.date)) {
     errors.push("date must be in YYYY-MM-DD format");
   }
@@ -47,7 +51,11 @@ ingest.post("/", async (c) => {
     return c.json({ error: "validation failed", details: errors }, 400);
   }
 
+  const db = c.get("db");
+  const member = findOrCreateMember(db, body.member_name!);
+
   const payload: IngestPayload = {
+    member_name: body.member_name!,
     date: body.date!,
     session_id: body.session_id ?? null,
     input_tokens: body.input_tokens!,
@@ -58,7 +66,7 @@ ingest.post("/", async (c) => {
     models: body.models!,
   };
 
-  insertUsageRecord(c.get("db"), c.get("memberId"), payload);
+  insertUsageRecord(db, member.id, payload);
 
   return c.json({ ok: true });
 });

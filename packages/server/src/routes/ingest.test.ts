@@ -1,26 +1,28 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { createApp } from "../app";
 import { createDatabase } from "../db";
-import { insertMember, hashApiKey, queryUsageRecords } from "../queries";
+import { queryUsageRecords } from "../queries";
 import type { Database } from "bun:sqlite";
 
-const MEMBER_API_KEY = "sk-tracker-test123";
+const TEAM_KEY = "test-team-key";
 
 describe("Ingest API", () => {
   let db: Database;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
+    process.env.TEAM_KEY = TEAM_KEY;
     db = createDatabase(":memory:");
     app = createApp(db);
-    insertMember(db, "m1", "Eric", hashApiKey(MEMBER_API_KEY));
   });
 
   afterEach(() => {
+    delete process.env.TEAM_KEY;
     db.close();
   });
 
   const validPayload = {
+    member_name: "Eric",
     date: "2026-03-30",
     session_id: "sess1",
     input_tokens: 1000,
@@ -37,7 +39,7 @@ describe("Ingest API", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${MEMBER_API_KEY}`,
+          Authorization: `Bearer ${TEAM_KEY}`,
         },
         body: JSON.stringify(validPayload),
       });
@@ -56,7 +58,7 @@ describe("Ingest API", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${MEMBER_API_KEY}`,
+          Authorization: `Bearer ${TEAM_KEY}`,
         },
         body: JSON.stringify(validPayload),
       });
@@ -66,7 +68,7 @@ describe("Ingest API", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${MEMBER_API_KEY}`,
+          Authorization: `Bearer ${TEAM_KEY}`,
         },
         body: JSON.stringify(updatedPayload),
       });
@@ -84,7 +86,7 @@ describe("Ingest API", () => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${MEMBER_API_KEY}`,
+          Authorization: `Bearer ${TEAM_KEY}`,
         },
         body: JSON.stringify(payloadWithoutSession),
       });
@@ -92,12 +94,27 @@ describe("Ingest API", () => {
       expect(res.status).toBe(200);
     });
 
+    it("should auto-register new member on first ingest", async () => {
+      const res = await app.request("/api/ingest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TEAM_KEY}`,
+        },
+        body: JSON.stringify({ ...validPayload, member_name: "NewMember" }),
+      });
+
+      expect(res.status).toBe(200);
+      const records = queryUsageRecords(db, {});
+      expect(records).toHaveLength(1);
+    });
+
     it("should return 400 for missing required fields", async () => {
       const res = await app.request("/api/ingest", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${MEMBER_API_KEY}`,
+          Authorization: `Bearer ${TEAM_KEY}`,
         },
         body: JSON.stringify({ date: "2026-03-30" }),
       });
@@ -106,6 +123,23 @@ describe("Ingest API", () => {
       const body = await res.json();
       expect(body.error).toBe("validation failed");
       expect(body.details.length).toBeGreaterThan(0);
+    });
+
+    it("should return 400 for missing member_name", async () => {
+      const { member_name, ...payloadWithoutMember } = validPayload;
+      const res = await app.request("/api/ingest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TEAM_KEY}`,
+        },
+        body: JSON.stringify(payloadWithoutMember),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe("validation failed");
+      expect(body.details).toContain("member_name is required and must be a string");
     });
 
     it("should return 401 without auth", async () => {
@@ -118,12 +152,12 @@ describe("Ingest API", () => {
       expect(res.status).toBe(401);
     });
 
-    it("should return 401 with invalid API key", async () => {
+    it("should return 401 with invalid team key", async () => {
       const res = await app.request("/api/ingest", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: "Bearer invalid-key",
+          Authorization: "Bearer wrong-key",
         },
         body: JSON.stringify(validPayload),
       });

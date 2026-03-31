@@ -4,19 +4,21 @@ import { createDatabase } from "../db";
 import { insertMember, hashApiKey, insertUsageRecord } from "../queries";
 import type { Database } from "bun:sqlite";
 
-const MEMBER_API_KEY = "sk-tracker-test123";
+const TEAM_KEY = "test-team-key";
 
 describe("Report API", () => {
   let db: Database;
   let app: ReturnType<typeof createApp>;
 
   beforeEach(() => {
+    process.env.TEAM_KEY = TEAM_KEY;
     db = createDatabase(":memory:");
     app = createApp(db);
-    insertMember(db, "m1", "Eric", hashApiKey(MEMBER_API_KEY));
-    insertMember(db, "m2", "Alice", hashApiKey("sk-tracker-alice"));
+    insertMember(db, "m1", "Eric", hashApiKey("dummy-m1"));
+    insertMember(db, "m2", "Alice", hashApiKey("dummy-m2"));
 
     insertUsageRecord(db, "m1", {
+      member_name: "Eric",
       date: "2026-03-28",
       session_id: "s1",
       input_tokens: 100,
@@ -27,6 +29,7 @@ describe("Report API", () => {
       models: ["claude-sonnet-4-6"],
     });
     insertUsageRecord(db, "m1", {
+      member_name: "Eric",
       date: "2026-03-30",
       session_id: "s2",
       input_tokens: 200,
@@ -37,6 +40,7 @@ describe("Report API", () => {
       models: ["claude-opus-4-6"],
     });
     insertUsageRecord(db, "m2", {
+      member_name: "Alice",
       date: "2026-03-30",
       session_id: "s3",
       input_tokens: 300,
@@ -50,12 +54,13 @@ describe("Report API", () => {
 
   afterEach(() => {
     db.close();
+    delete process.env.TEAM_KEY;
   });
 
   describe("GET /api/report/daily", () => {
     it("should return records within date range", async () => {
       const res = await app.request("/api/report/daily?from=2026-03-30&to=2026-03-30", {
-        headers: { Authorization: `Bearer ${MEMBER_API_KEY}` },
+        headers: { Authorization: `Bearer ${TEAM_KEY}` },
       });
 
       expect(res.status).toBe(200);
@@ -65,7 +70,7 @@ describe("Report API", () => {
 
     it("should filter by member name", async () => {
       const res = await app.request("/api/report/daily?member=Eric", {
-        headers: { Authorization: `Bearer ${MEMBER_API_KEY}` },
+        headers: { Authorization: `Bearer ${TEAM_KEY}` },
       });
 
       expect(res.status).toBe(200);
@@ -76,7 +81,7 @@ describe("Report API", () => {
 
     it("should return 404 for unknown member", async () => {
       const res = await app.request("/api/report/daily?member=Unknown", {
-        headers: { Authorization: `Bearer ${MEMBER_API_KEY}` },
+        headers: { Authorization: `Bearer ${TEAM_KEY}` },
       });
 
       expect(res.status).toBe(404);
@@ -91,7 +96,7 @@ describe("Report API", () => {
   describe("GET /api/report/summary", () => {
     it("should return summary for period=today", async () => {
       const res = await app.request("/api/report/summary?period=today", {
-        headers: { Authorization: `Bearer ${MEMBER_API_KEY}` },
+        headers: { Authorization: `Bearer ${TEAM_KEY}` },
       });
 
       expect(res.status).toBe(200);
@@ -105,7 +110,7 @@ describe("Report API", () => {
 
     it("should return summary for period=month", async () => {
       const res = await app.request("/api/report/summary?period=month", {
-        headers: { Authorization: `Bearer ${MEMBER_API_KEY}` },
+        headers: { Authorization: `Bearer ${TEAM_KEY}` },
       });
 
       expect(res.status).toBe(200);
@@ -116,7 +121,7 @@ describe("Report API", () => {
 
     it("should default to month when no period specified", async () => {
       const res = await app.request("/api/report/summary", {
-        headers: { Authorization: `Bearer ${MEMBER_API_KEY}` },
+        headers: { Authorization: `Bearer ${TEAM_KEY}` },
       });
 
       expect(res.status).toBe(200);
