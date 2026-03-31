@@ -27,7 +27,9 @@ export function createApp(db?: Database): Hono<AppEnv> {
   });
 
   app.get("/setup.sh", (c) => {
-    const serverUrl = new URL(c.req.url).origin;
+    const proto = c.req.header("X-Forwarded-Proto") || "https";
+    const host = c.req.header("Host") || new URL(c.req.url).host;
+    const serverUrl = process.env.SERVER_URL || `${proto}://${host}`;
     const teamKey = process.env.TEAM_KEY || "";
     c.header("Content-Type", "text/plain; charset=utf-8");
     return c.text(generateSetupScript(serverUrl, teamKey));
