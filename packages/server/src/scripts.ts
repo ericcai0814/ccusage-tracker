@@ -27,12 +27,12 @@ if ! command -v jq &> /dev/null; then
   elif command -v apk &> /dev/null; then
     sudo apk add jq
   else
-    echo "❌ 無法自動安裝 jq，請手動安裝後重試"
+    echo "[ERR] 無法自動安裝 jq，請手動安裝後重試"
     exit 1
   fi
-  echo "✓ jq 已安裝"
+  echo "[OK] jq 已安裝"
 else
-  echo "[1/4] ✓ jq 已安裝"
+  echo "[1/4] [OK] jq 已安裝"
 fi
 
 # ── 安裝 ccusage ──
@@ -43,14 +43,14 @@ if ! command -v ccusage &> /dev/null; then
   elif command -v bun &> /dev/null; then
     bun install -g ccusage@latest
   else
-    echo "❌ 需要 npm 或 bun 來安裝 ccusage"
+    echo "[ERR] 需要 npm 或 bun 來安裝 ccusage"
     echo "  安裝 Node.js: https://nodejs.org"
     echo "  或 Bun: curl -fsSL https://bun.sh/install | bash"
     exit 1
   fi
-  echo "✓ ccusage 已安裝"
+  echo "[OK] ccusage 已安裝"
 else
-  echo "[2/4] ✓ ccusage 已安裝"
+  echo "[2/4] [OK] ccusage 已安裝"
 fi
 
 # ── 設定 ──
@@ -59,7 +59,7 @@ printf "你的名字: "
 read -r MEMBER_NAME < /dev/tty
 
 if [ -z "\$MEMBER_NAME" ]; then
-  echo "❌ 名字不能為空"
+  echo "[ERR] 名字不能為空"
   exit 1
 fi
 
@@ -74,12 +74,12 @@ cat > "\$CONFIG_FILE" << CONF
   "member_name": "\$MEMBER_NAME"
 }
 CONF
-echo "✓ Config 寫入 \$CONFIG_FILE"
+echo "[OK] Config 寫入 \$CONFIG_FILE"
 
 # ── 下載 hook script ──
 curl -fsSL "\$SERVER_URL/scripts/session-end.sh" -o "\$HOOK_SCRIPT"
 chmod +x "\$HOOK_SCRIPT"
-echo "✓ Hook script 下載完成"
+echo "[OK] Hook script 下載完成"
 
 # ── 安裝 SessionEnd hook ──
 echo "[4/4] 安裝 Claude Code SessionEnd hook..."
@@ -104,19 +104,19 @@ UPDATED=\$(jq --arg cmd "\$HOOK_CMD" '
 ' "\$CLAUDE_SETTINGS")
 
 echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
-echo "✓ SessionEnd hook 已安裝"
+echo "[OK] SessionEnd hook 已安裝"
 
 # ── 驗證 ──
 echo ""
 if curl -sf "\$SERVER_URL/api/health" > /dev/null 2>&1; then
-  echo "✓ Server 連線正常"
+  echo "[OK] Server 連線正常"
 else
-  echo "⚠ Server 無法連線 (\$SERVER_URL)，但設定已完成"
+  echo "[WARN] Server 無法連線 (\$SERVER_URL)，但設定已完成"
 fi
 
 echo ""
 echo "  ════════════════════════════════════"
-echo "  ✓ 安裝完成！"
+echo "  [OK] 安裝完成！"
 echo "  成員: \$MEMBER_NAME"
 echo "  之後 Claude Code 用量會自動上報"
 echo "  ════════════════════════════════════"
