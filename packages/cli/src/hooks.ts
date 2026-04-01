@@ -2,12 +2,19 @@ import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+interface HookEntry {
+  type: string;
+  command: string;
+}
+
+interface HookMatcher {
+  matcher: string;
+  hooks: HookEntry[];
+}
+
 interface ClaudeSettings {
   hooks?: {
-    SessionEnd?: Array<{
-      type: string;
-      command: string;
-    }>;
+    SessionEnd?: HookMatcher[];
     [key: string]: unknown;
   };
   [key: string]: unknown;
@@ -38,19 +45,22 @@ export function installHook(hookScriptSource: string): { installed: boolean; bac
   const hookCommand = getHookCommand();
   const existingHooks = settings.hooks?.SessionEnd ?? [];
   const alreadyInstalled = existingHooks.some(
-    (h) => h.command === hookCommand
+    (m) => m.hooks?.some((h) => h.command === hookCommand)
   );
 
   if (alreadyInstalled) {
     return { installed: false, backedUp };
   }
 
-  const newHook = { type: "command", command: hookCommand };
+  const newMatcher: HookMatcher = {
+    matcher: "*",
+    hooks: [{ type: "command", command: hookCommand }],
+  };
   const updatedSettings: ClaudeSettings = {
     ...settings,
     hooks: {
       ...settings.hooks,
-      SessionEnd: [...existingHooks, newHook],
+      SessionEnd: [...existingHooks, newMatcher],
     },
   };
 
@@ -71,7 +81,9 @@ export function isHookInstalled(): boolean {
   try {
     const settings: ClaudeSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
     const hookCommand = getHookCommand();
-    return settings.hooks?.SessionEnd?.some((h) => h.command === hookCommand) ?? false;
+    return settings.hooks?.SessionEnd?.some(
+      (m) => m.hooks?.some((h) => h.command === hookCommand)
+    ) ?? false;
   } catch {
     return false;
   }
