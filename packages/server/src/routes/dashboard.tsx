@@ -17,6 +17,28 @@ function formatCost(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+function formatRelativeTime(isoString: string | null): string {
+  if (!isoString) return "Never";
+  const now = Date.now();
+  const then = new Date(isoString + "Z").getTime();
+  const diffMs = now - then;
+  if (diffMs < 0) return "Just now";
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function isStale(isoString: string | null): boolean {
+  if (!isoString) return true;
+  const now = Date.now();
+  const then = new Date(isoString + "Z").getTime();
+  return now - then > 24 * 60 * 60 * 1000;
+}
+
 const STYLES = `
   @import url('https://fonts.googleapis.com/css2?family=Teko:wght@400;500;600;700&family=Michroma&family=Share+Tech+Mono&display=swap');
 
@@ -360,6 +382,12 @@ const STYLES = `
     font-size: 0.8rem;
   }
 
+  /* Stale warning */
+  .stale-warn {
+    color: var(--brand-primary);
+    text-shadow: 0 0 8px var(--brand-glow);
+  }
+
   /* Share bar */
   .share-bar {
     display: flex;
@@ -631,6 +659,7 @@ const MemberTable: FC<{ members: UsageSummary[]; totalCost: number }> = ({ membe
             <th>Cache Create</th>
             <th>Cache Read</th>
             <th>Cost</th>
+            <th>Last Report</th>
             <th>Share</th>
           </tr>
         </thead>
@@ -645,6 +674,9 @@ const MemberTable: FC<{ members: UsageSummary[]; totalCost: number }> = ({ membe
                 <td>{formatNumber(m.cache_creation_tokens)}</td>
                 <td>{formatNumber(m.cache_read_tokens)}</td>
                 <td>{formatCost(m.total_cost_usd)}</td>
+                <td class={isStale(m.last_seen_at) ? "stale-warn" : ""}>
+                  {formatRelativeTime(m.last_seen_at)}
+                </td>
                 <td>
                   <div class="share-bar">
                     <div class="share-bar-track">
@@ -663,6 +695,7 @@ const MemberTable: FC<{ members: UsageSummary[]; totalCost: number }> = ({ membe
             <td>{formatNumber(totals.cache_creation_tokens)}</td>
             <td>{formatNumber(totals.cache_read_tokens)}</td>
             <td>{formatCost(totals.total_cost_usd)}</td>
+            <td />
             <td />
           </tr>
         </tbody>

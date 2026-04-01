@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { createApp } from "../app";
 import { createDatabase } from "../db";
-import { queryUsageRecords } from "../queries";
+import { queryUsageRecords, findMemberByName } from "../queries";
 import type { Database } from "bun:sqlite";
 
 const TEAM_KEY = "test-team-key";
@@ -163,6 +163,55 @@ describe("Ingest API", () => {
       });
 
       expect(res.status).toBe(401);
+    });
+
+    it("should update last_seen_at on successful ingest (record last seen timestamp on ingest)", async () => {
+      const res = await app.request("/api/ingest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TEAM_KEY}`,
+        },
+        body: JSON.stringify(validPayload),
+      });
+
+      expect(res.status).toBe(200);
+
+      const member = findMemberByName(db, "Eric");
+      expect(member).not.toBeNull();
+      expect(member!.last_seen_at).not.toBeNull();
+      expect(typeof member!.last_seen_at).toBe("string");
+    });
+
+    it("should update last_seen_at on each subsequent ingest", async () => {
+      await app.request("/api/ingest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TEAM_KEY}`,
+        },
+        body: JSON.stringify(validPayload),
+      });
+
+      const member1 = findMemberByName(db, "Eric");
+      const firstSeen = member1!.last_seen_at;
+
+      // Small delay to ensure timestamp differs
+      await new Promise((r) => setTimeout(r, 50));
+
+      await app.request("/api/ingest", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${TEAM_KEY}`,
+        },
+        body: JSON.stringify({ ...validPayload, session_id: "sess2" }),
+      });
+
+      const member2 = findMemberByName(db, "Eric");
+      expect(member2!.last_seen_at).not.toBeNull();
+      // last_seen_at should be updated (>= first time)
+      expect(member2!.last_seen_at! >= firstSeen!).toBe(true);
     });
   });
 });

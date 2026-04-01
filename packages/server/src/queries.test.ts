@@ -254,6 +254,15 @@ describe("Query Helpers", () => {
       expect(eric!.input_tokens).toBe(200);
     });
 
+    it("should include last_seen_at in results", () => {
+      const summary = aggregateUsage(db, {});
+      expect(summary).toHaveLength(2);
+      for (const member of summary) {
+        expect(member).toHaveProperty("last_seen_at");
+        expect(typeof member.last_seen_at).toBe("string");
+      }
+    });
+
     it("should order by total_cost_usd descending", () => {
       // Eric: 0.01 + 0.02 = 0.03, Alice: 0.03 — tied, so order may vary
       // Insert extra record to make Alice clearly higher

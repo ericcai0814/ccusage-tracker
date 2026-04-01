@@ -187,11 +187,13 @@ echo ""
 
 export function generateSessionEndScript(): string {
   return `#!/usr/bin/env bash
-# ccusage-tracker SessionEnd hook
+# ccusage-tracker SessionEnd hook v2
 # 狀態同步器：每次 session 結束時，把本機今天的用量快照同步到 server
+# v2: 新增本機暫存 + 重試機制
 set -euo pipefail
 
 CONFIG_FILE="\$HOME/.config/ccusage-tracker/config.json"
+BUFFER_FILE="\$HOME/.config/ccusage-tracker/buffer.jsonl"
 
 # 靜默退出：config 不存在
 [ ! -f "\$CONFIG_FILE" ] && exit 0
@@ -209,51 +211,115 @@ MEMBER_NAME=\$(jq -r '.member_name // empty' "\$CONFIG_FILE" 2>/dev/null || true
 
 [ -z "\$SERVER_URL" ] || [ -z "\$TEAM_KEY" ] || [ -z "\$MEMBER_NAME" ] && exit 0
 
-# 取得今天的用量快照（ccusage daily --jq 直接取 totals）
-DATE_YYYYMMDD=\$(date +%Y%m%d)
-DATE_DASH=\$(date +%Y-%m-%d)
+# ── 重送暫存 (set +e，個別失敗不中斷) ──
+set +e
+if [ -f "\$BUFFER_FILE" ] && [ -s "\$BUFFER_FILE" ]; then
+  TEMP_FILE="\${BUFFER_FILE}.tmp"
+  : > "\$TEMP_FILE" 2>/dev/null
+  RETRY_START=\$(date +%s)
 
-TOTALS=\$(ccusage daily --json --since "\$DATE_YYYYMMDD" --jq '.totals' 2>/dev/null || echo "")
-[ -z "\$TOTALS" ] && exit 0
+  while IFS= read -r LINE; do
+    # 15 秒總時限
+    NOW=\$(date +%s)
+    if [ \$((NOW - RETRY_START)) -ge 15 ]; then
+      # 超時：剩餘行全部保留
+      echo "\$LINE" >> "\$TEMP_FILE" 2>/dev/null
+      continue
+    fi
 
-# 從 totals 擷取數據（camelCase 欄位）
-INPUT_TOKENS=\$(echo "\$TOTALS" | jq -r '.inputTokens // 0' 2>/dev/null || echo "0")
-OUTPUT_TOKENS=\$(echo "\$TOTALS" | jq -r '.outputTokens // 0' 2>/dev/null || echo "0")
-CACHE_CREATION=\$(echo "\$TOTALS" | jq -r '.cacheCreationTokens // 0' 2>/dev/null || echo "0")
-CACHE_READ=\$(echo "\$TOTALS" | jq -r '.cacheReadTokens // 0' 2>/dev/null || echo "0")
-TOTAL_COST=\$(echo "\$TOTALS" | jq -r '.totalCost // 0' 2>/dev/null || echo "0")
+    HTTP_CODE=\$(curl -s -o /dev/null -w '%{http_code}' -X POST \\
+      "\$SERVER_URL/api/ingest" \\
+      -H "Content-Type: application/json" \\
+      -H "Authorization: Bearer \$TEAM_KEY" \\
+      -d "\$LINE" \\
+      --connect-timeout 3 \\
+      --max-time 5 2>/dev/null || echo "000")
 
-# 建構 JSON payload — session_id 固定為 "daily" 確保 UPSERT 冪等覆寫
-BODY=\$(jq -n \\
-  --arg member_name "\$MEMBER_NAME" \\
-  --arg date "\$DATE_DASH" \\
-  --arg session_id "daily" \\
-  --argjson input_tokens "\$INPUT_TOKENS" \\
-  --argjson output_tokens "\$OUTPUT_TOKENS" \\
-  --argjson cache_creation_tokens "\$CACHE_CREATION" \\
-  --argjson cache_read_tokens "\$CACHE_READ" \\
-  --argjson total_cost_usd "\$TOTAL_COST" \\
-  '{
-    member_name: \$member_name,
-    date: \$date,
-    session_id: \$session_id,
-    input_tokens: \$input_tokens,
-    output_tokens: \$output_tokens,
-    cache_creation_tokens: \$cache_creation_tokens,
-    cache_read_tokens: \$cache_read_tokens,
-    total_cost_usd: \$total_cost_usd,
-    models: []
-  }')
+    if [ "\$HTTP_CODE" -ge 200 ] && [ "\$HTTP_CODE" -lt 300 ] 2>/dev/null; then
+      : # 成功，不寫入 temp
+    else
+      echo "\$LINE" >> "\$TEMP_FILE" 2>/dev/null
+    fi
+  done < "\$BUFFER_FILE"
 
-# 背景 POST — 不阻塞 Claude Code
-curl -s -X POST \\
-  "\$SERVER_URL/api/ingest" \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer \$TEAM_KEY" \\
-  -d "\$BODY" \\
-  --connect-timeout 5 \\
-  --max-time 10 \\
-  > /dev/null 2>&1 &
+  # 過期清理：移除 _buffered_at 超過 7 天或無法解析的條目
+  if [ -s "\$TEMP_FILE" ]; then
+    EXPIRE_CUTOFF=\$(date -u -v-7d +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%S 2>/dev/null || echo "")
+    if [ -n "\$EXPIRE_CUTOFF" ]; then
+      CLEAN_FILE="\${BUFFER_FILE}.clean"
+      : > "\$CLEAN_FILE" 2>/dev/null
+      while IFS= read -r LINE; do
+        BA=\$(echo "\$LINE" | jq -r '._buffered_at // empty' 2>/dev/null || echo "")
+        if [ -z "\$BA" ] || [ "\$BA" \\< "\$EXPIRE_CUTOFF" ]; then
+          : # 過期或無法解析，丟棄
+        else
+          echo "\$LINE" >> "\$CLEAN_FILE" 2>/dev/null
+        fi
+      done < "\$TEMP_FILE"
+      mv "\$CLEAN_FILE" "\$BUFFER_FILE" 2>/dev/null || true
+    else
+      mv "\$TEMP_FILE" "\$BUFFER_FILE" 2>/dev/null || true
+    fi
+    rm -f "\$TEMP_FILE" 2>/dev/null
+  else
+    mv "\$TEMP_FILE" "\$BUFFER_FILE" 2>/dev/null || true
+  fi
+  # 清除空的 buffer 檔
+  [ -f "\$BUFFER_FILE" ] && [ ! -s "\$BUFFER_FILE" ] && rm -f "\$BUFFER_FILE" 2>/dev/null
+fi
+set -e
+
+# ── 收集當次用量並 POST（背景執行） ──
+_post_current() {
+  DATE_YYYYMMDD=\$(date +%Y%m%d)
+  DATE_DASH=\$(date +%Y-%m-%d)
+
+  TOTALS=\$(ccusage daily --json --since "\$DATE_YYYYMMDD" --jq '.totals' 2>/dev/null || echo "")
+  [ -z "\$TOTALS" ] && return 0
+
+  INPUT_TOKENS=\$(echo "\$TOTALS" | jq -r '.inputTokens // 0' 2>/dev/null || echo "0")
+  OUTPUT_TOKENS=\$(echo "\$TOTALS" | jq -r '.outputTokens // 0' 2>/dev/null || echo "0")
+  CACHE_CREATION=\$(echo "\$TOTALS" | jq -r '.cacheCreationTokens // 0' 2>/dev/null || echo "0")
+  CACHE_READ=\$(echo "\$TOTALS" | jq -r '.cacheReadTokens // 0' 2>/dev/null || echo "0")
+  TOTAL_COST=\$(echo "\$TOTALS" | jq -r '.totalCost // 0' 2>/dev/null || echo "0")
+
+  BODY=\$(jq -n \\
+    --arg member_name "\$MEMBER_NAME" \\
+    --arg date "\$DATE_DASH" \\
+    --arg session_id "daily" \\
+    --argjson input_tokens "\$INPUT_TOKENS" \\
+    --argjson output_tokens "\$OUTPUT_TOKENS" \\
+    --argjson cache_creation_tokens "\$CACHE_CREATION" \\
+    --argjson cache_read_tokens "\$CACHE_READ" \\
+    --argjson total_cost_usd "\$TOTAL_COST" \\
+    '{
+      member_name: \$member_name,
+      date: \$date,
+      session_id: \$session_id,
+      input_tokens: \$input_tokens,
+      output_tokens: \$output_tokens,
+      cache_creation_tokens: \$cache_creation_tokens,
+      cache_read_tokens: \$cache_read_tokens,
+      total_cost_usd: \$total_cost_usd,
+      models: []
+    }')
+
+  HTTP_CODE=\$(curl -s -o /dev/null -w '%{http_code}' -X POST \\
+    "\$SERVER_URL/api/ingest" \\
+    -H "Content-Type: application/json" \\
+    -H "Authorization: Bearer \$TEAM_KEY" \\
+    -d "\$BODY" \\
+    --connect-timeout 5 \\
+    --max-time 10 2>/dev/null || echo "000")
+
+  if ! ( [ "\$HTTP_CODE" -ge 200 ] && [ "\$HTTP_CODE" -lt 300 ] ) 2>/dev/null; then
+    # POST 失敗：暫存到 buffer（靜默跳過寫入失敗）
+    BUFFERED=\$(echo "\$BODY" | jq -c --arg ts "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {_buffered_at: \$ts}' 2>/dev/null || echo "")
+    [ -n "\$BUFFERED" ] && echo "\$BUFFERED" >> "\$BUFFER_FILE" 2>/dev/null || true
+  fi
+}
+
+_post_current &
 
 exit 0
 `;

@@ -1,6 +1,7 @@
 import { readConfig, getConfigPath } from "../config";
 import { isHookInstalled } from "../hooks";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
 
 export async function statusCommand(): Promise<void> {
   const configPath = getConfigPath();
@@ -42,6 +43,16 @@ export async function statusCommand(): Promise<void> {
     } catch {
       console.log("Server: unreachable");
     }
+  }
+
+  // Buffer
+  const bufferPath = join(dirname(configPath), "buffer.jsonl");
+  if (existsSync(bufferPath)) {
+    const content = readFileSync(bufferPath, "utf-8").trim();
+    const lineCount = content ? content.split("\n").length : 0;
+    console.log(`Buffer: ${lineCount} pending entr${lineCount === 1 ? "y" : "ies"} (${bufferPath})`);
+  } else {
+    console.log("Buffer: none");
   }
 
   // ccusage

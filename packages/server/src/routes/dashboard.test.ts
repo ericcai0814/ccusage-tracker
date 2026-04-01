@@ -139,4 +139,32 @@ describe("Dashboard", () => {
     expect(res.status).toBe(200);
     protectedDb.close();
   });
+
+  it("should show Last Report column with relative time", async () => {
+    const res = await app.request("/");
+    const html = await res.text();
+    expect(html).toContain("Last Report");
+    // Member has just ingested data, so should show relative time (not "Never")
+    expect(html).not.toContain("Never");
+  });
+
+  it("should show stale warning for members with no recent report", async () => {
+    // Set last_seen_at to 2 days ago to trigger stale warning
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19);
+    db.run("UPDATE members SET last_seen_at = ? WHERE id = ?", [twoDaysAgo, "m1"]);
+
+    const res = await app.request("/");
+    const html = await res.text();
+    expect(html).toContain("stale-warn");
+    expect(html).toContain("2d ago");
+  });
+
+  it("should show Never with warning for members that never reported", async () => {
+    db.run("UPDATE members SET last_seen_at = NULL WHERE id = ?", ["m1"]);
+
+    const res = await app.request("/");
+    const html = await res.text();
+    expect(html).toContain("Never");
+    expect(html).toContain("stale-warn");
+  });
 });

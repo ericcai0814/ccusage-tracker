@@ -133,5 +133,33 @@ describe("Report API", () => {
       const res = await app.request("/api/report/summary");
       expect(res.status).toBe(401);
     });
+
+    it("should include last_seen_at for members with ingest history", async () => {
+      // Insert a record for today so it appears in the default month period
+      const today = new Date().toISOString().slice(0, 10);
+      insertUsageRecord(db, "m1", {
+        member_name: "Eric",
+        date: today,
+        session_id: "today-s1",
+        input_tokens: 50,
+        output_tokens: 25,
+        cache_creation_tokens: 5,
+        cache_read_tokens: 10,
+        total_cost_usd: 0.005,
+        models: ["claude-sonnet-4-6"],
+      });
+
+      const res = await app.request("/api/report/summary?period=month", {
+        headers: { Authorization: `Bearer ${TEAM_KEY}` },
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.members.length).toBeGreaterThan(0);
+      for (const member of body.members) {
+        expect(member).toHaveProperty("last_seen_at");
+        expect(typeof member.last_seen_at).toBe("string");
+      }
+    });
   });
 });
