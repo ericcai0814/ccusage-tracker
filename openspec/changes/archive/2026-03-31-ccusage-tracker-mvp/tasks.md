@@ -64,4 +64,4 @@
 
 - [x] 10.1 建立 Dockerfile（Bun + Alpine）
 - [x] 10.2 建立 zeabur.json（container 配置 + persistent volume）
-- [ ] 10.3 端到端驗證：setup → hook trigger → ingest → report → dashboard 完整流程
+- [x] 10.3 端到端驗證：setup → hook trigger → ingest → report → dashboard 完整流程

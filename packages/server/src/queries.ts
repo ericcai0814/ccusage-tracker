@@ -7,6 +7,7 @@ export interface Member {
   name: string;
   api_key_hash: string;
   created_at: string;
+  last_seen_at: string | null;
 }
 
 export interface UsageRecord {
@@ -31,6 +32,7 @@ export interface UsageSummary {
   cache_creation_tokens: number;
   cache_read_tokens: number;
   total_cost_usd: number;
+  last_seen_at: string | null;
 }
 
 export interface IngestPayload {
@@ -66,29 +68,36 @@ export function listMembers(db: Database): Omit<Member, "api_key_hash">[] {
 }
 
 export function insertUsageRecord(db: Database, memberId: string, payload: IngestPayload): void {
-  db.run(
-    `INSERT INTO usage_records
-     (member_id, date, session_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, total_cost_usd, models)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(member_id, date, session_id) DO UPDATE SET
-       input_tokens = excluded.input_tokens,
-       output_tokens = excluded.output_tokens,
-       cache_creation_tokens = excluded.cache_creation_tokens,
-       cache_read_tokens = excluded.cache_read_tokens,
-       total_cost_usd = excluded.total_cost_usd,
-       models = excluded.models`,
-    [
-      memberId,
-      payload.date,
-      payload.session_id ?? null,
-      payload.input_tokens,
-      payload.output_tokens,
-      payload.cache_creation_tokens,
-      payload.cache_read_tokens,
-      payload.total_cost_usd,
-      JSON.stringify(payload.models),
-    ]
-  );
+  const tx = db.transaction(() => {
+    db.run(
+      `INSERT INTO usage_records
+       (member_id, date, session_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, total_cost_usd, models)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(member_id, date, session_id) DO UPDATE SET
+         input_tokens = excluded.input_tokens,
+         output_tokens = excluded.output_tokens,
+         cache_creation_tokens = excluded.cache_creation_tokens,
+         cache_read_tokens = excluded.cache_read_tokens,
+         total_cost_usd = excluded.total_cost_usd,
+         models = excluded.models`,
+      [
+        memberId,
+        payload.date,
+        payload.session_id ?? null,
+        payload.input_tokens,
+        payload.output_tokens,
+        payload.cache_creation_tokens,
+        payload.cache_read_tokens,
+        payload.total_cost_usd,
+        JSON.stringify(payload.models),
+      ]
+    );
+    db.run(
+      "UPDATE members SET last_seen_at = datetime('now') WHERE id = ?",
+      [memberId]
+    );
+  });
+  tx();
 }
 
 export function findMemberByName(db: Database, name: string): Member | null {
@@ -200,7 +209,8 @@ export function aggregateUsage(
         SUM(ur.output_tokens) as output_tokens,
         SUM(ur.cache_creation_tokens) as cache_creation_tokens,
         SUM(ur.cache_read_tokens) as cache_read_tokens,
-        SUM(ur.total_cost_usd) as total_cost_usd
+        SUM(ur.total_cost_usd) as total_cost_usd,
+        m.last_seen_at
       FROM usage_records ur
       JOIN members m ON ur.member_id = m.id
       ${where}

@@ -31,6 +31,15 @@ export function createDatabase(path: string = "data.db"): Database {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
+  migrateLastSeenAt(db);
   return db;
+}
+
+function migrateLastSeenAt(db: Database): void {
+  const columns = db.query("SELECT name FROM pragma_table_info('members')").all() as { name: string }[];
+  const hasColumn = columns.some((c) => c.name === "last_seen_at");
+  if (!hasColumn) {
+    db.exec("ALTER TABLE members ADD COLUMN last_seen_at TEXT");
+  }
 }
 
