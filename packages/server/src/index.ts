@@ -1,5 +1,8 @@
 import { createApp } from "./app";
 
+const dbPath = process.env.DB_PATH || "data.db";
+console.log(`[db] resolved path: ${dbPath}`);
+
 const app = createApp();
 
 const server = Bun.serve({
