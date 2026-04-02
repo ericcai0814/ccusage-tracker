@@ -12,9 +12,11 @@
 成員的電腦                              中央 Server
 ┌─────────────────────────┐            ┌──────────────────────┐
 │ Claude Code session 結束 │            │ Hono + Bun           │
-│ --> SessionEnd hook 觸發 │   POST     │ --> SQLite 儲存       │
+│ --> SessionEnd hook 觸發 │            │ --> SQLite 儲存       │
+│ --> 重送暫存的失敗紀錄   │   POST     │ --> 更新 last_seen_at │
 │ --> ccusage 取得 token   │ ────────>  │ --> Dashboard 顯示    │
 │ --> 背景 curl 上報       │            │ --> Report API        │
+│ --> 失敗時暫存到本機     │            │                      │
 └─────────────────────────┘            └──────────────────────┘
 ```
 
@@ -31,10 +33,13 @@
 ### 資料流
 
 1. Claude Code session 結束 --> 觸發 `SessionEnd` hook
-2. Hook 呼叫 `ccusage session --json --since today` 取得 token 數據
-3. Hook 用背景 `curl` POST 到 server 的 `/api/ingest`
-4. Server 驗證 TEAM_KEY，自動建立/識別成員，寫入 SQLite
-5. Dashboard / API 讀取 SQLite 產出報表
+2. Hook 檢查本機暫存（`buffer.jsonl`），逐筆重送失敗的紀錄（15 秒上限）
+3. 清除超過 7 天的暫存紀錄
+4. Hook 呼叫 `ccusage daily --json --since today` 取得當日 token 數據
+5. Hook 用背景 `curl` POST 到 server 的 `/api/ingest`
+6. POST 失敗時，payload 暫存到 `buffer.jsonl`，下次自動重送
+7. Server 驗證 TEAM_KEY，自動建立/識別成員，寫入 SQLite，更新 `last_seen_at`
+8. Dashboard / API 讀取 SQLite 產出報表，超過 24 小時未回報的成員顯示警告
 
 ### 隱私
 
@@ -69,39 +74,21 @@ curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
 ```
 ~/.config/ccusage-tracker/
   config.json          # server URL、team key、成員名字
-  session-end.sh       # SessionEnd hook script
+  session-end.sh       # SessionEnd hook script (v2)
+  buffer.jsonl         # POST 失敗時的本機暫存（自動建立/清除）
 
 ~/.claude/
   settings.json        # 被加入了一筆 SessionEnd hook
   settings.json.backup # 原始 settings.json 備份
 ```
 
-### config.json 內容
+### 更新 Hook 腳本
 
-```json
-{
-  "server_url": "https://ccusage-tracker.zeabur.app",
-  "team_key": "（安裝時輸入，向管理員索取）",
-  "member_name": "（你輸入的名字）"
-}
+當 server 發布新版本後，成員需要更新本機的 hook 腳本：
+
+```bash
+curl -fsSL https://ccusage-tracker.zeabur.app/scripts/session-end.sh -o ~/.config/ccusage-tracker/session-end.sh
 ```
-
-### settings.json 被加入的內容
-
-```json
-{
-  "hooks": {
-    "SessionEnd": [
-      {
-        "type": "command",
-        "command": "bash ~/.config/ccusage-tracker/session-end.sh"
-      }
-    ]
-  }
-}
-```
-
-如果你原本就有其他 hooks，setup 會保留它們（deep merge），不會覆蓋。
 
 ## 卸載
 
@@ -113,7 +100,7 @@ curl -fsSL https://ccusage-tracker.zeabur.app/uninstall.sh | bash
 
 卸載會：
 1. 從 `~/.claude/settings.json` 移除 SessionEnd hook
-2. 刪除 `~/.config/ccusage-tracker/` 目錄（config + hook script）
+2. 刪除 `~/.config/ccusage-tracker/` 目錄（config + hook script + buffer）
 
 不影響 jq 和 ccusage，它們是獨立工具。
 
@@ -127,12 +114,15 @@ curl -fsSL https://ccusage-tracker.zeabur.app/uninstall.sh | bash
 https://ccusage-tracker.zeabur.app
 ```
 
-支援 Today / Week / Month 切換。
+支援 Today / Week / Month 切換。Dashboard 包含：
+- 摘要卡片：總成本、總 token、活躍成員數
+- 每日走勢圖
+- 成員用量表格（含 Last Report 欄位與 stale 警告）
 
 ### API
 
 ```bash
-# 摘要報表
+# 摘要報表（含 last_seen_at）
 curl -H "Authorization: Bearer <TEAM_KEY>" \
   "https://ccusage-tracker.zeabur.app/api/report/summary?period=month"
 
@@ -148,7 +138,7 @@ curl -H "Authorization: Bearer <TEAM_KEY>" \
 | 變數 | 必填 | 說明 |
 |------|------|------|
 | `TEAM_KEY` | 是 | 共用認證金鑰，setup script 會自動嵌入 |
-| `DB_PATH` | 否 | SQLite 路徑（預設 `/data/ccusage-tracker.db`） |
+| `DB_PATH` | 是 | SQLite 路徑（設為 `/data/ccusage-tracker.db` 以使用 persistent volume） |
 | `DASHBOARD_PASSWORD` | 否 | Dashboard Basic Auth 密碼（不設則公開） |
 | `ADMIN_API_KEY` | 否 | 管理員 API（用於手動建立成員） |
 
@@ -170,7 +160,7 @@ ccusage-tracker/
     server/                  # Hono server
       src/
         app.ts               # 路由定義
-        db.ts                # SQLite schema
+        db.ts                # SQLite schema + migration
         queries.ts           # typed query helpers
         scripts.ts           # setup.sh / session-end.sh 產生器
         middleware/
@@ -182,18 +172,23 @@ ccusage-tracker/
           report.ts          # GET /api/report/*
           admin.ts           # POST/GET /api/admin/members
           dashboard.tsx      # GET / (Hono JSX SSR)
-      scripts/
-        session-end.sh       # 舊版 hook（已改為 server 動態提供）
-    cli/                     # CLI 工具（已簡化為 curl setup）
+    cli/                     # CLI 工具（tracker setup/report/status）
   Dockerfile                 # Bun + Alpine
   zeabur.json                # Zeabur 部署設定
   openspec/                  # Spectra SDD 規格文件
+  CHANGELOG.md               # 版本紀錄
 ```
 
 ## FAQ
 
 **Q: Hook 失敗會影響 Claude Code 嗎？**
 不會。Hook script 永遠 `exit 0`，所有錯誤靜默處理。
+
+**Q: Server 斷線會丟失資料嗎？**
+不會。v0.2.0 起，POST 失敗時 payload 會暫存到本機 `buffer.jsonl`，下次 session 結束時自動重送。暫存保留 7 天。
+
+**Q: Dashboard 上成員顯示紅色警告是什麼意思？**
+表示該成員超過 24 小時未回報。可能是 hook 壞掉、設定錯誤、或未安裝。請該成員執行 `tracker status` 檢查。
 
 **Q: 重複上報會導致數據重複嗎？**
 不會。Server 用 `(member_id, date, session_id)` 做唯一鍵，重複上報會覆蓋而非新增。
@@ -203,3 +198,6 @@ ccusage-tracker/
 
 **Q: 不想被追蹤怎麼辦？**
 按照上方「卸載」步驟移除即可，30 秒內完成。
+
+**Q: 如何更新 hook 到最新版？**
+執行：`curl -fsSL https://ccusage-tracker.zeabur.app/scripts/session-end.sh -o ~/.config/ccusage-tracker/session-end.sh`
