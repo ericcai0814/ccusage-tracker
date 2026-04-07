@@ -69,7 +69,7 @@ describe("Report API", () => {
     });
 
     it("should filter by member name", async () => {
-      const res = await app.request("/api/report/daily?member=Eric", {
+      const res = await app.request("/api/report/daily?member=Eric&from=2026-03-01&to=2026-03-31", {
         headers: { Authorization: `Bearer ${TEAM_KEY}` },
       });
 

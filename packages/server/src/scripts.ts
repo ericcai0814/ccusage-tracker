@@ -117,8 +117,8 @@ fi
 UPDATED=\$(jq --arg cmd "\$HOOK_CMD" '
   .hooks //= {} |
   .hooks.SessionEnd //= [] |
-  if (.hooks.SessionEnd | map(.command) | index(\$cmd)) then .
-  else .hooks.SessionEnd += [{"type": "command", "command": \$cmd}]
+  if [.hooks.SessionEnd[]?.hooks[]?.command] | index(\$cmd) then .
+  else .hooks.SessionEnd += [{"matcher": "", "hooks": [{"type": "command", "command": \$cmd}]}]
   end
 ' "\$CLAUDE_SETTINGS")
 
@@ -160,7 +160,7 @@ echo ""
 # ── 移除 SessionEnd hook ──
 if [ -f "\$CLAUDE_SETTINGS" ] && command -v jq &> /dev/null; then
   if jq -e '.hooks.SessionEnd' "\$CLAUDE_SETTINGS" > /dev/null 2>&1; then
-    UPDATED=\$(jq '.hooks.SessionEnd |= map(select(.command | contains("ccusage-tracker") | not))' "\$CLAUDE_SETTINGS")
+    UPDATED=\$(jq '.hooks.SessionEnd |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not))' "\$CLAUDE_SETTINGS")
     echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
     echo "[OK] SessionEnd hook 已移除"
   else
