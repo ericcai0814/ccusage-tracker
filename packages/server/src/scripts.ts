@@ -187,9 +187,9 @@ echo ""
 
 export function generateSessionEndScript(): string {
   return `#!/usr/bin/env bash
-# ccusage-tracker SessionEnd hook v2
-# 狀態同步器：每次 session 結束時，把本機今天的用量快照同步到 server
-# v2: 新增本機暫存 + 重試機制
+# ccusage-tracker SessionEnd hook v3
+# 狀態同步器：每次 session 結束時，把本機今天的用量快照 + session 行為指標同步到 server
+# v3: 新增 session metrics 萃取（jq 從 transcript JSONL 萃取）
 set -euo pipefail
 
 CONFIG_FILE="\$HOME/.config/ccusage-tracker/config.json"
@@ -201,15 +201,17 @@ BUFFER_FILE="\$HOME/.config/ccusage-tracker/buffer.jsonl"
 # 靜默退出：jq 未安裝
 command -v jq &> /dev/null || exit 0
 
-# 靜默退出：ccusage 未安裝
-command -v ccusage &> /dev/null || exit 0
-
 # 讀取 config
 SERVER_URL=\$(jq -r '.server_url // empty' "\$CONFIG_FILE" 2>/dev/null || true)
 TEAM_KEY=\$(jq -r '.team_key // empty' "\$CONFIG_FILE" 2>/dev/null || true)
 MEMBER_NAME=\$(jq -r '.member_name // empty' "\$CONFIG_FILE" 2>/dev/null || true)
 
 [ -z "\$SERVER_URL" ] || [ -z "\$TEAM_KEY" ] || [ -z "\$MEMBER_NAME" ] && exit 0
+
+# 讀取 hook payload（stdin 只能讀一次，必須在所有邏輯之前）
+HOOK_PAYLOAD=""
+read -t 1 HOOK_PAYLOAD 2>/dev/null || true
+TRANSCRIPT_PATH=\$(echo "\$HOOK_PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 
 # ── 重送暫存 (set +e，個別失敗不中斷) ──
 set +e
@@ -269,8 +271,59 @@ if [ -f "\$BUFFER_FILE" ] && [ -s "\$BUFFER_FILE" ]; then
 fi
 set -e
 
+# ── Session Metrics 萃取 + POST（背景執行） ──
+_post_session_metrics() {
+  [ -z "\$TRANSCRIPT_PATH" ] && return 0
+  [ ! -f "\$TRANSCRIPT_PATH" ] && return 0
+
+  METRICS=\$(jq -s '
+  {
+    session_id: (map(select(.sessionId != null) | .sessionId) | first // ""),
+    session_name: (map(select(.slug != null) | .slug) | first // ""),
+    project: (map(select(.cwd != null) | .cwd) | first // "" | split("/") | last),
+    branch: (map(select(.gitBranch != null) | .gitBranch) | first // ""),
+    turns: [.[] | select(.type == "user" and .userType == "external")] | length,
+    user_messages: [.[] | select(.type == "user")] | length,
+    assistant_messages: [.[] | select(.type == "assistant")] | length,
+    user_avg_chars: ([.[] | select(.type == "user" and .userType == "external") | .message.content |
+      if type == "string" then length
+      elif type == "array" then [.[] | select(.type == "text") | .text | length] | add // 0
+      else 0 end] | if length > 0 then (add / length | floor) else 0 end),
+    tool_calls: ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use") | .name] | group_by(.) | map({(.[0]): length}) | add // {}),
+    tool_call_total: [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use")] | length,
+    tool_errors: [.[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true)] | length,
+    started_at: ([.[] | select(.timestamp != null) | .timestamp] | sort | first // ""),
+    ended_at: ([.[] | select(.timestamp != null) | .timestamp] | sort | last // ""),
+    duration_minutes: (([.[] | select(.timestamp != null) | .timestamp] | sort | {s: first, e: last}) |
+      if .s and .e then (((.e | sub("\\\\.[0-9]+Z$"; "Z") | fromdateiso8601) - (.s | sub("\\\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 60 | floor)
+      else 0 end),
+    has_commit: ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Bash") | .input.command // "" | test("git commit")] | any),
+    files_read: [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Read")] | length,
+    files_written: [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Write")] | length,
+    files_edited: [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Edit")] | length,
+    skills_invoked: ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Skill") | .input.skill // empty] | unique),
+    hook_blocks: 0
+  }' "\$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+
+  [ -z "\$METRICS" ] && return 0
+
+  BODY=\$(echo "\$METRICS" | jq -c --arg mn "\$MEMBER_NAME" '. + {member_name: \$mn}' 2>/dev/null || echo "")
+  [ -z "\$BODY" ] && return 0
+
+  curl -s -o /dev/null -X POST \\
+    "\$SERVER_URL/api/ingest/session" \\
+    -H "Content-Type: application/json" \\
+    -H "Authorization: Bearer \$TEAM_KEY" \\
+    -d "\$BODY" \\
+    --connect-timeout 5 \\
+    --max-time 10 2>/dev/null || true
+}
+_post_session_metrics &
+
 # ── 收集當次用量並 POST（背景執行） ──
 _post_current() {
+  command -v ccusage &> /dev/null || return 0
+
   DATE_YYYYMMDD=\$(date +%Y%m%d)
   DATE_DASH=\$(date +%Y-%m-%d)
 
@@ -313,12 +366,10 @@ _post_current() {
     --max-time 10 2>/dev/null || echo "000")
 
   if ! ( [ "\$HTTP_CODE" -ge 200 ] && [ "\$HTTP_CODE" -lt 300 ] ) 2>/dev/null; then
-    # POST 失敗：暫存到 buffer（靜默跳過寫入失敗）
     BUFFERED=\$(echo "\$BODY" | jq -c --arg ts "\$(date -u +%Y-%m-%dT%H:%M:%SZ)" '. + {_buffered_at: \$ts}' 2>/dev/null || echo "")
     [ -n "\$BUFFERED" ] && echo "\$BUFFERED" >> "\$BUFFER_FILE" 2>/dev/null || true
   fi
 }
-
 _post_current &
 
 exit 0
