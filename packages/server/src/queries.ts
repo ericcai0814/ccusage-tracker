@@ -47,6 +47,93 @@ export interface IngestPayload {
   models: string[];
 }
 
+export interface SessionMetricsPayload {
+  member_name: string;
+  session_id: string;
+  session_name?: string;
+  project?: string;
+  branch?: string;
+  started_at: string;
+  ended_at: string;
+  duration_minutes?: number;
+  turns?: number;
+  user_messages?: number;
+  assistant_messages?: number;
+  user_avg_chars?: number;
+  tool_calls?: Record<string, number>;
+  tool_call_total?: number;
+  tool_errors?: number;
+  skills_invoked?: string[];
+  hook_blocks?: number;
+  files_read?: number;
+  files_written?: number;
+  files_edited?: number;
+  has_commit?: boolean;
+}
+
+export function insertSessionMetrics(db: Database, memberId: string, payload: SessionMetricsPayload): void {
+  const tx = db.transaction(() => {
+    db.run(
+      `INSERT INTO session_metrics
+       (member_id, session_id, session_name, project, branch,
+        started_at, ended_at, duration_minutes, turns,
+        user_messages, assistant_messages, user_avg_chars,
+        tool_calls, tool_call_total, tool_errors,
+        skills_invoked, hook_blocks,
+        files_read, files_written, files_edited, has_commit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(member_id, session_id) DO UPDATE SET
+         session_name = excluded.session_name,
+         project = excluded.project,
+         branch = excluded.branch,
+         started_at = excluded.started_at,
+         ended_at = excluded.ended_at,
+         duration_minutes = excluded.duration_minutes,
+         turns = excluded.turns,
+         user_messages = excluded.user_messages,
+         assistant_messages = excluded.assistant_messages,
+         user_avg_chars = excluded.user_avg_chars,
+         tool_calls = excluded.tool_calls,
+         tool_call_total = excluded.tool_call_total,
+         tool_errors = excluded.tool_errors,
+         skills_invoked = excluded.skills_invoked,
+         hook_blocks = excluded.hook_blocks,
+         files_read = excluded.files_read,
+         files_written = excluded.files_written,
+         files_edited = excluded.files_edited,
+         has_commit = excluded.has_commit`,
+      [
+        memberId,
+        payload.session_id,
+        payload.session_name ?? "",
+        payload.project ?? "",
+        payload.branch ?? "",
+        payload.started_at,
+        payload.ended_at,
+        payload.duration_minutes ?? 0,
+        payload.turns ?? 0,
+        payload.user_messages ?? 0,
+        payload.assistant_messages ?? 0,
+        payload.user_avg_chars ?? 0,
+        JSON.stringify(payload.tool_calls ?? {}),
+        payload.tool_call_total ?? 0,
+        payload.tool_errors ?? 0,
+        JSON.stringify(payload.skills_invoked ?? []),
+        payload.hook_blocks ?? 0,
+        payload.files_read ?? 0,
+        payload.files_written ?? 0,
+        payload.files_edited ?? 0,
+        payload.has_commit ? 1 : 0,
+      ]
+    );
+    db.run(
+      "UPDATE members SET last_seen_at = datetime('now') WHERE id = ?",
+      [memberId]
+    );
+  });
+  tx();
+}
+
 export function hashApiKey(key: string): string {
   return createHash("sha256").update(key).digest("hex");
 }
@@ -218,4 +305,189 @@ export function aggregateUsage(
       ORDER BY total_cost_usd DESC`
     )
     .all(...params) as UsageSummary[];
+}
+
+// --- Session Analytics Aggregation Queries ---
+
+export interface WeeklyOverview {
+  total_sessions: number;
+  total_duration_hours: number;
+  commit_rate: number;
+  avg_turns: number;
+  total_tool_errors: number;
+}
+
+export function getWeeklyOverview(
+  db: Database,
+  from: string,
+  to: string
+): WeeklyOverview {
+  const row = db
+    .query(
+      `SELECT
+        COUNT(*) as total_sessions,
+        ROUND(COALESCE(SUM(duration_minutes), 0) / 60.0, 1) as total_duration_hours,
+        CASE WHEN COUNT(*) > 0
+          THEN ROUND(100.0 * SUM(CASE WHEN has_commit = 1 THEN 1 ELSE 0 END) / COUNT(*), 1)
+          ELSE 0 END as commit_rate,
+        ROUND(COALESCE(AVG(turns), 0), 1) as avg_turns,
+        COALESCE(SUM(tool_errors), 0) as total_tool_errors
+      FROM session_metrics
+      WHERE started_at >= ? AND started_at < ?`
+    )
+    .get(from, to) as WeeklyOverview;
+  return row;
+}
+
+export interface MemberComparison {
+  member_name: string;
+  sessions: number;
+  total_turns: number;
+  total_files_edited: number;
+  total_files_written: number;
+  commit_sessions: number;
+  total_tool_errors: number;
+}
+
+export function getMemberComparison(
+  db: Database,
+  from: string,
+  to: string
+): MemberComparison[] {
+  return db
+    .query(
+      `SELECT
+        m.name as member_name,
+        COUNT(*) as sessions,
+        SUM(sm.turns) as total_turns,
+        SUM(sm.files_edited) as total_files_edited,
+        SUM(sm.files_written) as total_files_written,
+        SUM(CASE WHEN sm.has_commit = 1 THEN 1 ELSE 0 END) as commit_sessions,
+        SUM(sm.tool_errors) as total_tool_errors
+      FROM session_metrics sm
+      JOIN members m ON sm.member_id = m.id
+      WHERE sm.started_at >= ? AND sm.started_at < ?
+      GROUP BY sm.member_id
+      ORDER BY total_turns DESC`
+    )
+    .all(from, to) as MemberComparison[];
+}
+
+export interface ToolHeatmapEntry {
+  tool_name: string;
+  member_name: string;
+  usage_count: number;
+}
+
+export function getToolHeatmap(
+  db: Database,
+  from: string,
+  to: string
+): ToolHeatmapEntry[] {
+  return db
+    .query(
+      `SELECT
+        je.key as tool_name,
+        m.name as member_name,
+        SUM(je.value) as usage_count
+      FROM session_metrics sm
+      JOIN members m ON sm.member_id = m.id,
+      json_each(sm.tool_calls) je
+      WHERE sm.started_at >= ? AND sm.started_at < ?
+      GROUP BY je.key, m.name
+      ORDER BY SUM(je.value) DESC`
+    )
+    .all(from, to) as ToolHeatmapEntry[];
+}
+
+export interface AnomalousSession {
+  member_name: string;
+  session_name: string;
+  project: string;
+  turns: number;
+  duration_minutes: number;
+  files_edited: number;
+  files_written: number;
+  tool_errors: number;
+  has_commit: number;
+}
+
+export function getAnomalousSessions(
+  db: Database,
+  from: string,
+  to: string
+): AnomalousSession[] {
+  return db
+    .query(
+      `SELECT
+        m.name as member_name,
+        sm.session_name,
+        sm.project,
+        sm.turns,
+        sm.duration_minutes,
+        sm.files_edited,
+        sm.files_written,
+        sm.tool_errors,
+        sm.has_commit
+      FROM session_metrics sm
+      JOIN members m ON sm.member_id = m.id
+      WHERE sm.started_at >= ? AND sm.started_at < ?
+        AND (
+          (sm.turns >= 20 AND sm.files_edited + sm.files_written = 0)
+          OR sm.tool_errors >= 5
+          OR (sm.duration_minutes >= 60 AND sm.has_commit = 0)
+        )
+      ORDER BY sm.turns DESC`
+    )
+    .all(from, to) as AnomalousSession[];
+}
+
+export interface SkillUsageEntry {
+  skill_name: string;
+  session_count: number;
+  members: string;
+}
+
+export function getSkillUsageSummary(
+  db: Database,
+  from: string,
+  to: string
+): SkillUsageEntry[] {
+  return db
+    .query(
+      `SELECT
+        je.value as skill_name,
+        COUNT(DISTINCT sm.id) as session_count,
+        GROUP_CONCAT(DISTINCT m.name) as members
+      FROM session_metrics sm
+      JOIN members m ON sm.member_id = m.id,
+      json_each(sm.skills_invoked) je
+      WHERE sm.started_at >= ? AND sm.started_at < ?
+      GROUP BY je.value
+      ORDER BY session_count DESC`
+    )
+    .all(from, to) as SkillUsageEntry[];
+}
+
+export interface DailyCostEntry {
+  date: string;
+  total_cost_usd: number;
+}
+
+export function getWeeklyCostTrend(
+  db: Database,
+  from: string,
+  to: string
+): DailyCostEntry[] {
+  return db
+    .query(
+      `SELECT
+        date,
+        SUM(total_cost_usd) as total_cost_usd
+      FROM usage_records
+      WHERE date >= ? AND date < ?
+      GROUP BY date
+      ORDER BY date ASC`
+    )
+    .all(from, to) as DailyCostEntry[];
 }

@@ -24,6 +24,35 @@ CREATE TABLE IF NOT EXISTS usage_records (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_member_date ON usage_records(member_id, date);
+
+CREATE TABLE IF NOT EXISTS session_metrics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  member_id TEXT NOT NULL REFERENCES members(id),
+  session_id TEXT NOT NULL,
+  session_name TEXT NOT NULL DEFAULT '',
+  project TEXT NOT NULL DEFAULT '',
+  branch TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL,
+  ended_at TEXT NOT NULL,
+  duration_minutes INTEGER NOT NULL DEFAULT 0,
+  turns INTEGER NOT NULL DEFAULT 0,
+  user_messages INTEGER NOT NULL DEFAULT 0,
+  assistant_messages INTEGER NOT NULL DEFAULT 0,
+  user_avg_chars INTEGER NOT NULL DEFAULT 0,
+  tool_calls TEXT NOT NULL DEFAULT '{}',
+  tool_call_total INTEGER NOT NULL DEFAULT 0,
+  tool_errors INTEGER NOT NULL DEFAULT 0,
+  skills_invoked TEXT NOT NULL DEFAULT '[]',
+  hook_blocks INTEGER NOT NULL DEFAULT 0,
+  files_read INTEGER NOT NULL DEFAULT 0,
+  files_written INTEGER NOT NULL DEFAULT 0,
+  files_edited INTEGER NOT NULL DEFAULT 0,
+  has_commit INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(member_id, session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_metrics_started_at ON session_metrics(started_at);
 `;
 
 export function createDatabase(path: string = "data.db"): Database {

@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import { createDatabase } from "./db";
 import admin from "./routes/admin";
 import ingest from "./routes/ingest";
+import sessionIngest from "./routes/session-ingest";
 import report from "./routes/report";
+import weeklyReport from "./routes/weekly-report";
 import dashboard from "./routes/dashboard";
 import { generateSetupScript, generateUninstallScript, generateSessionEndScript } from "./scripts";
 import type { Database } from "bun:sqlite";
@@ -49,7 +51,9 @@ export function createApp(db?: Database): Hono<AppEnv> {
   });
 
   app.route("/api/admin", admin);
+  app.route("/api/ingest/session", sessionIngest);
   app.route("/api/ingest", ingest);
+  app.route("/api/report/weekly", weeklyReport);
   app.route("/api/report", report);
   app.route("", dashboard);
 
