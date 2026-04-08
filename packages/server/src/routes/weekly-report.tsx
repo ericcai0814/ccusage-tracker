@@ -14,6 +14,7 @@ import {
   type AnomalousSession,
   type SkillUsageEntry,
   type DailyCostEntry,
+  ANOMALY_THRESHOLDS,
 } from "../queries";
 import type { AppEnv } from "../app";
 
@@ -54,13 +55,13 @@ function getCurrentWeek(): string {
 
 function getAnomalyReasons(s: AnomalousSession): string[] {
   const reasons: string[] = [];
-  if (s.turns >= 20 && s.files_edited + s.files_written === 0) {
+  if (s.turns >= ANOMALY_THRESHOLDS.HIGH_TURNS_MIN && s.files_edited + s.files_written === 0) {
     reasons.push("High turns, no output");
   }
-  if (s.tool_errors >= 5) {
+  if (s.tool_errors >= ANOMALY_THRESHOLDS.ERROR_HEAVY_MIN) {
     reasons.push("Error-heavy");
   }
-  if (s.duration_minutes >= 60 && s.has_commit === 0) {
+  if (s.duration_minutes >= ANOMALY_THRESHOLDS.LONG_DURATION_MIN && s.has_commit === 0) {
     reasons.push("Long, no commit");
   }
   return reasons;
@@ -171,14 +172,18 @@ const ToolHeatmap: FC<{ entries: ToolHeatmapEntry[] }> = ({ entries }) => {
     );
   }
 
-  const tools = [...new Set(entries.map((e) => e.tool_name))];
-  const members = [...new Set(entries.map((e) => e.member_name))];
-  const maxCount = Math.max(...entries.map((e) => e.usage_count));
-
+  const toolSet = new Set<string>();
+  const memberSet = new Set<string>();
   const lookup = new Map<string, number>();
+  let maxCount = 0;
   for (const e of entries) {
+    toolSet.add(e.tool_name);
+    memberSet.add(e.member_name);
     lookup.set(`${e.tool_name}:${e.member_name}`, e.usage_count);
+    if (e.usage_count > maxCount) maxCount = e.usage_count;
   }
+  const tools = [...toolSet];
+  const members = [...memberSet];
 
   const intensity = (count: number) => {
     if (count === 0) return "transparent";

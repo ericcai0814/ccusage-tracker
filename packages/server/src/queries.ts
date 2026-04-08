@@ -400,6 +400,12 @@ export function getToolHeatmap(
     .all(from, to) as ToolHeatmapEntry[];
 }
 
+export const ANOMALY_THRESHOLDS = {
+  HIGH_TURNS_MIN: 20,
+  ERROR_HEAVY_MIN: 5,
+  LONG_DURATION_MIN: 60,
+} as const;
+
 export interface AnomalousSession {
   member_name: string;
   session_name: string;
@@ -433,9 +439,9 @@ export function getAnomalousSessions(
       JOIN members m ON sm.member_id = m.id
       WHERE sm.started_at >= ? AND sm.started_at < ?
         AND (
-          (sm.turns >= 20 AND sm.files_edited + sm.files_written = 0)
-          OR sm.tool_errors >= 5
-          OR (sm.duration_minutes >= 60 AND sm.has_commit = 0)
+          (sm.turns >= ${ANOMALY_THRESHOLDS.HIGH_TURNS_MIN} AND sm.files_edited + sm.files_written = 0)
+          OR sm.tool_errors >= ${ANOMALY_THRESHOLDS.ERROR_HEAVY_MIN}
+          OR (sm.duration_minutes >= ${ANOMALY_THRESHOLDS.LONG_DURATION_MIN} AND sm.has_commit = 0)
         )
       ORDER BY sm.turns DESC`
     )

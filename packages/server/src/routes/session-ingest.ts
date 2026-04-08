@@ -20,7 +20,7 @@ const sessionIngest = new Hono<AppEnv>();
 sessionIngest.use("*", teamAuth());
 
 sessionIngest.post("/", async (c) => {
-  const body = await c.req.json<Partial<SessionMetricsPayload & { has_commit?: boolean }>>();
+  const body = await c.req.json<Partial<SessionMetricsPayload>>();
 
   const errors: string[] = [];
 
