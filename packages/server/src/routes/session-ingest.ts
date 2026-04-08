@@ -65,31 +65,7 @@ sessionIngest.post("/", async (c) => {
   const db = c.get("db");
   const member = findOrCreateMember(db, body.member_name!);
 
-  const payload: SessionMetricsPayload = {
-    member_name: body.member_name!,
-    session_id: body.session_id!,
-    session_name: body.session_name,
-    project: body.project,
-    branch: body.branch,
-    started_at: body.started_at!,
-    ended_at: body.ended_at!,
-    duration_minutes: body.duration_minutes,
-    turns: body.turns,
-    user_messages: body.user_messages,
-    assistant_messages: body.assistant_messages,
-    user_avg_chars: body.user_avg_chars,
-    tool_calls: body.tool_calls,
-    tool_call_total: body.tool_call_total,
-    tool_errors: body.tool_errors,
-    skills_invoked: body.skills_invoked,
-    hook_blocks: body.hook_blocks,
-    files_read: body.files_read,
-    files_written: body.files_written,
-    files_edited: body.files_edited,
-    has_commit: body.has_commit,
-  };
-
-  insertSessionMetrics(db, member.id, payload);
+  insertSessionMetrics(db, member.id, body as SessionMetricsPayload);
 
   return c.json({ ok: true });
 });

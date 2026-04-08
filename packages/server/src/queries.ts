@@ -71,6 +71,10 @@ export interface SessionMetricsPayload {
   has_commit?: boolean;
 }
 
+function touchMemberLastSeen(db: Database, memberId: string): void {
+  db.run("UPDATE members SET last_seen_at = datetime('now') WHERE id = ?", [memberId]);
+}
+
 export function insertSessionMetrics(db: Database, memberId: string, payload: SessionMetricsPayload): void {
   const tx = db.transaction(() => {
     db.run(
@@ -126,10 +130,7 @@ export function insertSessionMetrics(db: Database, memberId: string, payload: Se
         payload.has_commit ? 1 : 0,
       ]
     );
-    db.run(
-      "UPDATE members SET last_seen_at = datetime('now') WHERE id = ?",
-      [memberId]
-    );
+    touchMemberLastSeen(db, memberId);
   });
   tx();
 }
@@ -179,10 +180,7 @@ export function insertUsageRecord(db: Database, memberId: string, payload: Inges
         JSON.stringify(payload.models),
       ]
     );
-    db.run(
-      "UPDATE members SET last_seen_at = datetime('now') WHERE id = ?",
-      [memberId]
-    );
+    touchMemberLastSeen(db, memberId);
   });
   tx();
 }
