@@ -40,7 +40,7 @@ sessionIngest.post("/", async (c) => {
   const intFields = [
     "duration_minutes", "turns", "user_messages", "assistant_messages",
     "user_avg_chars", "tool_call_total", "tool_errors", "hook_blocks",
-    "files_read", "files_written", "files_edited",
+    "files_read", "files_written", "files_edited", "context_estimate_pct",
   ] as const;
 
   for (const field of intFields) {

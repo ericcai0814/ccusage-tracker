@@ -8,6 +8,7 @@ SERVER_URL="${serverUrl}"
 CONFIG_DIR="\$HOME/.config/ccusage-tracker"
 CONFIG_FILE="\$CONFIG_DIR/config.json"
 HOOK_SCRIPT="\$CONFIG_DIR/session-end.sh"
+HOOK_START_SCRIPT="\$CONFIG_DIR/session-start.sh"
 CLAUDE_SETTINGS="\$HOME/.claude/settings.json"
 
 echo ""
@@ -95,14 +96,17 @@ cat > "\$CONFIG_FILE" << CONF
 CONF
 echo "[OK] Config 寫入 \$CONFIG_FILE"
 
-# ── 下載 hook script ──
+# ── 下載 hook scripts ──
 curl -fsSL "\$SERVER_URL/scripts/session-end.sh" -o "\$HOOK_SCRIPT"
 chmod +x "\$HOOK_SCRIPT"
-echo "[OK] Hook script 下載完成"
+curl -fsSL "\$SERVER_URL/scripts/session-start.sh" -o "\$HOOK_START_SCRIPT"
+chmod +x "\$HOOK_START_SCRIPT"
+echo "[OK] Hook scripts 下載完成"
 
-# ── 安裝 SessionEnd hook ──
-echo "[4/4] 安裝 Claude Code SessionEnd hook..."
+# ── 安裝 SessionStart + SessionEnd hooks ──
+echo "[4/4] 安裝 Claude Code hooks..."
 
+HOOK_START_CMD="bash \$HOOK_START_SCRIPT"
 HOOK_CMD="bash \$HOOK_SCRIPT"
 
 if [ -f "\$CLAUDE_SETTINGS" ]; then
@@ -113,17 +117,21 @@ else
   echo '{}' > "\$CLAUDE_SETTINGS"
 fi
 
-# 用 jq 安全地 deep merge hook
-UPDATED=\$(jq --arg cmd "\$HOOK_CMD" '
+# 用 jq 安全地 deep merge hooks
+UPDATED=\$(jq --arg startcmd "\$HOOK_START_CMD" --arg endcmd "\$HOOK_CMD" '
   .hooks //= {} |
+  .hooks.SessionStart //= [] |
   .hooks.SessionEnd //= [] |
-  if [.hooks.SessionEnd[]?.hooks[]?.command] | index(\$cmd) then .
-  else .hooks.SessionEnd += [{"matcher": "", "hooks": [{"type": "command", "command": \$cmd}]}]
+  if [.hooks.SessionStart[]?.hooks[]?.command] | index(\$startcmd) then .
+  else .hooks.SessionStart += [{"matcher": "", "hooks": [{"type": "command", "command": \$startcmd}]}]
+  end |
+  if [.hooks.SessionEnd[]?.hooks[]?.command] | index(\$endcmd) then .
+  else .hooks.SessionEnd += [{"matcher": "", "hooks": [{"type": "command", "command": \$endcmd}]}]
   end
 ' "\$CLAUDE_SETTINGS")
 
 echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
-echo "[OK] SessionEnd hook 已安裝"
+echo "[OK] SessionStart + SessionEnd hooks 已安裝"
 
 # ── 驗證 ──
 echo ""
@@ -185,11 +193,33 @@ echo ""
 `;
 }
 
+export function generateSessionStartScript(): string {
+  return `#!/usr/bin/env bash
+# ccusage-tracker SessionStart hook
+# 記錄 session 使用的 model，供 SessionEnd 計算 context 佔比
+set -euo pipefail
+
+SESSIONS_DIR="\$HOME/.config/ccusage-tracker/sessions"
+
+read -t 1 PAYLOAD 2>/dev/null || exit 0
+SESSION_ID=\$(echo "\$PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null || true)
+MODEL=\$(echo "\$PAYLOAD" | jq -r '.model // empty' 2>/dev/null || true)
+
+[ -z "\$SESSION_ID" ] && exit 0
+[ -z "\$MODEL" ] && exit 0
+
+mkdir -p "\$SESSIONS_DIR"
+echo "\$MODEL" > "\$SESSIONS_DIR/\$SESSION_ID"
+
+exit 0
+`;
+}
+
 export function generateSessionEndScript(): string {
   return `#!/usr/bin/env bash
-# ccusage-tracker SessionEnd hook v3
+# ccusage-tracker SessionEnd hook v4
 # 狀態同步器：每次 session 結束時，把本機今天的用量快照 + session 行為指標同步到 server
-# v3: 新增 session metrics 萃取（jq 從 transcript JSONL 萃取）
+# v4: 新增 model 感知的 context window 佔比估算
 set -euo pipefail
 
 CONFIG_FILE="\$HOME/.config/ccusage-tracker/config.json"
@@ -212,6 +242,23 @@ MEMBER_NAME=\$(jq -r '.member_name // empty' "\$CONFIG_FILE" 2>/dev/null || true
 HOOK_PAYLOAD=""
 read -t 1 HOOK_PAYLOAD 2>/dev/null || true
 TRANSCRIPT_PATH=\$(echo "\$HOOK_PAYLOAD" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+HOOK_SESSION_ID=\$(echo "\$HOOK_PAYLOAD" | jq -r '.session_id // empty' 2>/dev/null || true)
+
+# 讀取 SessionStart 記錄的 model
+SESSIONS_DIR="\$HOME/.config/ccusage-tracker/sessions"
+SESSION_MODEL=""
+if [ -n "\$HOOK_SESSION_ID" ] && [ -f "\$SESSIONS_DIR/\$HOOK_SESSION_ID" ]; then
+  SESSION_MODEL=\$(cat "\$SESSIONS_DIR/\$HOOK_SESSION_ID" 2>/dev/null || true)
+  rm -f "\$SESSIONS_DIR/\$HOOK_SESSION_ID" 2>/dev/null
+fi
+
+# Model → context window 上限（tokens）
+case "\$SESSION_MODEL" in
+  *opus*) CONTEXT_LIMIT=200000 ;;
+  *sonnet*) CONTEXT_LIMIT=200000 ;;
+  *haiku*) CONTEXT_LIMIT=200000 ;;
+  *) CONTEXT_LIMIT=200000 ;;
+esac
 
 # ── 重送暫存 (set +e，個別失敗不中斷) ──
 set +e
@@ -302,12 +349,27 @@ _post_session_metrics() {
     files_written: [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Write")] | length,
     files_edited: [.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Edit")] | length,
     skills_invoked: ([.[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use" and .name == "Skill") | .input.skill // empty] | unique),
-    hook_blocks: 0
+    hook_blocks: 0,
+    approx_tokens: ([.[] | select(.type == "user" or .type == "assistant") | .message.content |
+      if type == "string" then length
+      elif type == "array" then [.[] |
+        if .type == "text" then (.text | length)
+        elif .type == "tool_use" then ((.input | tostring | length) + 50)
+        elif .type == "tool_result" then ((.content // "" | if type == "string" then length elif type == "array" then [.[] | .text // "" | length] | add else 0 end) + 20)
+        else 50 end
+      ] | add
+      else 0 end
+    ] | add // 0 | . / 4 | floor)
   }' "\$TRANSCRIPT_PATH" 2>/dev/null || echo "")
 
   [ -z "\$METRICS" ] && return 0
 
-  BODY=\$(echo "\$METRICS" | jq -c --arg mn "\$MEMBER_NAME" '. + {member_name: \$mn}' 2>/dev/null || echo "")
+  # 計算 context 佔比
+  APPROX_TOKENS=\$(echo "\$METRICS" | jq -r '.approx_tokens // 0' 2>/dev/null || echo "0")
+  CONTEXT_PCT=\$(( APPROX_TOKENS * 100 / CONTEXT_LIMIT ))
+  [ "\$CONTEXT_PCT" -gt 100 ] && CONTEXT_PCT=100
+
+  BODY=\$(echo "\$METRICS" | jq -c --arg mn "\$MEMBER_NAME" --arg model "\$SESSION_MODEL" --argjson cpct "\$CONTEXT_PCT" 'del(.approx_tokens) + {member_name: \$mn, model: \$model, context_estimate_pct: \$cpct}' 2>/dev/null || echo "")
   [ -z "\$BODY" ] && return 0
 
   curl -s -o /dev/null -X POST \\

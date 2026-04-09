@@ -6,7 +6,7 @@ import sessionIngest from "./routes/session-ingest";
 import report from "./routes/report";
 import weeklyReport from "./routes/weekly-report";
 import dashboard from "./routes/dashboard";
-import { generateSetupScript, generateUninstallScript, generateSessionEndScript } from "./scripts";
+import { generateSetupScript, generateUninstallScript, generateSessionStartScript, generateSessionEndScript } from "./scripts";
 import type { Database } from "bun:sqlite";
 
 export type AppEnv = {
@@ -43,6 +43,11 @@ export function createApp(db?: Database): Hono<AppEnv> {
     const serverUrl = process.env.SERVER_URL || `${proto}://${host}`;
     c.header("Content-Type", "text/plain; charset=utf-8");
     return c.text(generateUninstallScript(serverUrl));
+  });
+
+  app.get("/scripts/session-start.sh", (c) => {
+    c.header("Content-Type", "text/plain; charset=utf-8");
+    return c.text(generateSessionStartScript());
   });
 
   app.get("/scripts/session-end.sh", (c) => {

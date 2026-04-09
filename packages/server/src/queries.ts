@@ -69,6 +69,8 @@ export interface SessionMetricsPayload {
   files_written?: number;
   files_edited?: number;
   has_commit?: boolean;
+  model?: string;
+  context_estimate_pct?: number;
 }
 
 function touchMemberLastSeen(db: Database, memberId: string): void {
@@ -84,8 +86,9 @@ export function insertSessionMetrics(db: Database, memberId: string, payload: Se
         user_messages, assistant_messages, user_avg_chars,
         tool_calls, tool_call_total, tool_errors,
         skills_invoked, hook_blocks,
-        files_read, files_written, files_edited, has_commit)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        files_read, files_written, files_edited, has_commit,
+        model, context_estimate_pct)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(member_id, session_id) DO UPDATE SET
          session_name = excluded.session_name,
          project = excluded.project,
@@ -105,7 +108,9 @@ export function insertSessionMetrics(db: Database, memberId: string, payload: Se
          files_read = excluded.files_read,
          files_written = excluded.files_written,
          files_edited = excluded.files_edited,
-         has_commit = excluded.has_commit`,
+         has_commit = excluded.has_commit,
+         model = excluded.model,
+         context_estimate_pct = excluded.context_estimate_pct`,
       [
         memberId,
         payload.session_id,
@@ -128,6 +133,8 @@ export function insertSessionMetrics(db: Database, memberId: string, payload: Se
         payload.files_written ?? 0,
         payload.files_edited ?? 0,
         payload.has_commit ? 1 : 0,
+        payload.model ?? "",
+        payload.context_estimate_pct ?? 0,
       ]
     );
     touchMemberLastSeen(db, memberId);

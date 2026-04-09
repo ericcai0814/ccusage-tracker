@@ -61,7 +61,18 @@ export function createDatabase(path: string = "data.db"): Database {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
   migrateLastSeenAt(db);
+  migrateSessionMetricsModel(db);
   return db;
+}
+
+function migrateSessionMetricsModel(db: Database): void {
+  const columns = db.query("SELECT name FROM pragma_table_info('session_metrics')").all() as { name: string }[];
+  if (!columns.some((c) => c.name === "model")) {
+    db.exec("ALTER TABLE session_metrics ADD COLUMN model TEXT NOT NULL DEFAULT ''");
+  }
+  if (!columns.some((c) => c.name === "context_estimate_pct")) {
+    db.exec("ALTER TABLE session_metrics ADD COLUMN context_estimate_pct INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 function migrateLastSeenAt(db: Database): void {
