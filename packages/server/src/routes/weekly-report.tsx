@@ -3,18 +3,18 @@ import type { FC } from "hono/jsx";
 import { dashboardAuth } from "../middleware/dashboard-auth";
 import {
   getWeeklyOverview,
-  getMemberComparison,
-  getToolHeatmap,
-  getAnomalousSessions,
+  getSessionDistribution,
+  getHighlights,
+  getProjectActivity,
+  getSessionLog,
   getSkillUsageSummary,
-  getWeeklyCostTrend,
+  getUnusedSkills,
   type WeeklyOverview as WeeklyOverviewData,
-  type MemberComparison as MemberComparisonData,
-  type ToolHeatmapEntry,
-  type AnomalousSession,
+  type SessionDistribution,
+  type WeeklyHighlights,
+  type ProjectActivityEntry,
+  type SessionLogEntry,
   type SkillUsageEntry,
-  type DailyCostEntry,
-  ANOMALY_THRESHOLDS,
 } from "../queries";
 import type { AppEnv } from "../app";
 
@@ -53,166 +53,387 @@ function getCurrentWeek(): string {
   return `${now.getUTCFullYear()}-W${String(weekNum).padStart(2, "0")}`;
 }
 
-function getAnomalyReasons(s: AnomalousSession): string[] {
-  const reasons: string[] = [];
-  if (s.turns >= ANOMALY_THRESHOLDS.HIGH_TURNS_MIN && s.files_edited + s.files_written === 0) {
-    reasons.push("High turns, no output");
-  }
-  if (s.tool_errors >= ANOMALY_THRESHOLDS.ERROR_HEAVY_MIN) {
-    reasons.push("Error-heavy");
-  }
-  if (s.duration_minutes >= ANOMALY_THRESHOLDS.LONG_DURATION_MIN && s.has_commit === 0) {
-    reasons.push("Long, no commit");
-  }
-  return reasons;
-}
 
 const CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Teko:wght@400;500;600;700&family=Michroma&family=Share+Tech+Mono&display=swap');
+
+  :root {
+    --bg-primary: #050505;
+    --bg-secondary: #020202;
+    --bg-card: #0a0a0a;
+    --brand-primary: #dc2626;
+    --brand-glow: rgba(220, 38, 38, 0.7);
+    --brand-glow-soft: rgba(220, 38, 38, 0.15);
+    --brand-glow-faint: rgba(220, 38, 38, 0.05);
+    --text-primary: #ffffff;
+    --text-secondary: #888888;
+    --text-dim: #555555;
+    --border-glow: rgba(220, 38, 38, 0.3);
+    --border-dim: rgba(255, 255, 255, 0.06);
+    --neon-shadow: 0 0 15px var(--brand-glow);
+    --font-display: 'Teko', sans-serif;
+    --font-body: 'Michroma', sans-serif;
+    --font-mono: 'Share Tech Mono', monospace;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: #f8f9fa; color: #1a1a2e; line-height: 1.6; }
-  .container { max-width: 900px; margin: 0 auto; padding: 2rem 1.5rem; }
-  h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.25rem; }
-  .subtitle { color: #6c757d; margin-bottom: 2rem; font-size: 0.95rem; }
-  .section { background: #fff; border: 1px solid #e9ecef; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
-  .section h2 { font-size: 1.15rem; font-weight: 600; margin-bottom: 1rem; color: #495057; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-  th { background: #f1f3f5; text-align: left; padding: 0.6rem 0.8rem; font-weight: 600; border-bottom: 2px solid #dee2e6; }
-  td { padding: 0.5rem 0.8rem; border-bottom: 1px solid #f1f3f5; }
-  tr:nth-child(even) td { background: #f8f9fa; }
-  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; }
-  .stat-card { text-align: center; padding: 1rem; background: #f8f9fa; border-radius: 6px; }
-  .stat-value { font-size: 1.5rem; font-weight: 700; color: #1a1a2e; }
-  .stat-label { font-size: 0.8rem; color: #6c757d; margin-top: 0.25rem; }
-  .empty-state { color: #adb5bd; text-align: center; padding: 2rem; font-style: italic; }
-  .anomaly-tag { display: inline-block; font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: #fff3cd; color: #856404; margin-right: 0.25rem; margin-bottom: 0.25rem; }
-  .heatmap-cell { text-align: center; font-size: 0.85rem; }
-  .anomaly-row td { border-left: 3px solid #ffc107; }
-  svg { display: block; margin: 0 auto; }
-  .cost-chart { overflow-x: auto; }
-  .bar-chart { display: flex; align-items: flex-end; gap: 0.5rem; height: 150px; padding: 0.5rem 0; }
-  .bar-item { flex: 1; display: flex; flex-direction: column; align-items: center; min-width: 60px; }
-  .bar { background: #4dabf7; border-radius: 3px 3px 0 0; width: 100%; min-height: 2px; transition: height 0.3s; }
-  .bar-label { font-size: 0.7rem; color: #6c757d; margin-top: 0.25rem; }
-  .bar-value { font-size: 0.75rem; font-weight: 600; margin-bottom: 0.15rem; }
+
+  body {
+    font-family: var(--font-body);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    position: relative;
+    overflow-x: hidden;
+    line-height: 1.6;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px);
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.015) 1px, transparent 0);
+    background-size: 4px 4px;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    position: relative;
+    z-index: 2;
+  }
+
+  h1 {
+    font-family: var(--font-display);
+    font-size: 2.25rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+  }
+
+  h1 span { color: var(--brand-primary); text-shadow: var(--neon-shadow); }
+
+  .subtitle {
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    margin-bottom: 2rem;
+  }
+
+  .section {
+    background: var(--bg-card);
+    border: 1px solid var(--border-dim);
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .section::before {
+    content: '';
+    position: absolute;
+    top: -1px;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, var(--brand-primary), transparent 60%);
+    box-shadow: var(--neon-shadow);
+  }
+
+  .section h2 {
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--brand-primary);
+    text-shadow: 0 0 8px var(--brand-glow);
+    margin-bottom: 1rem;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+
+  th {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--text-dim);
+    text-align: left;
+    padding: 0.6rem 0.8rem;
+    border-bottom: 1px solid var(--border-glow);
+  }
+
+  td {
+    font-family: var(--font-mono);
+    padding: 0.5rem 0.8rem;
+    border-bottom: 1px solid var(--border-dim);
+    color: var(--text-secondary);
+  }
+
+  tr:hover td { background: var(--brand-glow-faint); }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--border-dim);
+    border: 1px solid var(--border-glow);
+    margin-bottom: 1rem;
+  }
+
+  .stat-card {
+    background: var(--bg-card);
+    text-align: center;
+    padding: 1.25rem;
+    position: relative;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: linear-gradient(135deg, var(--brand-glow-faint), transparent 40%);
+    pointer-events: none;
+  }
+
+  .stat-value {
+    font-family: var(--font-display);
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1;
+  }
+
+  .stat-label {
+    font-family: var(--font-mono);
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--text-dim);
+    margin-top: 0.5rem;
+  }
+
+  .empty-state {
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+    text-align: center;
+    padding: 2rem;
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+  }
+
+  .dist-bar { display: flex; height: 24px; margin: 0.75rem 0; overflow: hidden; border: 1px solid var(--border-dim); }
+  .dist-seg { display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-primary); min-width: 2px; }
+  .dist-quick { background: #166534; }
+  .dist-medium { background: #1e40af; }
+  .dist-deep { background: #7c2d12; }
+  .dist-marathon { background: #dc2626; box-shadow: inset 0 0 10px var(--brand-glow); }
+
+  .dist-legend { display: flex; gap: 1rem; font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-secondary); flex-wrap: wrap; }
+  .dist-legend-item { display: flex; align-items: center; gap: 0.35rem; }
+  .dist-dot { width: 8px; height: 8px; }
+
+  .highlights { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-dim); }
+  .highlight-item { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-secondary); padding: 0.25rem 0; }
+  .highlight-value { color: var(--text-primary); }
+
+  .ctx-warn { color: var(--brand-primary); text-shadow: 0 0 6px var(--brand-glow); }
+
+  .skill-rank { font-family: var(--font-display); font-size: 1.2rem; color: var(--text-dim); margin-right: 0.5rem; }
+  .unused-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+  .unused-tag { font-family: var(--font-mono); font-size: 0.65rem; padding: 0.2rem 0.6rem; border: 1px solid var(--border-dim); color: var(--text-dim); }
 `;
 
 // --- Section Components ---
 
-const OverviewSection: FC<{ data: WeeklyOverviewData }> = ({ data }) => (
-  <div class="section">
-    <h2>Overview</h2>
-    <div class="stat-grid">
-      <div class="stat-card">
-        <div class="stat-value">{data.total_sessions}</div>
-        <div class="stat-label">Sessions</div>
+const OverviewSection: FC<{
+  data: WeeklyOverviewData;
+  distribution: SessionDistribution;
+  highlights: WeeklyHighlights;
+}> = ({ data, distribution, highlights }) => {
+  const total = distribution.quick + distribution.medium + distribution.deep + distribution.marathon;
+  const pct = (n: number) => (total > 0 ? `${((n / total) * 100).toFixed(0)}%` : "0%");
+
+  return (
+    <div class="section">
+      <h2>Overview</h2>
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-value">{data.total_sessions}</div>
+          <div class="stat-label">Sessions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{data.total_duration_hours}h</div>
+          <div class="stat-label">Total Hours</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{data.active_members}</div>
+          <div class="stat-label">Active Members</div>
+        </div>
       </div>
-      <div class="stat-card">
-        <div class="stat-value">{data.total_duration_hours}h</div>
-        <div class="stat-label">Total Hours</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{data.commit_rate}%</div>
-        <div class="stat-label">Commit Rate</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{data.avg_turns}</div>
-        <div class="stat-label">Avg Turns</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-value">{data.total_tool_errors}</div>
-        <div class="stat-label">Tool Errors</div>
+
+      {total > 0 && (
+        <>
+          <div class="dist-bar">
+            {distribution.quick > 0 && (
+              <div class="dist-seg dist-quick" style={`width: ${pct(distribution.quick)}`}>
+                {distribution.quick}
+              </div>
+            )}
+            {distribution.medium > 0 && (
+              <div class="dist-seg dist-medium" style={`width: ${pct(distribution.medium)}`}>
+                {distribution.medium}
+              </div>
+            )}
+            {distribution.deep > 0 && (
+              <div class="dist-seg dist-deep" style={`width: ${pct(distribution.deep)}`}>
+                {distribution.deep}
+              </div>
+            )}
+            {distribution.marathon > 0 && (
+              <div class="dist-seg dist-marathon" style={`width: ${pct(distribution.marathon)}`}>
+                {distribution.marathon}
+              </div>
+            )}
+          </div>
+          <div class="dist-legend">
+            <div class="dist-legend-item"><div class="dist-dot dist-quick" />&lt;15m Quick</div>
+            <div class="dist-legend-item"><div class="dist-dot dist-medium" />15-59m Medium</div>
+            <div class="dist-legend-item"><div class="dist-dot dist-deep" />60-179m Deep</div>
+            <div class="dist-legend-item"><div class="dist-dot dist-marathon" />&gt;=180m Marathon</div>
+          </div>
+        </>
+      )}
+
+      <div class="highlights">
+        {highlights.longest_session && (
+          <div class="highlight-item">
+            Longest session: <span class="highlight-value">{(highlights.longest_session.duration_minutes / 60).toFixed(1)}h</span>
+            {highlights.longest_session.project && ` on ${highlights.longest_session.project}`}
+          </div>
+        )}
+        {highlights.most_active_day && (
+          <div class="highlight-item">
+            Most active day: <span class="highlight-value">{highlights.most_active_day.day_name}</span> with {highlights.most_active_day.count} sessions
+          </div>
+        )}
+        {highlights.most_used_project && (
+          <div class="highlight-item">
+            Most used project: <span class="highlight-value">{highlights.most_used_project.name}</span> ({highlights.most_used_project.count} sessions)
+          </div>
+        )}
+        {highlights.high_context_sessions > 0 && (
+          <div class="highlight-item ctx-warn">
+            {highlights.high_context_sessions} session{highlights.high_context_sessions > 1 ? "s" : ""} reached &gt;=70% context window usage
+          </div>
+        )}
       </div>
     </div>
-  </div>
-);
+  );
+};
 
-const MemberTable: FC<{ members: MemberComparisonData[] }> = ({ members }) => (
-  <div class="section">
-    <h2>Member Comparison</h2>
-    {members.length === 0 ? (
-      <p class="empty-state">No member data for this week.</p>
-    ) : (
-      <table>
-        <thead>
-          <tr>
-            <th>Member</th>
-            <th>Sessions</th>
-            <th>Turns</th>
-            <th>Files Edited</th>
-            <th>Files Written</th>
-            <th>Commits</th>
-            <th>Errors</th>
-          </tr>
-        </thead>
-        <tbody>
-          {members.map((m) => (
-            <tr>
-              <td>{m.member_name}</td>
-              <td>{m.sessions}</td>
-              <td>{m.total_turns}</td>
-              <td>{m.total_files_edited}</td>
-              <td>{m.total_files_written}</td>
-              <td>{m.commit_sessions}</td>
-              <td>{m.total_tool_errors}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    )}
-  </div>
-);
-
-const ToolHeatmap: FC<{ entries: ToolHeatmapEntry[] }> = ({ entries }) => {
+const ProjectActivitySection: FC<{ entries: ProjectActivityEntry[] }> = ({ entries }) => {
   if (entries.length === 0) {
     return (
       <div class="section">
-        <h2>Tool Usage Heatmap</h2>
-        <p class="empty-state">No tool usage data for this week.</p>
+        <h2>Project Activity</h2>
+        <p class="empty-state">No project data for this week.</p>
       </div>
     );
   }
 
-  const toolSet = new Set<string>();
-  const memberSet = new Set<string>();
-  const lookup = new Map<string, number>();
-  let maxCount = 0;
-  for (const e of entries) {
-    toolSet.add(e.tool_name);
-    memberSet.add(e.member_name);
-    lookup.set(`${e.tool_name}:${e.member_name}`, e.usage_count);
-    if (e.usage_count > maxCount) maxCount = e.usage_count;
-  }
-  const tools = [...toolSet];
-  const members = [...memberSet];
+  const memberNames = [...new Set(entries.map((e) => e.member_name))];
+  const isSingleMember = memberNames.length === 1;
 
-  const intensity = (count: number) => {
-    if (count === 0) return "transparent";
-    const alpha = Math.round((count / maxCount) * 200 + 55);
-    return `rgba(77, 171, 247, ${alpha / 255})`;
-  };
+  if (isSingleMember) {
+    // Flat table: group entries by project
+    const projects = new Map<string, ProjectActivityEntry>();
+    for (const e of entries) {
+      projects.set(e.project, e);
+    }
+    const sorted = [...projects.values()].sort((a, b) => b.session_count - a.session_count);
+
+    return (
+      <div class="section">
+        <h2>Project Activity</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>Sessions</th>
+              <th>Turns</th>
+              <th>Edited</th>
+              <th>Written</th>
+              <th>Commits</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((p) => (
+              <tr>
+                <td>{p.project}</td>
+                <td>{p.session_count}</td>
+                <td>{p.turns}</td>
+                <td>{p.files_edited}</td>
+                <td>{p.files_written}</td>
+                <td>{p.commit_count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // Multi-member matrix: project rows × member columns
+  const projectTotals = new Map<string, number>();
+  const lookup = new Map<string, number>();
+  for (const e of entries) {
+    projectTotals.set(e.project, (projectTotals.get(e.project) ?? 0) + e.session_count);
+    lookup.set(`${e.project}:${e.member_name}`, e.session_count);
+  }
+  const projectsSorted = [...projectTotals.entries()].sort((a, b) => b[1] - a[1]);
 
   return (
     <div class="section">
-      <h2>Tool Usage Heatmap</h2>
+      <h2>Project Activity</h2>
       <table>
         <thead>
           <tr>
-            <th>Tool</th>
-            {members.map((m) => <th class="heatmap-cell">{m}</th>)}
+            <th>Project</th>
+            {memberNames.map((m) => <th>{m}</th>)}
+            <th>Total</th>
           </tr>
         </thead>
         <tbody>
-          {tools.map((tool) => (
+          {projectsSorted.map(([project, total]) => (
             <tr>
-              <td>{tool}</td>
-              {members.map((member) => {
-                const count = lookup.get(`${tool}:${member}`) ?? 0;
-                return (
-                  <td class="heatmap-cell" style={`background-color: ${intensity(count)}`}>
-                    {count || ""}
-                  </td>
-                );
-              })}
+              <td>{project}</td>
+              {memberNames.map((m) => (
+                <td>{lookup.get(`${project}:${m}`) ?? 0}</td>
+              ))}
+              <td>{total}</td>
             </tr>
           ))}
         </tbody>
@@ -221,11 +442,11 @@ const ToolHeatmap: FC<{ entries: ToolHeatmapEntry[] }> = ({ entries }) => {
   );
 };
 
-const AnomalySection: FC<{ sessions: AnomalousSession[] }> = ({ sessions }) => (
+const SessionLogSection: FC<{ sessions: SessionLogEntry[] }> = ({ sessions }) => (
   <div class="section">
-    <h2>Anomalous Sessions</h2>
+    <h2>Session Log</h2>
     {sessions.length === 0 ? (
-      <p class="empty-state">No anomalies detected this week.</p>
+      <p class="empty-state">No sessions recorded this week.</p>
     ) : (
       <table>
         <thead>
@@ -233,27 +454,23 @@ const AnomalySection: FC<{ sessions: AnomalousSession[] }> = ({ sessions }) => (
             <th>Member</th>
             <th>Session</th>
             <th>Project</th>
-            <th>Turns</th>
             <th>Duration</th>
-            <th>Edited</th>
-            <th>Errors</th>
-            <th>Reasons</th>
+            <th>Turns</th>
+            <th>Model</th>
+            <th>Context %</th>
           </tr>
         </thead>
         <tbody>
           {sessions.map((s) => (
-            <tr class="anomaly-row">
+            <tr>
               <td>{s.member_name}</td>
               <td>{s.session_name || "(unnamed)"}</td>
               <td>{s.project || "-"}</td>
-              <td>{s.turns}</td>
               <td>{s.duration_minutes}m</td>
-              <td>{s.files_edited}</td>
-              <td>{s.tool_errors}</td>
-              <td>
-                {getAnomalyReasons(s).map((r) => (
-                  <span class="anomaly-tag">{r}</span>
-                ))}
+              <td>{s.turns}</td>
+              <td>{s.model || "-"}</td>
+              <td class={s.context_estimate_pct >= 70 ? "ctx-warn" : ""}>
+                {s.context_estimate_pct === 0 ? "\u2014" : `${s.context_estimate_pct}%`}
               </td>
             </tr>
           ))}
@@ -263,79 +480,54 @@ const AnomalySection: FC<{ sessions: AnomalousSession[] }> = ({ sessions }) => (
   </div>
 );
 
-const SkillSection: FC<{ skills: SkillUsageEntry[] }> = ({ skills }) => (
+const SkillSection: FC<{ skills: SkillUsageEntry[]; unusedSkills: string[] }> = ({ skills, unusedSkills }) => (
   <div class="section">
     <h2>Skill Usage</h2>
-    {skills.length === 0 ? (
-      <p class="empty-state">No skills were used this week.</p>
+    {skills.length === 0 && unusedSkills.length === 0 ? (
+      <p class="empty-state">No skill data available.</p>
     ) : (
-      <table>
-        <thead>
-          <tr>
-            <th>Skill</th>
-            <th>Sessions</th>
-            <th>Used By</th>
-          </tr>
-        </thead>
-        <tbody>
-          {skills.map((s) => (
-            <tr>
-              <td>{s.skill_name}</td>
-              <td>{s.session_count}</td>
-              <td>{s.members}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <>
+        {skills.length > 0 && (
+          <table>
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Skill</th>
+                <th>Sessions</th>
+                <th>Used By</th>
+              </tr>
+            </thead>
+            <tbody>
+              {skills.map((s, i) => (
+                <tr>
+                  <td><span class="skill-rank">{i + 1}</span></td>
+                  <td>{s.skill_name}</td>
+                  <td>{s.session_count}</td>
+                  <td>{s.members}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {skills.length === 0 && (
+          <p class="empty-state">No skills were used this week.</p>
+        )}
+        {unusedSkills.length > 0 && (
+          <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-dim);">
+            <div style="font-family: var(--font-mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-dim); margin-bottom: 0.5rem;">
+              Unused Skills
+            </div>
+            <div class="unused-list">
+              {unusedSkills.map((s) => (
+                <span class="unused-tag">{s}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </>
     )}
   </div>
 );
-
-const CostTrendSection: FC<{ costs: DailyCostEntry[]; fromDate: string }> = ({ costs, fromDate }) => {
-  const monday = new Date(fromDate + "T00:00:00Z");
-  const days: { date: string; label: string; cost: number }[] = [];
-  const dayNames = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-  const costMap = new Map<string, number>();
-  for (const c of costs) {
-    costMap.set(c.date, c.total_cost_usd);
-  }
-
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(monday);
-    d.setUTCDate(monday.getUTCDate() + i);
-    const dateStr = d.toISOString().split("T")[0];
-    days.push({
-      date: dateStr,
-      label: dayNames[i],
-      cost: costMap.get(dateStr) ?? 0,
-    });
-  }
-
-  const maxCost = Math.max(...days.map((d) => d.cost), 0.01);
-  const hasCosts = costs.length > 0;
-
-  return (
-    <div class="section">
-      <h2>Cost Trend</h2>
-      {!hasCosts ? (
-        <p class="empty-state">No cost data available for this week.</p>
-      ) : (
-        <div class="cost-chart">
-          <div class="bar-chart">
-            {days.map((d) => (
-              <div class="bar-item">
-                <div class="bar-value">${d.cost.toFixed(2)}</div>
-                <div class="bar" style={`height: ${(d.cost / maxCost) * 120}px`} />
-                <div class="bar-label">{d.label}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
 
 // --- Main Layout ---
 
@@ -344,12 +536,13 @@ const WeeklyReportPage: FC<{
   fromDate: string;
   toDate: string;
   overview: WeeklyOverviewData;
-  members: MemberComparisonData[];
-  toolHeatmap: ToolHeatmapEntry[];
-  anomalies: AnomalousSession[];
+  distribution: SessionDistribution;
+  highlights: WeeklyHighlights;
+  projectActivity: ProjectActivityEntry[];
+  sessionLog: SessionLogEntry[];
   skills: SkillUsageEntry[];
-  costs: DailyCostEntry[];
-}> = ({ week, fromDate, toDate, overview, members, toolHeatmap, anomalies, skills, costs }) => (
+  unusedSkills: string[];
+}> = ({ week, fromDate, toDate, overview, distribution, highlights, projectActivity, sessionLog, skills, unusedSkills }) => (
   <html>
     <head>
       <meta charset="UTF-8" />
@@ -359,18 +552,16 @@ const WeeklyReportPage: FC<{
     </head>
     <body>
       <div class="container">
-        <h1>Team AI Usage Weekly Report</h1>
+        <h1>Weekly <span>Report</span></h1>
         <p class="subtitle">{week} ({fromDate} ~ {toDate})</p>
         {overview.total_sessions === 0 ? (
           <p class="empty-state">No data available for this week.</p>
         ) : (
           <>
-            <OverviewSection data={overview} />
-            <MemberTable members={members} />
-            <ToolHeatmap entries={toolHeatmap} />
-            <AnomalySection sessions={anomalies} />
-            <SkillSection skills={skills} />
-            <CostTrendSection costs={costs} fromDate={fromDate} />
+            <OverviewSection data={overview} distribution={distribution} highlights={highlights} />
+            <ProjectActivitySection entries={projectActivity} />
+            <SessionLogSection sessions={sessionLog} />
+            <SkillSection skills={skills} unusedSkills={unusedSkills} />
           </>
         )}
       </div>
@@ -396,11 +587,12 @@ weeklyReport.get("/", (c) => {
   const db = c.get("db");
 
   const overview = getWeeklyOverview(db, from, to);
-  const members = getMemberComparison(db, from, to);
-  const toolHeatmap = getToolHeatmap(db, from, to);
-  const anomalies = getAnomalousSessions(db, from, to);
+  const distribution = getSessionDistribution(db, from, to);
+  const highlights = getHighlights(db, from, to);
+  const projectActivity = getProjectActivity(db, from, to);
+  const sessionLog = getSessionLog(db, from, to);
   const skills = getSkillUsageSummary(db, from, to);
-  const costs = getWeeklyCostTrend(db, fromDate, toDate);
+  const unusedSkills = getUnusedSkills(db, from, to);
 
   const sundayDate = new Date(toDate + "T00:00:00Z");
   sundayDate.setUTCDate(sundayDate.getUTCDate() - 1);
@@ -412,11 +604,12 @@ weeklyReport.get("/", (c) => {
       fromDate={fromDate}
       toDate={toDateDisplay}
       overview={overview}
-      members={members}
-      toolHeatmap={toolHeatmap}
-      anomalies={anomalies}
+      distribution={distribution}
+      highlights={highlights}
+      projectActivity={projectActivity}
+      sessionLog={sessionLog}
       skills={skills}
-      costs={costs}
+      unusedSkills={unusedSkills}
     />
   );
 });

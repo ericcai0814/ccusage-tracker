@@ -13,10 +13,12 @@ import {
   insertSessionMetrics,
   getWeeklyOverview,
   getMemberComparison,
-  getToolHeatmap,
-  getAnomalousSessions,
   getSkillUsageSummary,
-  getWeeklyCostTrend,
+  getUnusedSkills,
+  getHighlights,
+  getSessionDistribution,
+  getProjectActivity,
+  getSessionLog,
 } from "./queries";
 import type { Database } from "bun:sqlite";
 
@@ -497,19 +499,25 @@ describe("Query Helpers", () => {
     });
 
     describe("getWeeklyOverview", () => {
-      it("should return aggregated overview", () => {
+      it("should return aggregated overview with active_members", () => {
         const overview = getWeeklyOverview(db, WEEK_FROM, WEEK_TO);
         expect(overview.total_sessions).toBe(2);
         expect(overview.total_duration_hours).toBe(2.5);
-        expect(overview.commit_rate).toBe(100);
-        expect(overview.avg_turns).toBe(17.5);
-        expect(overview.total_tool_errors).toBe(1);
+        expect(overview.active_members).toBe(2);
+      });
+
+      it("should not include removed fields", () => {
+        const overview = getWeeklyOverview(db, WEEK_FROM, WEEK_TO) as any;
+        expect(overview.commit_rate).toBeUndefined();
+        expect(overview.avg_turns).toBeUndefined();
+        expect(overview.total_tool_errors).toBeUndefined();
       });
 
       it("should return zeros for empty week", () => {
         const overview = getWeeklyOverview(db, "2099-01-01T00:00:00Z", "2099-01-08T00:00:00Z");
         expect(overview.total_sessions).toBe(0);
         expect(overview.total_duration_hours).toBe(0);
+        expect(overview.active_members).toBe(0);
       });
     });
 
@@ -521,80 +529,6 @@ describe("Query Helpers", () => {
         expect(members[0].total_turns).toBe(20);
         expect(members[1].member_name).toBe("Eric");
         expect(members[1].total_turns).toBe(15);
-      });
-    });
-
-    describe("getToolHeatmap", () => {
-      it("should return tool × member usage counts", () => {
-        const entries = getToolHeatmap(db, WEEK_FROM, WEEK_TO);
-        expect(entries.length).toBeGreaterThan(0);
-
-        const bashEric = entries.find((e) => e.tool_name === "Bash" && e.member_name === "Eric");
-        expect(bashEric).not.toBeUndefined();
-        expect(bashEric!.usage_count).toBe(10);
-
-        const editAlice = entries.find((e) => e.tool_name === "Edit" && e.member_name === "Alice");
-        expect(editAlice).not.toBeUndefined();
-        expect(editAlice!.usage_count).toBe(15);
-      });
-
-      it("should return empty for week with no data", () => {
-        const entries = getToolHeatmap(db, "2099-01-01T00:00:00Z", "2099-01-08T00:00:00Z");
-        expect(entries).toHaveLength(0);
-      });
-    });
-
-    describe("getAnomalousSessions", () => {
-      it("should detect high-turns-no-output anomaly", () => {
-        insertSessionMetrics(db, "m1", {
-          member_name: "Eric",
-          session_id: "anomaly-1",
-          started_at: "2026-04-09T10:00:00Z",
-          ended_at: "2026-04-09T12:00:00Z",
-          turns: 25,
-          files_edited: 0,
-          files_written: 0,
-        });
-
-        const anomalies = getAnomalousSessions(db, WEEK_FROM, WEEK_TO);
-        const found = anomalies.find((a) => a.turns === 25);
-        expect(found).not.toBeUndefined();
-      });
-
-      it("should detect error-heavy anomaly", () => {
-        insertSessionMetrics(db, "m1", {
-          member_name: "Eric",
-          session_id: "anomaly-2",
-          started_at: "2026-04-09T10:00:00Z",
-          ended_at: "2026-04-09T10:30:00Z",
-          tool_errors: 8,
-        });
-
-        const anomalies = getAnomalousSessions(db, WEEK_FROM, WEEK_TO);
-        const found = anomalies.find((a) => a.tool_errors === 8);
-        expect(found).not.toBeUndefined();
-      });
-
-      it("should detect long-no-commit anomaly", () => {
-        insertSessionMetrics(db, "m1", {
-          member_name: "Eric",
-          session_id: "anomaly-3",
-          started_at: "2026-04-09T10:00:00Z",
-          ended_at: "2026-04-09T12:00:00Z",
-          duration_minutes: 120,
-          has_commit: false,
-          files_edited: 5,
-          turns: 10,
-        });
-
-        const anomalies = getAnomalousSessions(db, WEEK_FROM, WEEK_TO);
-        const found = anomalies.find((a) => a.duration_minutes === 120);
-        expect(found).not.toBeUndefined();
-      });
-
-      it("should return empty when no anomalies", () => {
-        const anomalies = getAnomalousSessions(db, WEEK_FROM, WEEK_TO);
-        expect(anomalies).toHaveLength(0);
       });
     });
 
@@ -623,20 +557,256 @@ describe("Query Helpers", () => {
       });
     });
 
-    describe("getWeeklyCostTrend", () => {
-      it("should return daily costs", () => {
-        const costs = getWeeklyCostTrend(db, "2026-04-06", "2026-04-13");
-        expect(costs).toHaveLength(2);
+    describe("getUnusedSkills", () => {
+      it("should detect skills used historically but not this week", () => {
+        // Add historical session with extra skills in a prior week
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "hist-1",
+          started_at: "2026-03-30T10:00:00Z",
+          ended_at: "2026-03-30T11:00:00Z",
+          skills_invoked: ["commit", "tdd", "architect"],
+        });
 
-        const april7 = costs.find((c) => c.date === "2026-04-07");
-        expect(april7).not.toBeUndefined();
-        expect(april7!.total_cost_usd).toBeCloseTo(0.05);
+        // Current week has: commit, review-pr (from beforeEach seed)
+        const unused = getUnusedSkills(db, WEEK_FROM, WEEK_TO);
+        expect(unused).toContain("tdd");
+        expect(unused).toContain("architect");
+        expect(unused).not.toContain("commit");
+        expect(unused).not.toContain("review-pr");
       });
 
-      it("should return empty for week with no cost data", () => {
-        const costs = getWeeklyCostTrend(db, "2099-01-06", "2099-01-13");
-        expect(costs).toHaveLength(0);
+      it("should return empty when all historical skills used this week", () => {
+        // No historical skills beyond what's in current week
+        const unused = getUnusedSkills(db, WEEK_FROM, WEEK_TO);
+        expect(unused).toHaveLength(0);
+      });
+
+      it("should return all historical skills when none used this week", () => {
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "hist-2",
+          started_at: "2026-03-25T10:00:00Z",
+          ended_at: "2026-03-25T11:00:00Z",
+          skills_invoked: ["plan", "architect"],
+        });
+
+        // Query a week with no sessions
+        const unused = getUnusedSkills(db, "2099-01-06T00:00:00Z", "2099-01-13T00:00:00Z");
+        expect(unused).toContain("commit");
+        expect(unused).toContain("review-pr");
+        expect(unused).toContain("plan");
+        expect(unused).toContain("architect");
       });
     });
+
+    describe("getSessionDistribution", () => {
+      it("should categorize sessions by duration", () => {
+        const dist = getSessionDistribution(db, WEEK_FROM, WEEK_TO);
+        expect(dist.quick).toBe(0);
+        expect(dist.medium).toBe(0);
+        expect(dist.deep).toBe(2);
+        expect(dist.marathon).toBe(0);
+      });
+
+      it("should return all zeros for empty week", () => {
+        const dist = getSessionDistribution(db, "2099-01-01T00:00:00Z", "2099-01-08T00:00:00Z");
+        expect(dist.quick).toBe(0);
+        expect(dist.medium).toBe(0);
+        expect(dist.deep).toBe(0);
+        expect(dist.marathon).toBe(0);
+      });
+
+      it("should distribute across all categories", () => {
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "dist-quick",
+          started_at: "2026-04-09T10:00:00Z",
+          ended_at: "2026-04-09T10:10:00Z",
+          duration_minutes: 10,
+        });
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "dist-medium",
+          started_at: "2026-04-09T11:00:00Z",
+          ended_at: "2026-04-09T11:30:00Z",
+          duration_minutes: 30,
+        });
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "dist-marathon",
+          started_at: "2026-04-09T12:00:00Z",
+          ended_at: "2026-04-09T15:30:00Z",
+          duration_minutes: 210,
+        });
+
+        const dist = getSessionDistribution(db, WEEK_FROM, WEEK_TO);
+        expect(dist.quick).toBe(1);
+        expect(dist.medium).toBe(1);
+        expect(dist.deep).toBe(2);
+        expect(dist.marathon).toBe(1);
+      });
+    });
+
+    describe("getProjectActivity", () => {
+      it("should group by project and member", () => {
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "proj-1",
+          started_at: "2026-04-09T10:00:00Z",
+          ended_at: "2026-04-09T11:00:00Z",
+          project: "api-server",
+          turns: 10,
+          files_edited: 3,
+          files_written: 1,
+          has_commit: true,
+        });
+        insertSessionMetrics(db, "m2", {
+          member_name: "Alice",
+          session_id: "proj-2",
+          started_at: "2026-04-09T12:00:00Z",
+          ended_at: "2026-04-09T13:00:00Z",
+          project: "api-server",
+          turns: 8,
+          files_edited: 2,
+          files_written: 0,
+          has_commit: false,
+        });
+
+        const activity = getProjectActivity(db, WEEK_FROM, WEEK_TO);
+        const apiServer = activity.filter((a: any) => a.project === "api-server");
+        expect(apiServer).toHaveLength(2);
+      });
+
+      it("should map empty project to (no project)", () => {
+        const activity = getProjectActivity(db, WEEK_FROM, WEEK_TO);
+        const noProject = activity.filter((a: any) => a.project === "(no project)");
+        expect(noProject.length).toBeGreaterThan(0);
+      });
+
+      it("should sum turns and files correctly", () => {
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "proj-3",
+          started_at: "2026-04-10T10:00:00Z",
+          ended_at: "2026-04-10T11:00:00Z",
+          project: "dashboard",
+          turns: 5,
+          files_edited: 2,
+          files_written: 1,
+          has_commit: true,
+        });
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "proj-4",
+          started_at: "2026-04-10T14:00:00Z",
+          ended_at: "2026-04-10T15:00:00Z",
+          project: "dashboard",
+          turns: 8,
+          files_edited: 4,
+          files_written: 2,
+          has_commit: false,
+        });
+
+        const activity = getProjectActivity(db, WEEK_FROM, WEEK_TO);
+        const dashboard = activity.find((a: any) => a.project === "dashboard" && a.member_name === "Eric");
+        expect(dashboard).not.toBeUndefined();
+        expect(dashboard!.session_count).toBe(2);
+        expect(dashboard!.turns).toBe(13);
+        expect(dashboard!.files_edited).toBe(6);
+        expect(dashboard!.files_written).toBe(3);
+        expect(dashboard!.commit_count).toBe(1);
+      });
+
+      it("should return empty for week with no data", () => {
+        const activity = getProjectActivity(db, "2099-01-01T00:00:00Z", "2099-01-08T00:00:00Z");
+        expect(activity).toHaveLength(0);
+      });
+    });
+
+    describe("getSessionLog", () => {
+      it("should return all sessions sorted by started_at descending", () => {
+        const log = getSessionLog(db, WEEK_FROM, WEEK_TO);
+        expect(log).toHaveLength(2);
+        expect(log[0].member_name).toBe("Alice");
+        expect(log[1].member_name).toBe("Eric");
+      });
+
+      it("should include all required fields", () => {
+        const log = getSessionLog(db, WEEK_FROM, WEEK_TO);
+        const entry = log[0];
+        expect(entry).toHaveProperty("member_name");
+        expect(entry).toHaveProperty("session_name");
+        expect(entry).toHaveProperty("project");
+        expect(entry).toHaveProperty("duration_minutes");
+        expect(entry).toHaveProperty("turns");
+        expect(entry).toHaveProperty("model");
+        expect(entry).toHaveProperty("context_estimate_pct");
+      });
+
+      it("should include context_estimate_pct values", () => {
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "ctx-session",
+          started_at: "2026-04-10T10:00:00Z",
+          ended_at: "2026-04-10T11:00:00Z",
+          duration_minutes: 60,
+          turns: 12,
+          model: "claude-opus-4-6",
+          context_estimate_pct: 85,
+        });
+
+        const log = getSessionLog(db, WEEK_FROM, WEEK_TO);
+        const ctxSession = log.find((s: any) => s.context_estimate_pct === 85);
+        expect(ctxSession).not.toBeUndefined();
+        expect(ctxSession!.model).toBe("claude-opus-4-6");
+      });
+
+      it("should return empty for week with no data", () => {
+        const log = getSessionLog(db, "2099-01-01T00:00:00Z", "2099-01-08T00:00:00Z");
+        expect(log).toHaveLength(0);
+      });
+    });
+
+    describe("getHighlights", () => {
+      it("should return longest session", () => {
+        const highlights = getHighlights(db, WEEK_FROM, WEEK_TO);
+        expect(highlights.longest_session).not.toBeNull();
+        expect(highlights.longest_session!.duration_minutes).toBe(90); // s1 is longest
+      });
+
+      it("should return most active day", () => {
+        const highlights = getHighlights(db, WEEK_FROM, WEEK_TO);
+        expect(highlights.most_active_day).not.toBeNull();
+        expect(highlights.most_active_day!.count).toBeGreaterThanOrEqual(1);
+      });
+
+      it("should return most used project", () => {
+        const highlights = getHighlights(db, WEEK_FROM, WEEK_TO);
+        expect(highlights.most_used_project).not.toBeNull();
+      });
+
+      it("should count high context sessions", () => {
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "high-ctx",
+          started_at: "2026-04-09T10:00:00Z",
+          ended_at: "2026-04-09T11:00:00Z",
+          context_estimate_pct: 85,
+        });
+
+        const highlights = getHighlights(db, WEEK_FROM, WEEK_TO);
+        expect(highlights.high_context_sessions).toBe(1);
+      });
+
+      it("should return nulls for empty week", () => {
+        const highlights = getHighlights(db, "2099-01-01T00:00:00Z", "2099-01-08T00:00:00Z");
+        expect(highlights.longest_session).toBeNull();
+        expect(highlights.most_active_day).toBeNull();
+        expect(highlights.most_used_project).toBeNull();
+        expect(highlights.high_context_sessions).toBe(0);
+      });
+    });
+
   });
 });

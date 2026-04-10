@@ -95,52 +95,48 @@ describe("Weekly Report API", () => {
       expect(html).toContain("Alice");
     });
 
-    it("should show overview stats", async () => {
+    it("should show overview three-layer structure", async () => {
       seedSessionData();
       const res = await app.request("/api/report/weekly?week=2026-W15");
       const html = await res.text();
 
       expect(html).toContain("Sessions");
-      expect(html).toContain("Commit Rate");
-      expect(html).toContain("Avg Turns");
+      expect(html).toContain("Total Hours");
+      expect(html).toContain("Active Members");
+      // Distribution bar
+      expect(html).toContain("dist-seg");
+      // Highlights
+      expect(html).toContain("Longest session");
     });
 
-    it("should show member comparison table", async () => {
+    it("should show project activity section", async () => {
       seedSessionData();
       const res = await app.request("/api/report/weekly?week=2026-W15");
       const html = await res.text();
 
-      expect(html).toContain("Member Comparison");
-      expect(html).toContain("Eric");
-      expect(html).toContain("Alice");
+      expect(html).toContain("Project Activity");
+      expect(html).toContain("ccusage-tracker");
     });
 
-    it("should show tool usage heatmap", async () => {
+    it("should show session log section", async () => {
       seedSessionData();
       const res = await app.request("/api/report/weekly?week=2026-W15");
       const html = await res.text();
 
-      expect(html).toContain("Tool Usage Heatmap");
-      expect(html).toContain("Bash");
-      expect(html).toContain("Edit");
+      expect(html).toContain("Session Log");
+      expect(html).toContain("debug feature");
+      expect(html).toContain("refactor auth");
+      expect(html).toContain("Context %");
     });
 
-    it("should show skill usage section", async () => {
+    it("should show skill usage section with ranking", async () => {
       seedSessionData();
       const res = await app.request("/api/report/weekly?week=2026-W15");
       const html = await res.text();
 
       expect(html).toContain("Skill Usage");
       expect(html).toContain("commit");
-    });
-
-    it("should show cost trend section", async () => {
-      seedSessionData();
-      const res = await app.request("/api/report/weekly?week=2026-W15");
-      const html = await res.text();
-
-      expect(html).toContain("Cost Trend");
-      expect(html).toContain("$0.05");
+      expect(html).toContain("skill-rank");
     });
 
     it("should return HTML for current week when no week param", async () => {
@@ -194,38 +190,57 @@ describe("Weekly Report API", () => {
       protectedDb.close();
     });
 
-    it("should show anomalous sessions when criteria met", async () => {
+    it("should highlight high context sessions in session log", async () => {
       insertMember(db, "m1", "Eric", hashApiKey("key1"));
 
       insertSessionMetrics(db, "m1", {
         member_name: "Eric",
-        session_id: "anomaly-1",
-        session_name: "stuck session",
+        session_id: "high-ctx-1",
+        session_name: "long context session",
         project: "test",
         started_at: "2026-04-07T10:00:00Z",
         ended_at: "2026-04-07T12:00:00Z",
         duration_minutes: 120,
         turns: 25,
-        tool_errors: 7,
-        has_commit: false,
+        context_estimate_pct: 85,
       });
 
       const res = await app.request("/api/report/weekly?week=2026-W15");
       const html = await res.text();
 
-      expect(html).toContain("Anomalous Sessions");
-      expect(html).toContain("stuck session");
-      expect(html).toContain("High turns, no output");
-      expect(html).toContain("Error-heavy");
-      expect(html).toContain("Long, no commit");
+      expect(html).toContain("Session Log");
+      expect(html).toContain("long context session");
+      expect(html).toContain("85%");
+      expect(html).toContain("ctx-warn");
     });
 
-    it("should show no anomalies message when none detected", async () => {
-      seedSessionData();
+    it("should show unused skills detection", async () => {
+      insertMember(db, "m1", "Eric", hashApiKey("key1"));
+
+      // Historical session with extra skill
+      insertSessionMetrics(db, "m1", {
+        member_name: "Eric",
+        session_id: "hist-skill",
+        started_at: "2026-03-30T10:00:00Z",
+        ended_at: "2026-03-30T11:00:00Z",
+        skills_invoked: ["tdd", "architect"],
+      });
+
+      // Current week session
+      insertSessionMetrics(db, "m1", {
+        member_name: "Eric",
+        session_id: "curr-skill",
+        started_at: "2026-04-07T10:00:00Z",
+        ended_at: "2026-04-07T11:00:00Z",
+        skills_invoked: ["commit"],
+      });
+
       const res = await app.request("/api/report/weekly?week=2026-W15");
       const html = await res.text();
 
-      expect(html).toContain("No anomalies detected");
+      expect(html).toContain("Unused Skills");
+      expect(html).toContain("tdd");
+      expect(html).toContain("architect");
     });
   });
 });

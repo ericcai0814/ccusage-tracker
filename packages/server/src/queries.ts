@@ -317,9 +317,7 @@ export function aggregateUsage(
 export interface WeeklyOverview {
   total_sessions: number;
   total_duration_hours: number;
-  commit_rate: number;
-  avg_turns: number;
-  total_tool_errors: number;
+  active_members: number;
 }
 
 export function getWeeklyOverview(
@@ -332,11 +330,7 @@ export function getWeeklyOverview(
       `SELECT
         COUNT(*) as total_sessions,
         ROUND(COALESCE(SUM(duration_minutes), 0) / 60.0, 1) as total_duration_hours,
-        CASE WHEN COUNT(*) > 0
-          THEN ROUND(100.0 * SUM(CASE WHEN has_commit = 1 THEN 1 ELSE 0 END) / COUNT(*), 1)
-          ELSE 0 END as commit_rate,
-        ROUND(COALESCE(AVG(turns), 0), 1) as avg_turns,
-        COALESCE(SUM(tool_errors), 0) as total_tool_errors
+        COUNT(DISTINCT member_id) as active_members
       FROM session_metrics
       WHERE started_at >= ? AND started_at < ?`
     )
@@ -378,80 +372,6 @@ export function getMemberComparison(
     .all(from, to) as MemberComparison[];
 }
 
-export interface ToolHeatmapEntry {
-  tool_name: string;
-  member_name: string;
-  usage_count: number;
-}
-
-export function getToolHeatmap(
-  db: Database,
-  from: string,
-  to: string
-): ToolHeatmapEntry[] {
-  return db
-    .query(
-      `SELECT
-        je.key as tool_name,
-        m.name as member_name,
-        SUM(je.value) as usage_count
-      FROM session_metrics sm
-      JOIN members m ON sm.member_id = m.id,
-      json_each(sm.tool_calls) je
-      WHERE sm.started_at >= ? AND sm.started_at < ?
-      GROUP BY je.key, m.name
-      ORDER BY SUM(je.value) DESC`
-    )
-    .all(from, to) as ToolHeatmapEntry[];
-}
-
-export const ANOMALY_THRESHOLDS = {
-  HIGH_TURNS_MIN: 20,
-  ERROR_HEAVY_MIN: 5,
-  LONG_DURATION_MIN: 60,
-} as const;
-
-export interface AnomalousSession {
-  member_name: string;
-  session_name: string;
-  project: string;
-  turns: number;
-  duration_minutes: number;
-  files_edited: number;
-  files_written: number;
-  tool_errors: number;
-  has_commit: number;
-}
-
-export function getAnomalousSessions(
-  db: Database,
-  from: string,
-  to: string
-): AnomalousSession[] {
-  return db
-    .query(
-      `SELECT
-        m.name as member_name,
-        sm.session_name,
-        sm.project,
-        sm.turns,
-        sm.duration_minutes,
-        sm.files_edited,
-        sm.files_written,
-        sm.tool_errors,
-        sm.has_commit
-      FROM session_metrics sm
-      JOIN members m ON sm.member_id = m.id
-      WHERE sm.started_at >= ? AND sm.started_at < ?
-        AND (
-          (sm.turns >= ${ANOMALY_THRESHOLDS.HIGH_TURNS_MIN} AND sm.files_edited + sm.files_written = 0)
-          OR sm.tool_errors >= ${ANOMALY_THRESHOLDS.ERROR_HEAVY_MIN}
-          OR (sm.duration_minutes >= ${ANOMALY_THRESHOLDS.LONG_DURATION_MIN} AND sm.has_commit = 0)
-        )
-      ORDER BY sm.turns DESC`
-    )
-    .all(from, to) as AnomalousSession[];
-}
 
 export interface SkillUsageEntry {
   skill_name: string;
@@ -480,25 +400,189 @@ export function getSkillUsageSummary(
     .all(from, to) as SkillUsageEntry[];
 }
 
-export interface DailyCostEntry {
-  date: string;
-  total_cost_usd: number;
-}
-
-export function getWeeklyCostTrend(
+export function getUnusedSkills(
   db: Database,
   from: string,
   to: string
-): DailyCostEntry[] {
+): string[] {
+  const rows = db
+    .query(
+      `SELECT DISTINCT je.value as skill_name
+      FROM session_metrics sm, json_each(sm.skills_invoked) je
+      WHERE je.value NOT IN (
+        SELECT DISTINCT je2.value
+        FROM session_metrics sm2, json_each(sm2.skills_invoked) je2
+        WHERE sm2.started_at >= ? AND sm2.started_at < ?
+      )
+      ORDER BY skill_name`
+    )
+    .all(from, to) as { skill_name: string }[];
+  return rows.map((r) => r.skill_name);
+}
+
+export interface WeeklyHighlights {
+  longest_session: { duration_minutes: number; project: string } | null;
+  most_active_day: { day_name: string; count: number } | null;
+  most_used_project: { name: string; count: number } | null;
+  high_context_sessions: number;
+}
+
+export function getHighlights(
+  db: Database,
+  from: string,
+  to: string
+): WeeklyHighlights {
+  const longest = db
+    .query(
+      `SELECT duration_minutes, project
+      FROM session_metrics
+      WHERE started_at >= ? AND started_at < ?
+      ORDER BY duration_minutes DESC
+      LIMIT 1`
+    )
+    .get(from, to) as { duration_minutes: number; project: string } | null;
+
+  const mostActiveDay = db
+    .query(
+      `SELECT
+        CASE CAST(strftime('%w', started_at) AS INTEGER)
+          WHEN 0 THEN 'Sunday'
+          WHEN 1 THEN 'Monday'
+          WHEN 2 THEN 'Tuesday'
+          WHEN 3 THEN 'Wednesday'
+          WHEN 4 THEN 'Thursday'
+          WHEN 5 THEN 'Friday'
+          WHEN 6 THEN 'Saturday'
+        END as day_name,
+        COUNT(*) as count
+      FROM session_metrics
+      WHERE started_at >= ? AND started_at < ?
+      GROUP BY strftime('%w', started_at)
+      ORDER BY count DESC
+      LIMIT 1`
+    )
+    .get(from, to) as { day_name: string; count: number } | null;
+
+  const mostUsedProject = db
+    .query(
+      `SELECT
+        CASE WHEN project = '' THEN '(no project)' ELSE project END as name,
+        COUNT(*) as count
+      FROM session_metrics
+      WHERE started_at >= ? AND started_at < ?
+      GROUP BY project
+      ORDER BY count DESC
+      LIMIT 1`
+    )
+    .get(from, to) as { name: string; count: number } | null;
+
+  const highCtx = db
+    .query(
+      `SELECT COUNT(*) as count
+      FROM session_metrics
+      WHERE started_at >= ? AND started_at < ?
+        AND context_estimate_pct >= 70`
+    )
+    .get(from, to) as { count: number };
+
+  return {
+    longest_session: longest ?? null,
+    most_active_day: mostActiveDay ?? null,
+    most_used_project: mostUsedProject ?? null,
+    high_context_sessions: highCtx.count,
+  };
+}
+
+export interface SessionDistribution {
+  quick: number;
+  medium: number;
+  deep: number;
+  marathon: number;
+}
+
+export function getSessionDistribution(
+  db: Database,
+  from: string,
+  to: string
+): SessionDistribution {
+  const row = db
+    .query(
+      `SELECT
+        COALESCE(SUM(CASE WHEN duration_minutes < 15 THEN 1 ELSE 0 END), 0) as quick,
+        COALESCE(SUM(CASE WHEN duration_minutes >= 15 AND duration_minutes < 60 THEN 1 ELSE 0 END), 0) as medium,
+        COALESCE(SUM(CASE WHEN duration_minutes >= 60 AND duration_minutes < 180 THEN 1 ELSE 0 END), 0) as deep,
+        COALESCE(SUM(CASE WHEN duration_minutes >= 180 THEN 1 ELSE 0 END), 0) as marathon
+      FROM session_metrics
+      WHERE started_at >= ? AND started_at < ?`
+    )
+    .get(from, to) as SessionDistribution | null;
+  return row ?? { quick: 0, medium: 0, deep: 0, marathon: 0 };
+}
+
+export interface ProjectActivityEntry {
+  project: string;
+  member_name: string;
+  session_count: number;
+  turns: number;
+  files_edited: number;
+  files_written: number;
+  commit_count: number;
+}
+
+export function getProjectActivity(
+  db: Database,
+  from: string,
+  to: string
+): ProjectActivityEntry[] {
   return db
     .query(
       `SELECT
-        date,
-        SUM(total_cost_usd) as total_cost_usd
-      FROM usage_records
-      WHERE date >= ? AND date < ?
-      GROUP BY date
-      ORDER BY date ASC`
+        CASE WHEN sm.project = '' THEN '(no project)' ELSE sm.project END as project,
+        m.name as member_name,
+        COUNT(*) as session_count,
+        SUM(sm.turns) as turns,
+        SUM(sm.files_edited) as files_edited,
+        SUM(sm.files_written) as files_written,
+        SUM(CASE WHEN sm.has_commit = 1 THEN 1 ELSE 0 END) as commit_count
+      FROM session_metrics sm
+      JOIN members m ON sm.member_id = m.id
+      WHERE sm.started_at >= ? AND sm.started_at < ?
+      GROUP BY sm.project, sm.member_id
+      ORDER BY session_count DESC`
     )
-    .all(from, to) as DailyCostEntry[];
+    .all(from, to) as ProjectActivityEntry[];
 }
+
+export interface SessionLogEntry {
+  member_name: string;
+  session_name: string;
+  project: string;
+  duration_minutes: number;
+  turns: number;
+  model: string;
+  context_estimate_pct: number;
+}
+
+export function getSessionLog(
+  db: Database,
+  from: string,
+  to: string
+): SessionLogEntry[] {
+  return db
+    .query(
+      `SELECT
+        m.name as member_name,
+        sm.session_name,
+        sm.project,
+        sm.duration_minutes,
+        sm.turns,
+        sm.model,
+        sm.context_estimate_pct
+      FROM session_metrics sm
+      JOIN members m ON sm.member_id = m.id
+      WHERE sm.started_at >= ? AND sm.started_at < ?
+      ORDER BY sm.started_at DESC`
+    )
+    .all(from, to) as SessionLogEntry[];
+}
+
