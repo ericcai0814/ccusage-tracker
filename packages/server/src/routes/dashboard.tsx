@@ -163,6 +163,31 @@ const STYLES = `
     padding: 0.25rem 0.6rem;
   }
 
+  .report-nav {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .report-nav a {
+    color: var(--text-dim);
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+
+  .report-nav a:hover {
+    color: var(--brand-primary);
+    text-shadow: 0 0 8px var(--brand-glow);
+  }
+
+  .report-nav .nav-sep { color: var(--border-glow); }
+  .report-nav .nav-current { color: var(--brand-primary); text-shadow: 0 0 8px var(--brand-glow); }
+
   /* Period nav */
   .period-nav {
     display: flex;
@@ -720,6 +745,11 @@ dashboard.get("/", (c) => {
 
   return c.html(
     <Layout title="CCUSAGE // TRACKER">
+      <nav class="report-nav">
+        <span class="nav-current">Dashboard</span>
+        <span class="nav-sep">/</span>
+        <a href="/api/report/weekly">Weekly Report {"\u2192"}</a>
+      </nav>
       <header class="header">
         <h1 class="logo">CC<span>USAGE</span></h1>
         <div class="sys-tag">sys.monitor // v0.1.0</div>

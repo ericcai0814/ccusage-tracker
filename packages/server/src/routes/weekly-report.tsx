@@ -9,12 +9,14 @@ import {
   getSessionLog,
   getSkillUsageSummary,
   getUnusedSkills,
+  getWeeklyCost,
   type WeeklyOverview as WeeklyOverviewData,
   type SessionDistribution,
   type WeeklyHighlights,
   type ProjectActivityEntry,
   type SessionLogEntry,
   type SkillUsageEntry,
+  type WeeklyCost,
 } from "../queries";
 import type { AppEnv } from "../app";
 
@@ -194,9 +196,40 @@ const CSS = `
 
   tr:hover td { background: var(--brand-glow-faint); }
 
+  .report-nav {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .report-nav a {
+    color: var(--text-dim);
+    text-decoration: none;
+    transition: color 0.2s ease;
+  }
+
+  .report-nav a:hover {
+    color: var(--brand-primary);
+    text-shadow: 0 0 8px var(--brand-glow);
+  }
+
+  .report-nav .nav-sep {
+    color: var(--border-glow);
+  }
+
+  .report-nav .nav-current {
+    color: var(--brand-primary);
+    text-shadow: 0 0 8px var(--brand-glow);
+  }
+
   .stat-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 1px;
     background: var(--border-dim);
     border: 1px solid var(--border-glow);
@@ -264,15 +297,70 @@ const CSS = `
   .skill-rank { font-family: var(--font-display); font-size: 1.2rem; color: var(--text-dim); margin-right: 0.5rem; }
   .unused-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
   .unused-tag { font-family: var(--font-mono); font-size: 0.65rem; padding: 0.2rem 0.6rem; border: 1px solid var(--border-dim); color: var(--text-dim); }
+
+  .report-footer {
+    margin-top: 2rem;
+    padding: 1.25rem 1.5rem;
+    border: 1px solid var(--border-dim);
+    background: var(--bg-card);
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+  }
+
+  .report-footer .footer-title {
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+    color: var(--text-secondary);
+    margin-bottom: 0.4rem;
+  }
+
+  .report-footer code {
+    color: var(--brand-primary);
+    font-size: 0.65rem;
+  }
+
+  .cost-link {
+    font-family: var(--font-mono);
+    font-size: 0.5rem;
+    color: var(--text-dim);
+    text-decoration: none;
+    display: block;
+    margin-top: 0.3rem;
+    transition: color 0.2s ease;
+  }
+
+  .cost-link:hover {
+    color: var(--brand-primary);
+    text-shadow: 0 0 8px var(--brand-glow);
+  }
+
+  @media (max-width: 768px) {
+    .stat-grid { grid-template-columns: repeat(2, 1fr); }
+    .report-nav { flex-wrap: wrap; }
+  }
 `;
 
 // --- Section Components ---
+
+function formatCost(n: number): string {
+  return `$${n.toFixed(2)}`;
+}
+
+function formatTokensShort(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(0)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(0)}K`;
+  return String(n);
+}
 
 const OverviewSection: FC<{
   data: WeeklyOverviewData;
   distribution: SessionDistribution;
   highlights: WeeklyHighlights;
-}> = ({ data, distribution, highlights }) => {
+  cost: WeeklyCost;
+}> = ({ data, distribution, highlights, cost }) => {
   const total = distribution.quick + distribution.medium + distribution.deep + distribution.marathon;
   const pct = (n: number) => (total > 0 ? `${((n / total) * 100).toFixed(0)}%` : "0%");
 
@@ -291,6 +379,11 @@ const OverviewSection: FC<{
         <div class="stat-card">
           <div class="stat-value">{data.active_members}</div>
           <div class="stat-label">Active Members</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value">{cost.total_cost > 0 ? formatCost(cost.total_cost) : "\u2014"}</div>
+          <div class="stat-label">Cost ({formatTokensShort(cost.total_tokens)} tokens)</div>
+          {cost.total_cost > 0 && <a href="/" class="cost-link">{"\u2192"} Dashboard</a>}
         </div>
       </div>
 
@@ -531,6 +624,13 @@ const SkillSection: FC<{ skills: SkillUsageEntry[]; unusedSkills: string[] }> = 
 
 // --- Main Layout ---
 
+const ReportFooter: FC = () => (
+  <div class="report-footer">
+    <div class="footer-title">Deeper Analysis</div>
+    <div>Token cost attribution, cache efficiency, subagent breakdown: run <code>/session-report</code> in Claude Code</div>
+  </div>
+);
+
 const WeeklyReportPage: FC<{
   week: string;
   fromDate: string;
@@ -538,11 +638,12 @@ const WeeklyReportPage: FC<{
   overview: WeeklyOverviewData;
   distribution: SessionDistribution;
   highlights: WeeklyHighlights;
+  cost: WeeklyCost;
   projectActivity: ProjectActivityEntry[];
   sessionLog: SessionLogEntry[];
   skills: SkillUsageEntry[];
   unusedSkills: string[];
-}> = ({ week, fromDate, toDate, overview, distribution, highlights, projectActivity, sessionLog, skills, unusedSkills }) => (
+}> = ({ week, fromDate, toDate, overview, distribution, highlights, cost, projectActivity, sessionLog, skills, unusedSkills }) => (
   <html>
     <head>
       <meta charset="UTF-8" />
@@ -552,16 +653,22 @@ const WeeklyReportPage: FC<{
     </head>
     <body>
       <div class="container">
+        <nav class="report-nav">
+          <a href="/">{"\u2190"} Dashboard</a>
+          <span class="nav-sep">/</span>
+          <span class="nav-current">Weekly Report</span>
+        </nav>
         <h1>Weekly <span>Report</span></h1>
         <p class="subtitle">{week} ({fromDate} ~ {toDate})</p>
         {overview.total_sessions === 0 ? (
           <p class="empty-state">No data available for this week.</p>
         ) : (
           <>
-            <OverviewSection data={overview} distribution={distribution} highlights={highlights} />
+            <OverviewSection data={overview} distribution={distribution} highlights={highlights} cost={cost} />
             <ProjectActivitySection entries={projectActivity} />
             <SessionLogSection sessions={sessionLog} />
             <SkillSection skills={skills} unusedSkills={unusedSkills} />
+            <ReportFooter />
           </>
         )}
       </div>
@@ -589,6 +696,7 @@ weeklyReport.get("/", (c) => {
   const overview = getWeeklyOverview(db, from, to);
   const distribution = getSessionDistribution(db, from, to);
   const highlights = getHighlights(db, from, to);
+  const cost = getWeeklyCost(db, fromDate, toDate);
   const projectActivity = getProjectActivity(db, from, to);
   const sessionLog = getSessionLog(db, from, to);
   const skills = getSkillUsageSummary(db, from, to);
@@ -606,6 +714,7 @@ weeklyReport.get("/", (c) => {
       overview={overview}
       distribution={distribution}
       highlights={highlights}
+      cost={cost}
       projectActivity={projectActivity}
       sessionLog={sessionLog}
       skills={skills}

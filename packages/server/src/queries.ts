@@ -312,6 +312,30 @@ export function aggregateUsage(
     .all(...params) as UsageSummary[];
 }
 
+// --- Weekly Cost (from usage_records) ---
+
+export interface WeeklyCost {
+  total_cost: number;
+  total_tokens: number;
+}
+
+export function getWeeklyCost(
+  db: Database,
+  fromDate: string,
+  toDate: string
+): WeeklyCost {
+  const row = db
+    .query(
+      `SELECT
+        COALESCE(SUM(total_cost_usd), 0) as total_cost,
+        COALESCE(SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens), 0) as total_tokens
+      FROM usage_records
+      WHERE date >= ? AND date < ?`
+    )
+    .get(fromDate, toDate) as WeeklyCost;
+  return row;
+}
+
 // --- Session Analytics Aggregation Queries ---
 
 export interface WeeklyOverview {
