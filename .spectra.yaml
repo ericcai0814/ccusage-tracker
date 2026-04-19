@@ -14,17 +14,24 @@ audit: true
 parallel_tasks: true
 
 # Claude slash commands (set true to also generate /spectra:X commands)
-# claude_slash_commands: true
+claude_slash_commands: true
 
 # Enable git worktree support for isolated change branches
 worktree: true
 
 # Custom git worktrees directory
-worktrees_dir: /Users/ericcai/project/ewill-web-project/frontstage-web/.worktrees
+worktrees_dir: ~/project/ccusage-tracker/.worktrees
 
 # Claude Code skill effort levels (low/medium/high/max)
-# claude_effort:
-#   apply: high
+claude_effort:
+  apply: max
+  archive: low
+  ask: medium
+  audit: max
+  debug: max
+  discuss: max
+  ingest: max
+  propose: max
 
 # AI tools to generate instruction files for
 # tools:

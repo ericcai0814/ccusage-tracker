@@ -1,6 +1,7 @@
 ---
 name: spectra-propose
 description: "Create a change proposal with all required artifacts"
+effort: max
 license: MIT
 compatibility: Requires spectra CLI.
 metadata:
