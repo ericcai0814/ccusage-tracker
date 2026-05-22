@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 
 export interface TrackerConfig {
   server_url: string;
-  api_key: string;
+  team_key: string;
   member_name: string;
 }
 
@@ -21,7 +21,14 @@ export function readConfig(): TrackerConfig | null {
   if (!existsSync(path)) return null;
 
   try {
-    return JSON.parse(readFileSync(path, "utf-8")) as TrackerConfig;
+    const raw = JSON.parse(readFileSync(path, "utf-8")) as Record<string, unknown>;
+    const teamKey = (raw.team_key as string | undefined) ?? (raw.api_key as string | undefined);
+    if (!raw.server_url || !teamKey || !raw.member_name) return null;
+    return {
+      server_url: String(raw.server_url),
+      team_key: teamKey,
+      member_name: String(raw.member_name),
+    };
   } catch {
     return null;
   }

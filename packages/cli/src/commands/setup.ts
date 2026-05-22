@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
+import { execFileSync } from "node:child_process";
 import { writeConfig, type TrackerConfig } from "../config";
 import { installHook } from "../hooks";
-import { join, dirname } from "node:path";
 
 function defaultPrompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -25,7 +25,11 @@ async function defaultCheckServer(serverUrl: string): Promise<boolean> {
 
 function defaultCheckCcusage(): boolean {
   try {
-    Bun.spawnSync(["ccusage", "--version"]);
+    execFileSync("ccusage", ["--version"], {
+      shell: true,
+      stdio: "ignore",
+      timeout: 5000,
+    });
     return true;
   } catch {
     return false;
@@ -35,7 +39,7 @@ function defaultCheckCcusage(): boolean {
 export interface SetupDeps {
   prompt: (question: string) => Promise<string>;
   writeConfig: (config: TrackerConfig) => void;
-  installHook: (hookScriptPath: string) => { installed: boolean; backedUp: boolean };
+  installHook: () => { installed: boolean; backedUp: boolean; migratedLegacy: boolean };
   checkServer: (serverUrl: string) => Promise<boolean>;
   checkCcusage: () => boolean;
   log: (msg: string) => void;
@@ -43,10 +47,16 @@ export interface SetupDeps {
   exit: (code: number) => void;
 }
 
+export interface SetupOptions {
+  name?: string;
+  serverUrl?: string;
+  teamKey?: string;
+}
+
 const defaultDeps: SetupDeps = {
   prompt: defaultPrompt,
   writeConfig,
-  installHook,
+  installHook: () => installHook(),
   checkServer: defaultCheckServer,
   checkCcusage: defaultCheckCcusage,
   log: (msg) => console.log(msg),
@@ -54,55 +64,65 @@ const defaultDeps: SetupDeps = {
   exit: (code) => process.exit(code),
 };
 
-export async function setupCommand(overrides?: Partial<SetupDeps>): Promise<void> {
+async function resolveField(
+  current: string | undefined,
+  prompt: SetupDeps["prompt"],
+  question: string,
+): Promise<string> {
+  if (current && current.trim()) return current.trim();
+  return prompt(question);
+}
+
+export async function setupCommand(
+  overrides?: Partial<SetupDeps>,
+  options: SetupOptions = {},
+): Promise<void> {
   const deps = { ...defaultDeps, ...overrides };
 
   deps.log("ccusage-tracker setup\n");
 
-  const name = await deps.prompt("Your name: ");
+  const name = await resolveField(options.name, deps.prompt, "Your name: ");
   if (!name) {
     deps.warn("Name is required.");
     deps.exit(1);
     return;
   }
 
-  const serverUrl = await deps.prompt("Server URL (e.g. https://tracker.example.com): ");
+  const serverUrl = await resolveField(options.serverUrl, deps.prompt, "Server URL (e.g. https://tracker.example.com): ");
   if (!serverUrl) {
     deps.warn("Server URL is required.");
     deps.exit(1);
     return;
   }
 
-  const apiKey = await deps.prompt("API Key (sk-tracker-...): ");
-  if (!apiKey) {
-    deps.warn("API Key is required.");
+  const teamKey = await resolveField(options.teamKey, deps.prompt, "Team Key: ");
+  if (!teamKey) {
+    deps.warn("Team Key is required.");
     deps.exit(1);
     return;
   }
 
-  // Write config
   const config: TrackerConfig = {
     server_url: serverUrl.replace(/\/+$/, ""),
-    api_key: apiKey,
+    team_key: teamKey,
     member_name: name,
   };
   deps.writeConfig(config);
   deps.log("\nConfig saved.");
 
-  // Install hook
-  const hookScriptPath = join(dirname(dirname(import.meta.dir)), "server", "scripts", "session-end.sh");
   try {
-    const { installed, backedUp } = deps.installHook(hookScriptPath);
-    if (installed) {
-      deps.log("SessionEnd hook installed." + (backedUp ? " (settings.json backed up)" : ""));
+    const { installed, backedUp, migratedLegacy } = deps.installHook();
+    if (migratedLegacy) {
+      deps.log("Migrated legacy bash hook to `tracker hook` CLI command." + (backedUp ? " (settings.json backed up to .backup-pre-cli-migration)" : ""));
+    } else if (installed) {
+      deps.log("SessionStart + SessionEnd hooks installed." + (backedUp ? " (settings.json backed up)" : ""));
     } else {
-      deps.log("SessionEnd hook already installed.");
+      deps.log("Hooks already installed.");
     }
   } catch (err) {
-    deps.warn("Warning: Could not install hook automatically. " + (err as Error).message);
+    deps.warn("Warning: Could not install hooks automatically. " + (err as Error).message);
   }
 
-  // Verify server
   const serverOk = await deps.checkServer(config.server_url);
   if (serverOk) {
     deps.log("Server is reachable.");
@@ -110,7 +130,6 @@ export async function setupCommand(overrides?: Partial<SetupDeps>): Promise<void
     deps.warn("Warning: Server is not reachable at " + config.server_url);
   }
 
-  // Check ccusage
   const hasCcusage = deps.checkCcusage();
   if (hasCcusage) {
     deps.log("ccusage is installed.");
