@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 
+// Suppress Node deprecation warnings (notably DEP0190 about execFile with
+// `shell: true` + args). The hook contract requires silent stderr; warnings
+// would leak into Claude Code's hook output as user-visible noise.
+process.removeAllListeners("warning");
+
 import { setupCommand } from "./commands/setup";
 import { reportCommand } from "./commands/report";
 import { statusCommand } from "./commands/status";
