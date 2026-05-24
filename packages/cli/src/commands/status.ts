@@ -2,6 +2,7 @@ import { readConfig, getConfigPath } from "../config";
 import { isHookInstalled } from "../hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { execFileSync } from "node:child_process";
 
 export async function statusCommand(): Promise<void> {
   const configPath = getConfigPath();
@@ -21,7 +22,7 @@ export async function statusCommand(): Promise<void> {
   if (config) {
     console.log(`  Member: ${config.member_name}`);
     console.log(`  Server: ${config.server_url}`);
-    console.log(`  API Key: ${config.api_key.slice(0, 15)}...`);
+    console.log(`  Team Key: ${config.team_key.slice(0, 15)}...`);
   }
 
   // Hook
@@ -57,8 +58,12 @@ export async function statusCommand(): Promise<void> {
 
   // ccusage
   try {
-    const result = Bun.spawnSync(["ccusage", "--version"]);
-    const version = new TextDecoder().decode(result.stdout).trim();
+    const result = execFileSync("ccusage", ["--version"], {
+      shell: true,
+      encoding: "utf-8",
+      timeout: 5000,
+    });
+    const version = result.trim();
     console.log(`ccusage: installed (${version || "version unknown"})`);
   } catch {
     console.log("ccusage: not found (install with: npx ccusage@latest)");

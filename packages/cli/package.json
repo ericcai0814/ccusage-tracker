@@ -1,19 +1,29 @@
 {
-  "name": "@ccusage-tracker/cli",
+  "name": "@ericcai/ccusage-tracker-cli",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "bin": {
-    "tracker": "./dist/index.js"
+    "tracker": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun",
-    "test": "bun test",
+    "build": "tsup src/index.ts --format esm --target node18 --clean",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest",
-    "bun-types": "latest",
-    "typescript": "^5.8.0"
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^1.6.0"
   }
 }

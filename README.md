@@ -27,7 +27,7 @@
 | Server | [Hono](https://hono.dev/) + [Bun](https://bun.sh/) |
 | 資料庫 | bun:sqlite（SQLite WAL mode） |
 | Dashboard | Hono JSX Server-Side Rendering |
-| Hook | Bash script（jq + ccusage + curl） |
+| Hook | Node CLI 子命令（`tracker hook session-end` / `session-start`） |
 | 部署 | Zeabur（Docker container + persistent volume） |
 
 ### 資料流
@@ -48,61 +48,76 @@
 
 ## 成員安裝
 
+**先決條件**：Node 18+ 與 `ccusage`（透過 `npm install -g ccusage@latest`）。
+
 一行指令，約 30 秒完成：
 
 ```bash
-curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
+npx @ericcai/ccusage-tracker-cli@latest setup
 ```
 
-安裝時會要求輸入名字和 **Team Key**（向管理員索取），Team Key 會即時驗證。
+或先安裝 CLI 再執行：
+
+```bash
+npm install -g @ericcai/ccusage-tracker-cli
+tracker setup
+```
+
+安裝時會互動式詢問**名字**、**Server URL**、**Team Key**（向管理員索取）。也可全旗標模式跳過互動：
+
+```bash
+tracker setup --name Alice --server-url https://tracker.example.com --team-key sk-tracker-xxx
+```
+
+### Windows 支援
+
+Windows 用戶在 PowerShell 或 Windows Terminal 跑同樣指令即可，**不需要 Git Bash、不需要 jq**。CLI 完全是 plain Node ESM，跨平台一致。
 
 ### Setup 做了什麼
 
-安裝腳本會依序執行以下操作：
-
 | 步驟 | 動作 | 路徑/說明 |
 |------|------|----------|
-| 1 | 檢查/安裝 `jq` | 用 brew（macOS）或 apt（Linux）安裝 |
-| 2 | 檢查/安裝 `ccusage` | `npm install -g ccusage@latest` |
-| 3 | 寫入設定檔 | `~/.config/ccusage-tracker/config.json` |
-| 4a | 下載 hook script | `~/.config/ccusage-tracker/session-end.sh` |
-| 4b | 注入 SessionEnd hook | 修改 `~/.claude/settings.json`（先備份） |
-| 5 | 驗證 server 連線 | `GET /api/health` |
+| 1 | 寫入設定檔 | `~/.config/ccusage-tracker/config.json` |
+| 2 | 注入 SessionStart + SessionEnd hooks | 修改 `~/.claude/settings.json`（先備份） |
+| 3 | 偵測舊版 bash hook | 若有則自動覆寫為新 CLI 指令，備份到 `.backup-pre-cli-migration` |
+| 4 | 驗證 server 連線 | `GET /api/health` |
+| 5 | 檢查 `ccusage` | 若未安裝給出安裝指示 |
+
+Hook command 寫入 `settings.json` 的值是 `tracker hook session-end`（或 `tracker hook session-start`）— 字面 CLI 子命令，不含任何絕對路徑或 shell 字串。
 
 ### 安裝後的檔案
 
 ```
 ~/.config/ccusage-tracker/
   config.json          # server URL、team key、成員名字
-  session-end.sh       # SessionEnd hook script (v2)
+  sessions/<id>        # SessionStart 記下的 model（SessionEnd 讀完即刪）
   buffer.jsonl         # POST 失敗時的本機暫存（自動建立/清除）
 
 ~/.claude/
-  settings.json        # 被加入了一筆 SessionEnd hook
-  settings.json.backup # 原始 settings.json 備份
+  settings.json        # 被加入兩筆 hook 條目（SessionStart + SessionEnd）
+  settings.json.backup # 原始 settings.json 備份（或 .backup-pre-cli-migration 若是從 bash 遷移）
 ```
 
-### 更新 Hook 腳本
+### 更新
 
-當 server 發布新版本後，成員需要更新本機的 hook 腳本：
+CLI 與 hook 邏輯走同一個 npm 套件，一行指令更新：
 
 ```bash
-curl -fsSL https://ccusage-tracker.zeabur.app/scripts/session-end.sh -o ~/.config/ccusage-tracker/session-end.sh
+npm update -g @ericcai/ccusage-tracker-cli
 ```
+
+不需要重跑 setup，hook command 已是版本無關的 `tracker hook session-end` 引用。
 
 ## 卸載
 
-一行指令：
-
 ```bash
-curl -fsSL https://ccusage-tracker.zeabur.app/uninstall.sh | bash
+tracker uninstall                       # 移除 hook 條目 + 刪除 ~/.config/ccusage-tracker/
+npm uninstall -g @ericcai/ccusage-tracker-cli   # 移除 CLI 本體
 ```
 
-卸載會：
-1. 從 `~/.claude/settings.json` 移除 SessionEnd hook
-2. 刪除 `~/.config/ccusage-tracker/` 目錄（config + hook script + buffer）
+`tracker uninstall` 預設會確認再刪 config 目錄，加 `--yes` 跳過確認。
 
-不影響 jq 和 ccusage，它們是獨立工具。
+不影響 `ccusage`，它是獨立工具。
 
 ## 查看用量
 
@@ -200,4 +215,10 @@ ccusage-tracker/
 按照上方「卸載」步驟移除即可，30 秒內完成。
 
 **Q: 如何更新 hook 到最新版？**
-執行：`curl -fsSL https://ccusage-tracker.zeabur.app/scripts/session-end.sh -o ~/.config/ccusage-tracker/session-end.sh`
+跑 `npm update -g @ericcai/ccusage-tracker-cli`。CLI 內含 hook 子命令，更新 CLI 就等於更新 hook。
+
+**Q: Windows 可以用嗎？**
+可以。CLI 是 plain Node ESM，PowerShell 或 Windows Terminal 直接跑 `npx @ericcai/ccusage-tracker-cli@latest setup`，不需要 Git Bash 或 jq。
+
+**Q: 從舊的 bash 版本升級？**
+跑一次 `npx @ericcai/ccusage-tracker-cli@latest setup`，setup 會自動偵測 `~/.claude/settings.json` 內的 `bash <path>/session-end.sh` 字樣並覆寫為新的 `tracker hook session-end`，備份原檔到 `settings.json.backup-pre-cli-migration`。
