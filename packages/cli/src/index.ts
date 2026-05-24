@@ -12,6 +12,7 @@ import { hookCommand } from "./commands/hook";
 import { uninstallCommand } from "./commands/uninstall";
 
 const VERSION = "0.1.0";
+// Note: keep in sync with packages/cli/package.json "version" field.
 
 const args = process.argv.slice(2);
 const command = args[0];
