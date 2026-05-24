@@ -5,7 +5,7 @@ File paths are locator context, not the task itself.
 
 ## 1. CLI 套件基礎設施改造
 
-- [x] 1.1 把 `@ccusage-tracker/cli` build target 從 `bun build --target bun` 改為 `tsc` 輸出 plain Node ESM（含 `#!/usr/bin/env node` shebang），實作「CLI distributed as plain Node ESM via npm」與「CLI 發行模式：plain Node ESM，不再 bun-target」決策 → verify: `pnpm --filter @ccusage-tracker/cli build` 在沒裝 Bun 的 Docker 容器內成功；`node dist/index.js --help` 輸出 help text
+- [x] 1.1 把 `@ericcai/ccusage-tracker-cli` build target 從 `bun build --target bun` 改為 `tsc` 輸出 plain Node ESM（含 `#!/usr/bin/env node` shebang），實作「CLI distributed as plain Node ESM via npm」與「CLI 發行模式：plain Node ESM，不再 bun-target」決策 → verify: `pnpm --filter @ericcai/ccusage-tracker-cli build` 在沒裝 Bun 的 Docker 容器內成功；`node dist/index.js --help` 輸出 help text
 - [x] 1.2 在 `packages/cli/package.json` 加上 `"bin": { "tracker": "./dist/index.js" }`、`"engines": { "node": ">=18" }`、`"publishConfig": { "access": "public" }`，並讓 npm pack 產出含 `dist/` 與可執行 shebang 的 tarball → verify: `npm pack --dry-run` 列出 dist/ 檔案；以 `npm install -g ./ccusage-tracker-cli-*.tgz` 安裝後，`which tracker` 與 `tracker --version` 在 macOS 與 Ubuntu 皆成功
 
 ## 2. Hook 子命令骨架
@@ -36,5 +36,5 @@ File paths are locator context, not the task itself.
 
 ## 7. 文件與跨平台驗證
 
-- [x] 7.1 重寫 `README.md` 的安裝、更新、卸載、Windows 支援、檔案位置段落，安裝指令改為單一行 `npx @ccusage-tracker/cli@latest setup`；卸載指令改為 `tracker uninstall && npm uninstall -g @ccusage-tracker/cli` → verify: `grep -n 'curl -fsSL.*setup.sh' README.md` 與 `grep -n 'bash \$HOOK_SCRIPT' README.md` 皆無輸出；README 含 Windows 區段
-- [ ] 7.2 三平台手動驗證：macOS、Ubuntu 22.04、Windows 11 各跑一次 `npx @ccusage-tracker/cli@latest setup`，並在每台機器上手動觸發 session-end，確認 server 收到的 `/api/ingest` body 在三平台 byte-equal → verify: 在 PR description 附三平台測試結果（含 server log 截圖或 hash 比對），dashboard 顯示三筆對應 member 條目
+- [x] 7.1 重寫 `README.md` 的安裝、更新、卸載、Windows 支援、檔案位置段落，安裝指令改為單一行 `npx @ericcai/ccusage-tracker-cli@latest setup`；卸載指令改為 `tracker uninstall && npm uninstall -g @ericcai/ccusage-tracker-cli` → verify: `grep -n 'curl -fsSL.*setup.sh' README.md` 與 `grep -n 'bash \$HOOK_SCRIPT' README.md` 皆無輸出；README 含 Windows 區段
+- [ ] 7.2 三平台手動驗證：macOS、Ubuntu 22.04、Windows 11 各跑一次 `npx @ericcai/ccusage-tracker-cli@latest setup`，並在每台機器上手動觸發 session-end，確認 server 收到的 `/api/ingest` body 在三平台 byte-equal → verify: 在 PR description 附三平台測試結果（含 server log 截圖或 hash 比對），dashboard 顯示三筆對應 member 條目

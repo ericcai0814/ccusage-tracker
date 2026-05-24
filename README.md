@@ -53,13 +53,13 @@
 一行指令，約 30 秒完成：
 
 ```bash
-npx @ccusage-tracker/cli@latest setup
+npx @ericcai/ccusage-tracker-cli@latest setup
 ```
 
 或先安裝 CLI 再執行：
 
 ```bash
-npm install -g @ccusage-tracker/cli
+npm install -g @ericcai/ccusage-tracker-cli
 tracker setup
 ```
 
@@ -103,7 +103,7 @@ Hook command 寫入 `settings.json` 的值是 `tracker hook session-end`（或 `
 CLI 與 hook 邏輯走同一個 npm 套件，一行指令更新：
 
 ```bash
-npm update -g @ccusage-tracker/cli
+npm update -g @ericcai/ccusage-tracker-cli
 ```
 
 不需要重跑 setup，hook command 已是版本無關的 `tracker hook session-end` 引用。
@@ -112,7 +112,7 @@ npm update -g @ccusage-tracker/cli
 
 ```bash
 tracker uninstall                       # 移除 hook 條目 + 刪除 ~/.config/ccusage-tracker/
-npm uninstall -g @ccusage-tracker/cli   # 移除 CLI 本體
+npm uninstall -g @ericcai/ccusage-tracker-cli   # 移除 CLI 本體
 ```
 
 `tracker uninstall` 預設會確認再刪 config 目錄，加 `--yes` 跳過確認。
@@ -215,10 +215,10 @@ ccusage-tracker/
 按照上方「卸載」步驟移除即可，30 秒內完成。
 
 **Q: 如何更新 hook 到最新版？**
-跑 `npm update -g @ccusage-tracker/cli`。CLI 內含 hook 子命令，更新 CLI 就等於更新 hook。
+跑 `npm update -g @ericcai/ccusage-tracker-cli`。CLI 內含 hook 子命令，更新 CLI 就等於更新 hook。
 
 **Q: Windows 可以用嗎？**
-可以。CLI 是 plain Node ESM，PowerShell 或 Windows Terminal 直接跑 `npx @ccusage-tracker/cli@latest setup`，不需要 Git Bash 或 jq。
+可以。CLI 是 plain Node ESM，PowerShell 或 Windows Terminal 直接跑 `npx @ericcai/ccusage-tracker-cli@latest setup`，不需要 Git Bash 或 jq。
 
 **Q: 從舊的 bash 版本升級？**
-跑一次 `npx @ccusage-tracker/cli@latest setup`，setup 會自動偵測 `~/.claude/settings.json` 內的 `bash <path>/session-end.sh` 字樣並覆寫為新的 `tracker hook session-end`，備份原檔到 `settings.json.backup-pre-cli-migration`。
+跑一次 `npx @ericcai/ccusage-tracker-cli@latest setup`，setup 會自動偵測 `~/.claude/settings.json` 內的 `bash <path>/session-end.sh` 字樣並覆寫為新的 `tracker hook session-end`，備份原檔到 `settings.json.backup-pre-cli-migration`。

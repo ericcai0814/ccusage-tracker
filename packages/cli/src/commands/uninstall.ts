@@ -89,5 +89,5 @@ export async function uninstallCommand(
     }
   }
 
-  deps.log("\nUninstall complete. Remove the CLI itself with: npm uninstall -g @ccusage-tracker/cli");
+  deps.log("\nUninstall complete. Remove the CLI itself with: npm uninstall -g @ericcai/ccusage-tracker-cli");
 }

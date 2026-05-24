@@ -49,7 +49,7 @@ ccusage-tracker 目前的 SessionEnd hook 由三處 bash script 構成：
 
 **理由：**
 
-- CLI 子命令可透過 `npm update -g @ccusage-tracker/cli` 一次更新；獨立 script 需 server 維護 `/scripts/*` endpoint + 成員手動 `curl -o`，與現狀痛點未解
+- CLI 子命令可透過 `npm update -g @ericcai/ccusage-tracker-cli` 一次更新；獨立 script 需 server 維護 `/scripts/*` endpoint + 成員手動 `curl -o`，與現狀痛點未解
 - Hook command 在 `settings.json` 是命名引用（`tracker hook session-end`），與檔案路徑解耦，遷移與重灌更乾淨
 - 版本透過 `tracker --version` 可見、有 npm changelog、可被使用者審核
 - 程式碼住在 `packages/cli/src/commands/hook/*.ts`，享有 TS type check、IDE 與單元測試
@@ -101,7 +101,7 @@ Setup 跑到時，掃描 `settings.json` 內 `hooks.SessionEnd[].hooks[].command
 
 - Bun-targeted output 在沒裝 Bun 的環境失敗，Windows PM 不會有 Bun
 - Node 18+ 已支援 ESM、`fetch`、`AbortSignal.timeout`、`node:test`，足以涵蓋舊 bun-specific API
-- 啟用 `npx @ccusage-tracker/cli@latest setup` 作為主要安裝路徑
+- 啟用 `npx @ericcai/ccusage-tracker-cli@latest setup` 作為主要安裝路徑
 
 ### Setup 改為 `tracker setup --server-url <url>` 可選參數版
 
@@ -113,7 +113,7 @@ Setup 跑到時，掃描 `settings.json` 內 `hooks.SessionEnd[].hooks[].command
 
 **Observable behavior**
 
-1. **安裝（任何平台）**：跑 `npx @ccusage-tracker/cli@latest setup` 後：
+1. **安裝（任何平台）**：跑 `npx @ericcai/ccusage-tracker-cli@latest setup` 後：
    - `~/.config/ccusage-tracker/config.json` 包含 `server_url`、`team_key`、`member_name`
    - `~/.claude/settings.json` 內 `hooks.SessionEnd` 與 `hooks.SessionStart` 各含一筆 `command: "tracker hook session-end"` / `command: "tracker hook session-start"`，既有其他 hook 不動
    - 若 `settings.json` 存在：建立 `settings.json.backup`（首次安裝）或 `settings.json.backup-pre-cli-migration`（從舊 bash 遷移）
@@ -152,10 +152,10 @@ Setup 跑到時，掃描 `settings.json` 內 `hooks.SessionEnd[].hooks[].command
 
 **Acceptance criteria**
 
-- 在 macOS、Ubuntu 22.04、Windows 11 各跑一次 `npx @ccusage-tracker/cli@latest setup`，三平台都完成設定並寫入正確的 `settings.json`
+- 在 macOS、Ubuntu 22.04、Windows 11 各跑一次 `npx @ericcai/ccusage-tracker-cli@latest setup`，三平台都完成設定並寫入正確的 `settings.json`
 - 既有 macOS 機器（有舊 bash hook）跑 `tracker setup` 後，`settings.json` 的 hook command 從 `bash <path>` 變為 `tracker hook session-end`，且 `settings.json.backup-pre-cli-migration` 存在
 - Windows 11 上手動執行 `echo '{"session_id":"x","transcript_path":""}' | tracker hook session-end`，verify POST body 與 macOS 版本欄位相同
-- `pnpm --filter @ccusage-tracker/cli test` 通過，含 hook session-end / session-start 單元測試、buffer 重送整合測試、舊 hook 偵測測試
+- `pnpm --filter @ericcai/ccusage-tracker-cli test` 通過，含 hook session-end / session-start 單元測試、buffer 重送整合測試、舊 hook 偵測測試
 - Server `/setup.sh`、`/uninstall.sh`、`/scripts/*` 路由刪除後，server build 與既有 server 測試通過
 - README 安裝段落為單一一行 `npx` 指令
 
@@ -183,7 +183,7 @@ Setup 跑到時，掃描 `settings.json` 內 `hooks.SessionEnd[].hooks[].command
 ## Migration Plan
 
 1. **0.3.0-rc.1（內部驗證）**：發行新版 CLI 到 npm；server 同時保留新舊路由，`/setup.sh` 內容改為導引 npx 指令
-2. **公告與導引**：團隊 Slack 訊息：「請跑 `npx @ccusage-tracker/cli@latest setup`，舊 hook 會自動換掉」
+2. **公告與導引**：團隊 Slack 訊息：「請跑 `npx @ericcai/ccusage-tracker-cli@latest setup`，舊 hook 會自動換掉」
 3. **觀察期（2 週）**：監看 dashboard 「stale > 24h」成員列表，主動聯絡未遷移者
 4. **0.3.0（正式版）**：刪除 server `/setup.sh`、`/uninstall.sh`、`/scripts/*` 路由與 `scripts.ts`
 5. **0.4.0**：setup 主動清理舊 `~/.config/ccusage-tracker/session-end.sh` 檔

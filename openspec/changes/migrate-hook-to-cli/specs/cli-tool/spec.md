@@ -111,16 +111,16 @@ The CLI SHALL provide an `uninstall` command that removes ccusage-tracker hooks 
 
 ### Requirement: CLI distributed as plain Node ESM via npm
 
-The `@ccusage-tracker/cli` package SHALL be published to an npm registry as a plain Node ESM package executable via `npx` without requiring Bun or any non-npm toolchain on the user's machine.
+The `@ericcai/ccusage-tracker-cli` package SHALL be published to an npm registry as a plain Node ESM package executable via `npx` without requiring Bun or any non-npm toolchain on the user's machine.
 
 #### Scenario: npx invocation
 
-- **WHEN** a user with Node 18+ runs `npx @ccusage-tracker/cli@latest setup`
+- **WHEN** a user with Node 18+ runs `npx @ericcai/ccusage-tracker-cli@latest setup`
 - **THEN** npm SHALL download the package and execute the `tracker` bin, completing setup without prompting for additional tool installation
 
 #### Scenario: Global install
 
-- **WHEN** a user runs `npm install -g @ccusage-tracker/cli`
+- **WHEN** a user runs `npm install -g @ericcai/ccusage-tracker-cli`
 - **THEN** the `tracker` command SHALL be available on PATH on macOS, Linux, and Windows
 
 #### Scenario: Engine constraint

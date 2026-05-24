@@ -1,7 +1,7 @@
 {
-  "name": "@ccusage-tracker/cli",
-  "version": "0.1.0",
-  "private": true,
+  "name": "@ericcai/ccusage-tracker-cli",
+  "version": "0.1.0-rc.1",
+  "private": false,
   "type": "module",
   "bin": {
     "tracker": "./dist/index.js"

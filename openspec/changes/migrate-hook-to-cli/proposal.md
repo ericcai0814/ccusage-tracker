@@ -6,8 +6,8 @@ Windows 成員無法走目前的 `curl -fsSL .../setup.sh | bash` 安裝流程�
 
 ## What Changes
 
-- **BREAKING**：Hook 執行載體從「下載到 `~/.config/ccusage-tracker/session-end.sh` 的 bash script」改為「`@ccusage-tracker/cli` 的子命令 `tracker hook session-end` / `tracker hook session-start`」
-- **BREAKING**：成員安裝指令從 `curl -fsSL .../setup.sh | bash` 改為 `npx @ccusage-tracker/cli@latest setup`；卸載指令對應改為 `tracker uninstall` 或 `npm uninstall -g @ccusage-tracker/cli`
+- **BREAKING**：Hook 執行載體從「下載到 `~/.config/ccusage-tracker/session-end.sh` 的 bash script」改為「`@ericcai/ccusage-tracker-cli` 的子命令 `tracker hook session-end` / `tracker hook session-start`」
+- **BREAKING**：成員安裝指令從 `curl -fsSL .../setup.sh | bash` 改為 `npx @ericcai/ccusage-tracker-cli@latest setup`；卸載指令對應改為 `tracker uninstall` 或 `npm uninstall -g @ericcai/ccusage-tracker-cli`
 - 新增 `tracker hook session-end` 與 `tracker hook session-start` 子命令，吸收原 bash script 的所有邏輯（讀 stdin payload、讀 config、呼叫 ccusage、buffer 重送與 7 天過期清理、transcript metrics 萃取、背景 POST）
 - 新增 `tracker uninstall` 子命令，取代 server 端的 `uninstall.sh`
 - `tracker setup` 加入舊版偵測：若 `~/.claude/settings.json` 內已存在 `bash <path>/session-end.sh` 字樣的 hook，自動覆寫為新指令並備份
@@ -40,6 +40,6 @@ Windows 成員無法走目前的 `curl -fsSL .../setup.sh | bash` 安裝流程�
   - 修改：`README.md`（安裝、更新、卸載、Windows 支援、檔案位置）
 - **Affected dependencies**：
   - 移除 runtime 依賴：`jq`、`bash`
-  - 新增 npm 配送：`@ccusage-tracker/cli` 需發行至 npm（公開或私有 registry）
+  - 新增 npm 配送：`@ericcai/ccusage-tracker-cli` 需發行至 npm（公開或私有 registry）
   - 保留：`ccusage`、Node 18+
 - **Affected users**：所有現有成員（mac/Linux）需重新跑 setup 完成遷移；Windows 成員首次可安裝
