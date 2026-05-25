@@ -27,7 +27,7 @@
 | Server | [Hono](https://hono.dev/) + [Bun](https://bun.sh/) |
 | 資料庫 | bun:sqlite（SQLite WAL mode） |
 | Dashboard | Hono JSX Server-Side Rendering |
-| Hook | Bash script（jq + ccusage + curl） |
+| Hook | Node.js script（ccusage + fetch，跨平台 macOS/Linux/Windows） |
 | 部署 | Zeabur（Docker container + persistent volume） |
 
 ### 資料流
@@ -48,13 +48,23 @@
 
 ## 成員安裝
 
-一行指令，約 30 秒完成：
+一行指令，約 30 秒完成。
+
+**macOS / Linux**（Git Bash 亦可）：
 
 ```bash
 curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
 ```
 
-安裝時會要求輸入名字和 **Team Key**（向管理員索取），Team Key 會即時驗證。
+**Windows（PowerShell，不需 Git Bash）**：
+
+```powershell
+irm https://ccusage-tracker.zeabur.app/setup.ps1 | iex
+```
+
+安裝時會要求輸入名字和 **Team Key**（向管理員索取），Team Key 會即時驗證。上報腳本以 Node.js 執行（`node session-end.mjs`），三個平台共用，安裝後不再依賴 bash 或 jq。
+
+> Windows 需先安裝 [Node.js](https://nodejs.org)（>=18）。`irm | iex` 會下載並執行安裝腳本；若想先檢視內容，可單獨執行 `irm https://ccusage-tracker.zeabur.app/setup.ps1`。
 
 ### Setup 做了什麼
 
@@ -62,23 +72,26 @@ curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
 
 | 步驟 | 動作 | 路徑/說明 |
 |------|------|----------|
-| 1 | 檢查/安裝 `jq` | 用 brew（macOS）或 apt（Linux）安裝 |
-| 2 | 檢查/安裝 `ccusage` | `npm install -g ccusage@latest` |
-| 3 | 寫入設定檔 | `~/.config/ccusage-tracker/config.json` |
-| 4a | 下載 hook script | `~/.config/ccusage-tracker/session-end.sh` |
-| 4b | 注入 SessionEnd hook | 修改 `~/.claude/settings.json`（先備份） |
-| 5 | 驗證 server 連線 | `GET /api/health` |
+| 1 | 檢查 Node.js / 安裝 `ccusage` | `npm install -g ccusage@latest` |
+| 2 | 寫入設定檔 | `~/.config/ccusage-tracker/config.json` |
+| 3a | 下載 hook scripts | `~/.config/ccusage-tracker/session-end.mjs`、`session-start.mjs` |
+| 3b | 注入 SessionStart + SessionEnd hook | 修改 `~/.claude/settings.json`（先備份） |
+| 4 | 驗證 server 連線 | `GET /api/health` |
+
+> macOS/Linux 的 `setup.sh` 另會自動安裝 `jq`（brew/apt/apk）用於合併 `settings.json`；Windows 的 `setup.ps1` 改用 PowerShell 原生 JSON，不需 jq。兩者裝出的上報 hook 都是 `node session-end.mjs`。
 
 ### 安裝後的檔案
 
 ```
 ~/.config/ccusage-tracker/
   config.json          # server URL、team key、成員名字
-  session-end.sh       # SessionEnd hook script (v2)
+  session-end.mjs      # SessionEnd hook script（Node.js，跨平台）
+  session-start.mjs    # SessionStart hook script（記錄 model）
+  sessions/            # 各 session 的 model 暫存（SessionEnd 讀後清除）
   buffer.jsonl         # POST 失敗時的本機暫存（自動建立/清除）
 
 ~/.claude/
-  settings.json        # 被加入了一筆 SessionEnd hook
+  settings.json        # 被加入了 SessionStart + SessionEnd hooks
   settings.json.backup # 原始 settings.json 備份
 ```
 
@@ -86,9 +99,19 @@ curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
 
 當 server 發布新版本後，成員需要更新本機的 hook 腳本：
 
+**macOS / Linux**：
+
 ```bash
-curl -fsSL https://ccusage-tracker.zeabur.app/scripts/session-end.sh -o ~/.config/ccusage-tracker/session-end.sh
+curl -fsSL https://ccusage-tracker.zeabur.app/scripts/session-end.mjs -o ~/.config/ccusage-tracker/session-end.mjs
 ```
+
+**Windows（PowerShell）**：
+
+```powershell
+irm https://ccusage-tracker.zeabur.app/scripts/session-end.mjs -OutFile "$env:USERPROFILE\.config\ccusage-tracker\session-end.mjs"
+```
+
+或直接重跑安裝指令（會覆蓋為最新版）。
 
 ## 卸載
 
@@ -162,7 +185,7 @@ ccusage-tracker/
         app.ts               # 路由定義
         db.ts                # SQLite schema + migration
         queries.ts           # typed query helpers
-        scripts.ts           # setup.sh / session-end.sh 產生器
+        scripts.ts           # setup.sh/.ps1 + session-end.sh/.mjs 產生器
         middleware/
           team-auth.ts       # TEAM_KEY 認證
           admin-auth.ts      # ADMIN_API_KEY 認證
@@ -200,4 +223,4 @@ ccusage-tracker/
 按照上方「卸載」步驟移除即可，30 秒內完成。
 
 **Q: 如何更新 hook 到最新版？**
-執行：`curl -fsSL https://ccusage-tracker.zeabur.app/scripts/session-end.sh -o ~/.config/ccusage-tracker/session-end.sh`
+見上方「更新 Hook 腳本」章節（macOS/Linux 用 `curl`、Windows 用 `irm` 下載最新的 `session-end.mjs`），或直接重跑安裝指令。

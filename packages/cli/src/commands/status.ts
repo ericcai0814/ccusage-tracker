@@ -21,7 +21,7 @@ export async function statusCommand(): Promise<void> {
   if (config) {
     console.log(`  Member: ${config.member_name}`);
     console.log(`  Server: ${config.server_url}`);
-    console.log(`  API Key: ${config.api_key.slice(0, 15)}...`);
+    console.log(`  Team Key: ${config.team_key.slice(0, 15)}...`);
   }
 
   // Hook

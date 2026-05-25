@@ -6,7 +6,7 @@ import sessionIngest from "./routes/session-ingest";
 import report from "./routes/report";
 import weeklyReport from "./routes/weekly-report";
 import dashboard from "./routes/dashboard";
-import { generateSetupScript, generateUninstallScript, generateSessionStartScript, generateSessionEndScript } from "./scripts";
+import { generateSetupScript, generateUninstallScript, generateSessionStartScript, generateSessionEndScript, generateSetupPs1Script, generateSessionStartMjsScript, generateSessionEndMjsScript } from "./scripts";
 import type { Database } from "bun:sqlite";
 
 export type AppEnv = {
@@ -53,6 +53,25 @@ export function createApp(db?: Database): Hono<AppEnv> {
   app.get("/scripts/session-end.sh", (c) => {
     c.header("Content-Type", "text/plain; charset=utf-8");
     return c.text(generateSessionEndScript());
+  });
+
+  // ── 跨平台 Node.js 版（路線 C）+ Windows 安裝入口 ──
+  app.get("/setup.ps1", (c) => {
+    const proto = c.req.header("X-Forwarded-Proto") || "https";
+    const host = c.req.header("Host") || new URL(c.req.url).host;
+    const serverUrl = process.env.SERVER_URL || `${proto}://${host}`;
+    c.header("Content-Type", "text/plain; charset=utf-8");
+    return c.text(generateSetupPs1Script(serverUrl));
+  });
+
+  app.get("/scripts/session-start.mjs", (c) => {
+    c.header("Content-Type", "text/plain; charset=utf-8");
+    return c.text(generateSessionStartMjsScript());
+  });
+
+  app.get("/scripts/session-end.mjs", (c) => {
+    c.header("Content-Type", "text/plain; charset=utf-8");
+    return c.text(generateSessionEndMjsScript());
   });
 
   app.route("/api/admin", admin);

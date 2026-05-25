@@ -26,7 +26,7 @@ describe("Config", () => {
 
     const testConfig = {
       server_url: "http://localhost:3000",
-      api_key: "sk-tracker-test123",
+      team_key: "sk-tracker-test123",
       member_name: "TestUser",
     };
 
@@ -35,7 +35,7 @@ describe("Config", () => {
     const raw = readFileSync(configPath, "utf-8");
     const parsed = JSON.parse(raw);
     expect(parsed.server_url).toBe("http://localhost:3000");
-    expect(parsed.api_key).toBe("sk-tracker-test123");
+    expect(parsed.team_key).toBe("sk-tracker-test123");
     expect(parsed.member_name).toBe("TestUser");
   });
 

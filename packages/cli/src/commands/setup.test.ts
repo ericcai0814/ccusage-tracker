@@ -19,6 +19,7 @@ function createMockDeps(prompts: string[]): SetupDeps & MockState {
     prompt: async () => prompts[promptIndex++] ?? "",
     writeConfig: (config) => { deps.writtenConfig = config; },
     installHook: () => ({ installed: true, backedUp: false }),
+    fetchHookScript: async () => "// mock hook script",
     checkServer: async () => true,
     checkCcusage: () => true,
     log: (msg) => deps.logs.push(msg),
@@ -30,7 +31,7 @@ function createMockDeps(prompts: string[]): SetupDeps & MockState {
 }
 
 describe("setup command", () => {
-  it("should prompt for name, server URL, and API key", async () => {
+  it("should prompt for name, server URL, and Team Key", async () => {
     const prompts: string[] = [];
     const deps = createMockDeps(["Eric", "https://example.com", "sk-test-123"]);
     const originalPrompt = deps.prompt;
@@ -44,7 +45,7 @@ describe("setup command", () => {
     expect(prompts).toHaveLength(3);
     expect(prompts[0]).toContain("name");
     expect(prompts[1]).toContain("Server URL");
-    expect(prompts[2]).toContain("API Key");
+    expect(prompts[2]).toContain("Team Key");
   });
 
   it("should exit with code 1 if name is empty", async () => {
@@ -63,12 +64,12 @@ describe("setup command", () => {
     expect(deps.warns.some((w) => w.includes("Server URL"))).toBe(true);
   });
 
-  it("should exit with code 1 if API key is empty", async () => {
+  it("should exit with code 1 if Team Key is empty", async () => {
     const deps = createMockDeps(["Eric", "https://example.com", ""]);
     await setupCommand(deps);
 
     expect(deps.exitCode).toBe(1);
-    expect(deps.warns.some((w) => w.includes("API Key"))).toBe(true);
+    expect(deps.warns.some((w) => w.includes("Team Key"))).toBe(true);
   });
 
   it("should write config with trimmed server URL", async () => {
@@ -77,7 +78,7 @@ describe("setup command", () => {
 
     expect(deps.writtenConfig).toEqual({
       server_url: "https://example.com",
-      api_key: "sk-test-123",
+      team_key: "sk-test-123",
       member_name: "Eric",
     });
   });

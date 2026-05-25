@@ -1,7 +1,6 @@
 import { createInterface } from "node:readline";
 import { writeConfig, type TrackerConfig } from "../config";
 import { installHook } from "../hooks";
-import { join, dirname } from "node:path";
 
 function defaultPrompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -32,10 +31,21 @@ function defaultCheckCcusage(): boolean {
   }
 }
 
+async function defaultFetchHookScript(serverUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${serverUrl}/scripts/session-end.mjs`, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
 export interface SetupDeps {
   prompt: (question: string) => Promise<string>;
   writeConfig: (config: TrackerConfig) => void;
-  installHook: (hookScriptPath: string) => { installed: boolean; backedUp: boolean };
+  installHook: (scriptContent: string) => { installed: boolean; backedUp: boolean };
+  fetchHookScript: (serverUrl: string) => Promise<string | null>;
   checkServer: (serverUrl: string) => Promise<boolean>;
   checkCcusage: () => boolean;
   log: (msg: string) => void;
@@ -47,6 +57,7 @@ const defaultDeps: SetupDeps = {
   prompt: defaultPrompt,
   writeConfig,
   installHook,
+  fetchHookScript: defaultFetchHookScript,
   checkServer: defaultCheckServer,
   checkCcusage: defaultCheckCcusage,
   log: (msg) => console.log(msg),
@@ -73,9 +84,9 @@ export async function setupCommand(overrides?: Partial<SetupDeps>): Promise<void
     return;
   }
 
-  const apiKey = await deps.prompt("API Key (sk-tracker-...): ");
-  if (!apiKey) {
-    deps.warn("API Key is required.");
+  const teamKey = await deps.prompt("Team Key (ask your admin): ");
+  if (!teamKey) {
+    deps.warn("Team Key is required.");
     deps.exit(1);
     return;
   }
@@ -83,23 +94,27 @@ export async function setupCommand(overrides?: Partial<SetupDeps>): Promise<void
   // Write config
   const config: TrackerConfig = {
     server_url: serverUrl.replace(/\/+$/, ""),
-    api_key: apiKey,
+    team_key: teamKey,
     member_name: name,
   };
   deps.writeConfig(config);
   deps.log("\nConfig saved.");
 
-  // Install hook
-  const hookScriptPath = join(dirname(dirname(import.meta.dir)), "server", "scripts", "session-end.sh");
-  try {
-    const { installed, backedUp } = deps.installHook(hookScriptPath);
-    if (installed) {
-      deps.log("SessionEnd hook installed." + (backedUp ? " (settings.json backed up)" : ""));
-    } else {
-      deps.log("SessionEnd hook already installed.");
+  // Install hook（從 server 下載最新的 .mjs 上報腳本，與 setup.sh/setup.ps1 一致）
+  const scriptContent = await deps.fetchHookScript(config.server_url);
+  if (scriptContent) {
+    try {
+      const { installed, backedUp } = deps.installHook(scriptContent);
+      if (installed) {
+        deps.log("SessionEnd hook installed." + (backedUp ? " (settings.json backed up)" : ""));
+      } else {
+        deps.log("SessionEnd hook already installed.");
+      }
+    } catch (err) {
+      deps.warn("Warning: Could not install hook automatically. " + (err as Error).message);
     }
-  } catch (err) {
-    deps.warn("Warning: Could not install hook automatically. " + (err as Error).message);
+  } else {
+    deps.warn("Warning: Could not download hook script from " + config.server_url);
   }
 
   // Verify server

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, copyFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -25,10 +25,15 @@ export function getClaudeSettingsPath(): string {
 }
 
 export function getHookCommand(): string {
-  return "bash " + join(homedir(), ".config", "ccusage-tracker", "session-end.sh");
+  return "node " + join(homedir(), ".config", "ccusage-tracker", "session-end.mjs");
 }
 
-export function installHook(hookScriptSource: string): { installed: boolean; backedUp: boolean } {
+// 以路徑片段判斷,可同時辨識新版（node .mjs）與舊版（bash .sh）hook
+function isCcusageTrackerHook(command?: string): boolean {
+  return !!command && command.includes("ccusage-tracker");
+}
+
+export function installHook(scriptContent: string): { installed: boolean; backedUp: boolean } {
   const settingsPath = getClaudeSettingsPath();
   let settings: ClaudeSettings = {};
   let backedUp = false;
@@ -42,10 +47,15 @@ export function installHook(hookScriptSource: string): { installed: boolean; bac
     backedUp = true;
   }
 
+  // 寫出（或更新）上報腳本到 config 目錄
+  const destDir = join(homedir(), ".config", "ccusage-tracker");
+  mkdirSync(destDir, { recursive: true });
+  writeFileSync(join(destDir, "session-end.mjs"), scriptContent);
+
   const hookCommand = getHookCommand();
   const existingHooks = settings.hooks?.SessionEnd ?? [];
   const alreadyInstalled = existingHooks.some(
-    (m) => m.hooks?.some((h) => h.command === hookCommand)
+    (m) => m.hooks?.some((h) => isCcusageTrackerHook(h.command))
   );
 
   if (alreadyInstalled) {
@@ -53,7 +63,7 @@ export function installHook(hookScriptSource: string): { installed: boolean; bac
   }
 
   const newMatcher: HookMatcher = {
-    matcher: "*",
+    matcher: "",
     hooks: [{ type: "command", command: hookCommand }],
   };
   const updatedSettings: ClaudeSettings = {
@@ -66,11 +76,6 @@ export function installHook(hookScriptSource: string): { installed: boolean; bac
 
   writeFileSync(settingsPath, JSON.stringify(updatedSettings, null, 2) + "\n");
 
-  // Copy hook script to config directory
-  const destDir = join(homedir(), ".config", "ccusage-tracker");
-  const destPath = join(destDir, "session-end.sh");
-  copyFileSync(hookScriptSource, destPath);
-
   return { installed: true, backedUp };
 }
 
@@ -80,9 +85,8 @@ export function isHookInstalled(): boolean {
 
   try {
     const settings: ClaudeSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    const hookCommand = getHookCommand();
     return settings.hooks?.SessionEnd?.some(
-      (m) => m.hooks?.some((h) => h.command === hookCommand)
+      (m) => m.hooks?.some((h) => isCcusageTrackerHook(h.command))
     ) ?? false;
   } catch {
     return false;

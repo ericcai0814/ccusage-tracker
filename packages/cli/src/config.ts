@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 
 export interface TrackerConfig {
   server_url: string;
-  api_key: string;
+  team_key: string;
   member_name: string;
 }
 

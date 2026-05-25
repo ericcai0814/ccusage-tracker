@@ -91,7 +91,7 @@ export async function reportCommand(args: string[]): Promise<void> {
 
   try {
     const res = await fetch(`${config.server_url}/api/report/summary?period=${period}`, {
-      headers: { Authorization: `Bearer ${config.api_key}` },
+      headers: { Authorization: `Bearer ${config.team_key}` },
       signal: AbortSignal.timeout(10000),
     });
 

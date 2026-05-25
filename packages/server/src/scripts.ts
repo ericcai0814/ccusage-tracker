@@ -7,8 +7,8 @@ set -euo pipefail
 SERVER_URL="${serverUrl}"
 CONFIG_DIR="\$HOME/.config/ccusage-tracker"
 CONFIG_FILE="\$CONFIG_DIR/config.json"
-HOOK_SCRIPT="\$CONFIG_DIR/session-end.sh"
-HOOK_START_SCRIPT="\$CONFIG_DIR/session-start.sh"
+HOOK_SCRIPT="\$CONFIG_DIR/session-end.mjs"
+HOOK_START_SCRIPT="\$CONFIG_DIR/session-start.mjs"
 CLAUDE_SETTINGS="\$HOME/.claude/settings.json"
 
 echo ""
@@ -96,18 +96,16 @@ cat > "\$CONFIG_FILE" << CONF
 CONF
 echo "[OK] Config 寫入 \$CONFIG_FILE"
 
-# ── 下載 hook scripts ──
-curl -fsSL "\$SERVER_URL/scripts/session-end.sh" -o "\$HOOK_SCRIPT"
-chmod +x "\$HOOK_SCRIPT"
-curl -fsSL "\$SERVER_URL/scripts/session-start.sh" -o "\$HOOK_START_SCRIPT"
-chmod +x "\$HOOK_START_SCRIPT"
+# ── 下載 hook scripts（Node.js 版，跨平台）──
+curl -fsSL "\$SERVER_URL/scripts/session-end.mjs" -o "\$HOOK_SCRIPT"
+curl -fsSL "\$SERVER_URL/scripts/session-start.mjs" -o "\$HOOK_START_SCRIPT"
 echo "[OK] Hook scripts 下載完成"
 
 # ── 安裝 SessionStart + SessionEnd hooks ──
 echo "[4/4] 安裝 Claude Code hooks..."
 
-HOOK_START_CMD="bash \$HOOK_START_SCRIPT"
-HOOK_CMD="bash \$HOOK_SCRIPT"
+HOOK_START_CMD="node \$HOOK_START_SCRIPT"
+HOOK_CMD="node \$HOOK_SCRIPT"
 
 if [ -f "\$CLAUDE_SETTINGS" ]; then
   cp "\$CLAUDE_SETTINGS" "\$CLAUDE_SETTINGS.backup"
@@ -165,15 +163,18 @@ echo "  ccusage-tracker 卸載程式"
 echo "  ========================"
 echo ""
 
-# ── 移除 SessionEnd hook ──
+# ── 移除 SessionStart + SessionEnd hooks ──
 if [ -f "\$CLAUDE_SETTINGS" ] && command -v jq &> /dev/null; then
-  if jq -e '.hooks.SessionEnd' "\$CLAUDE_SETTINGS" > /dev/null 2>&1; then
-    UPDATED=\$(jq '.hooks.SessionEnd |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not))' "\$CLAUDE_SETTINGS")
-    echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
-    echo "[OK] SessionEnd hook 已移除"
-  else
-    echo "[--] 未發現 SessionEnd hook"
-  fi
+  UPDATED=\$(jq '
+    if .hooks then
+      .hooks |= (
+        (if .SessionStart then .SessionStart |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end) |
+        (if .SessionEnd then .SessionEnd |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end)
+      )
+    else . end
+  ' "\$CLAUDE_SETTINGS")
+  echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
+  echo "[OK] SessionStart + SessionEnd hooks 已移除"
 else
   echo "[--] 未發現 settings.json 或 jq"
 fi
@@ -435,5 +436,451 @@ _post_current() {
 _post_current &
 
 exit 0
+`;
+}
+
+// ── 以下為跨平台 Node.js 版（路線 C）：供 Windows 隊員與未來統一使用 ──
+// 與上方 bash 版（generateSessionStartScript / generateSessionEndScript）行為對應，
+// 但不依賴 bash / jq，只需 node >= 18（內建 fetch）。hook 命令為 `node <path>.mjs`。
+
+export function generateSessionStartMjsScript(): string {
+  return String.raw`#!/usr/bin/env node
+// ccusage-tracker SessionStart hook（Node.js 跨平台版）
+// 記錄本次 session 使用的 model，供 SessionEnd 估算 context 佔比。
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+const SESSIONS_DIR = join(homedir(), '.config', 'ccusage-tracker', 'sessions');
+
+function readStdin(timeoutMs) {
+  return new Promise((resolve) => {
+    let data = '';
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(data); } };
+    const timer = setTimeout(finish, timeoutMs);
+    try {
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (c) => { data += c; });
+      process.stdin.on('end', () => { clearTimeout(timer); finish(); });
+      process.stdin.on('error', () => { clearTimeout(timer); finish(); });
+    } catch { clearTimeout(timer); finish(); }
+  });
+}
+
+async function main() {
+  const payload = await readStdin(1000);
+  if (!payload) return;
+  let sessionId = '';
+  let model = '';
+  try {
+    const p = JSON.parse(payload);
+    sessionId = p.session_id || '';
+    model = p.model || '';
+  } catch { return; }
+  if (!sessionId || !model) return;
+  try {
+    mkdirSync(SESSIONS_DIR, { recursive: true });
+    writeFileSync(join(SESSIONS_DIR, sessionId), model);
+  } catch { /* 靜默 */ }
+}
+
+main().catch(() => {}).finally(() => process.exit(0));
+`;
+}
+
+export function generateSessionEndMjsScript(): string {
+  return String.raw`#!/usr/bin/env node
+// ccusage-tracker SessionEnd hook（Node.js 跨平台版，對應 session-end.sh v4）
+// 上報今日用量快照 + session 行為指標。永遠 exit 0，絕不阻擋 Claude Code。
+// 與 bash 版差異：上報採 await（有 5~15s timeout 上限）而非背景 &，以確保送達。
+import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+
+const CONFIG_DIR = join(homedir(), '.config', 'ccusage-tracker');
+const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
+const BUFFER_FILE = join(CONFIG_DIR, 'buffer.jsonl');
+const SESSIONS_DIR = join(CONFIG_DIR, 'sessions');
+const CONTEXT_LIMIT = 200000;
+
+function readStdin(timeoutMs) {
+  return new Promise((resolve) => {
+    let data = '';
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(data); } };
+    const timer = setTimeout(finish, timeoutMs);
+    try {
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (c) => { data += c; });
+      process.stdin.on('end', () => { clearTimeout(timer); finish(); });
+      process.stdin.on('error', () => { clearTimeout(timer); finish(); });
+    } catch { clearTimeout(timer); finish(); }
+  });
+}
+
+async function postJson(url, teamKey, body, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + teamKey },
+      body,
+      signal: ctrl.signal,
+    });
+    return res.status >= 200 && res.status < 300;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function readConfig() {
+  if (!existsSync(CONFIG_FILE)) return null;
+  try {
+    const c = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+    if (!c.server_url || !c.team_key || !c.member_name) return null;
+    return c;
+  } catch {
+    return null;
+  }
+}
+
+async function flushBuffer(serverUrl, teamKey) {
+  if (!existsSync(BUFFER_FILE)) return;
+  let lines;
+  try {
+    lines = readFileSync(BUFFER_FILE, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch { return; }
+  if (lines.length === 0) return;
+
+  const remaining = [];
+  const start = Date.now();
+  for (let i = 0; i < lines.length; i++) {
+    if (Date.now() - start >= 15000) { remaining.push(...lines.slice(i)); break; }
+    const ok = await postJson(serverUrl + '/api/ingest', teamKey, lines[i], 5000);
+    if (!ok) remaining.push(lines[i]);
+  }
+
+  const cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+  const cleaned = remaining.filter((l) => {
+    try {
+      const ba = JSON.parse(l)._buffered_at;
+      if (!ba) return false;
+      const t = Date.parse(ba);
+      return !isNaN(t) && t >= cutoff;
+    } catch { return false; }
+  });
+
+  try {
+    if (cleaned.length === 0) {
+      if (existsSync(BUFFER_FILE)) unlinkSync(BUFFER_FILE);
+    } else {
+      writeFileSync(BUFFER_FILE, cleaned.join('\n') + '\n');
+    }
+  } catch { /* 靜默 */ }
+}
+
+function extractMetrics(events) {
+  const textLen = (content) => {
+    if (typeof content === 'string') return content.length;
+    if (Array.isArray(content)) return content.filter((b) => b && b.type === 'text').reduce((a, b) => a + ((b.text || '').length), 0);
+    return 0;
+  };
+
+  const sessionId = (events.find((e) => e.sessionId != null) || {}).sessionId || '';
+  const sessionName = (events.find((e) => e.slug != null) || {}).slug || '';
+  const cwdEvent = events.find((e) => e.cwd != null);
+  const project = cwdEvent ? (cwdEvent.cwd.split(/[/\\]/).pop() || '') : '';
+  const branch = (events.find((e) => e.gitBranch != null) || {}).gitBranch || '';
+
+  const externalUsers = events.filter((e) => e.type === 'user' && e.userType === 'external');
+  const userMessages = events.filter((e) => e.type === 'user').length;
+  const assistantMessages = events.filter((e) => e.type === 'assistant').length;
+  const userAvgChars = externalUsers.length > 0
+    ? Math.floor(externalUsers.reduce((a, e) => a + textLen(e.message && e.message.content), 0) / externalUsers.length)
+    : 0;
+
+  const toolUses = [];
+  for (const e of events) {
+    if (e.type === 'assistant' && e.message && Array.isArray(e.message.content)) {
+      for (const b of e.message.content) if (b && b.type === 'tool_use') toolUses.push(b);
+    }
+  }
+  const toolCalls = {};
+  for (const t of toolUses) toolCalls[t.name] = (toolCalls[t.name] || 0) + 1;
+
+  let toolErrors = 0;
+  for (const e of events) {
+    if (e.type === 'user' && e.message && Array.isArray(e.message.content)) {
+      for (const b of e.message.content) if (b && b.type === 'tool_result' && b.is_error === true) toolErrors++;
+    }
+  }
+
+  const timestamps = events.filter((e) => e.timestamp != null).map((e) => e.timestamp).sort();
+  const startedAt = timestamps[0] || '';
+  const endedAt = timestamps[timestamps.length - 1] || '';
+  let durationMinutes = 0;
+  if (startedAt && endedAt) {
+    const s = Date.parse(startedAt.replace(/\.[0-9]+Z$/, 'Z'));
+    const en = Date.parse(endedAt.replace(/\.[0-9]+Z$/, 'Z'));
+    if (!isNaN(s) && !isNaN(en)) durationMinutes = Math.floor((en - s) / 60000);
+  }
+
+  const hasCommit = toolUses.some((t) => t.name === 'Bash' && /git commit/.test((t.input && t.input.command) || ''));
+  const filesRead = toolUses.filter((t) => t.name === 'Read').length;
+  const filesWritten = toolUses.filter((t) => t.name === 'Write').length;
+  const filesEdited = toolUses.filter((t) => t.name === 'Edit').length;
+  const skillsInvoked = [...new Set(toolUses.filter((t) => t.name === 'Skill').map((t) => t.input && t.input.skill).filter(Boolean))];
+
+  let approx = 0;
+  for (const e of events) {
+    if (e.type !== 'user' && e.type !== 'assistant') continue;
+    const c = e.message && e.message.content;
+    if (typeof c === 'string') { approx += c.length; continue; }
+    if (!Array.isArray(c)) continue;
+    for (const b of c) {
+      if (!b) { approx += 50; continue; }
+      if (b.type === 'text') approx += (b.text || '').length;
+      else if (b.type === 'tool_use') approx += JSON.stringify(b.input || {}).length + 50;
+      else if (b.type === 'tool_result') {
+        let len = 0;
+        if (typeof b.content === 'string') len = b.content.length;
+        else if (Array.isArray(b.content)) len = b.content.reduce((a, x) => a + ((x && x.text ? x.text.length : 0)), 0);
+        approx += len + 20;
+      } else approx += 50;
+    }
+  }
+  approx = Math.floor(approx / 4);
+
+  return {
+    session_id: sessionId,
+    session_name: sessionName,
+    project,
+    branch,
+    turns: externalUsers.length,
+    user_messages: userMessages,
+    assistant_messages: assistantMessages,
+    user_avg_chars: userAvgChars,
+    tool_calls: toolCalls,
+    tool_call_total: toolUses.length,
+    tool_errors: toolErrors,
+    started_at: startedAt,
+    ended_at: endedAt,
+    duration_minutes: durationMinutes,
+    has_commit: hasCommit,
+    files_read: filesRead,
+    files_written: filesWritten,
+    files_edited: filesEdited,
+    skills_invoked: skillsInvoked,
+    hook_blocks: 0,
+    approx_tokens: approx,
+  };
+}
+
+async function postSessionMetrics(cfg, model, transcriptPath) {
+  if (!transcriptPath || !existsSync(transcriptPath)) return;
+  let events;
+  try {
+    events = readFileSync(transcriptPath, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean)
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  } catch { return; }
+  if (events.length === 0) return;
+
+  const metrics = extractMetrics(events);
+  const approxTokens = metrics.approx_tokens;
+  delete metrics.approx_tokens;
+  let ctxPct = Math.floor((approxTokens * 100) / CONTEXT_LIMIT);
+  if (ctxPct > 100) ctxPct = 100;
+
+  const body = JSON.stringify(Object.assign({}, metrics, {
+    member_name: cfg.member_name,
+    model,
+    context_estimate_pct: ctxPct,
+  }));
+  await postJson(cfg.server_url + '/api/ingest/session', cfg.team_key, body, 10000);
+}
+
+function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+async function postCurrentUsage(cfg) {
+  const now = new Date();
+  const yyyymmdd = '' + now.getFullYear() + pad2(now.getMonth() + 1) + pad2(now.getDate());
+  const dashDate = now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate());
+
+  // shell: true → 在 Windows 能找到 npm 全域安裝的 ccusage.cmd
+  const r = spawnSync('ccusage', ['daily', '--json', '--since', yyyymmdd], { encoding: 'utf8', shell: true });
+  if (!r || r.status !== 0 || !r.stdout) return;
+  let totals;
+  try { totals = JSON.parse(r.stdout).totals; } catch { return; }
+  if (!totals) return;
+
+  const body = JSON.stringify({
+    member_name: cfg.member_name,
+    date: dashDate,
+    session_id: 'daily',
+    input_tokens: totals.inputTokens || 0,
+    output_tokens: totals.outputTokens || 0,
+    cache_creation_tokens: totals.cacheCreationTokens || 0,
+    cache_read_tokens: totals.cacheReadTokens || 0,
+    total_cost_usd: totals.totalCost || 0,
+    models: [],
+  });
+
+  const ok = await postJson(cfg.server_url + '/api/ingest', cfg.team_key, body, 10000);
+  if (!ok) {
+    try {
+      const buffered = JSON.stringify(Object.assign(JSON.parse(body), { _buffered_at: new Date().toISOString() }));
+      appendFileSync(BUFFER_FILE, buffered + '\n');
+    } catch { /* 靜默 */ }
+  }
+}
+
+async function main() {
+  const cfg = readConfig();
+  if (!cfg) return;
+
+  const payload = await readStdin(1000);
+  let transcriptPath = '';
+  let hookSessionId = '';
+  if (payload) {
+    try {
+      const p = JSON.parse(payload);
+      transcriptPath = p.transcript_path || '';
+      hookSessionId = p.session_id || '';
+    } catch { /* 忽略 */ }
+  }
+
+  let sessionModel = '';
+  if (hookSessionId) {
+    const mf = join(SESSIONS_DIR, hookSessionId);
+    if (existsSync(mf)) {
+      try { sessionModel = readFileSync(mf, 'utf8').trim(); } catch { /* 忽略 */ }
+      try { unlinkSync(mf); } catch { /* 忽略 */ }
+    }
+  }
+
+  await flushBuffer(cfg.server_url, cfg.team_key);
+  await Promise.all([
+    postSessionMetrics(cfg, sessionModel, transcriptPath),
+    postCurrentUsage(cfg),
+  ]);
+}
+
+main().catch(() => {}).finally(() => process.exit(0));
+`;
+}
+
+// ── Windows 安裝入口（PowerShell，零依賴，不需 Git Bash / jq）──
+// Usage: irm <serverUrl>/setup.ps1 | iex
+// 只負責安裝（問答 + 寫 config + 下載 .mjs + 注入 hook）；上報仍由 session-end.mjs（node）執行。
+export function generateSetupPs1Script(serverUrl: string): string {
+  return `# ccusage-tracker Windows 安裝 (PowerShell)
+# Usage: irm ${serverUrl}/setup.ps1 | iex
+$ErrorActionPreference = 'Stop'
+$ServerUrl = '${serverUrl}'
+$ConfigDir = Join-Path (Join-Path $env:USERPROFILE '.config') 'ccusage-tracker'
+$ConfigFile = Join-Path $ConfigDir 'config.json'
+$ClaudeDir = Join-Path $env:USERPROFILE '.claude'
+$ClaudeSettings = Join-Path $ClaudeDir 'settings.json'
+$EndMjs = Join-Path $ConfigDir 'session-end.mjs'
+$StartMjs = Join-Path $ConfigDir 'session-start.mjs'
+
+Write-Host ''
+Write-Host '  ccusage-tracker Windows 安裝程式'
+Write-Host '  ================================'
+Write-Host ''
+
+# 1. 檢查 Node.js（>=18，內建 fetch）
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+  Write-Host '[ERR] 需要 Node.js (>=18)，請先安裝: https://nodejs.org'
+  exit 1
+}
+Write-Host '[1/4] [OK] Node.js 已安裝'
+
+# 2. 安裝 ccusage
+if (-not (Get-Command ccusage -ErrorAction SilentlyContinue)) {
+  Write-Host '[2/4] 安裝 ccusage...'
+  npm install -g ccusage@latest
+  Write-Host '[OK] ccusage 已安裝'
+} else {
+  Write-Host '[2/4] [OK] ccusage 已安裝'
+}
+
+# 3. 設定
+$MemberName = Read-Host '你的名字'
+if ([string]::IsNullOrWhiteSpace($MemberName)) { Write-Host '[ERR] 名字不能為空'; exit 1 }
+$TeamKey = Read-Host 'Team Key (向管理員索取)'
+if ([string]::IsNullOrWhiteSpace($TeamKey)) { Write-Host '[ERR] Team Key 不能為空'; exit 1 }
+
+# 驗證 Team Key
+try {
+  Invoke-RestMethod -Uri ($ServerUrl + '/api/report/summary?period=today') -Headers @{ Authorization = 'Bearer ' + $TeamKey } -Method Get -TimeoutSec 10 | Out-Null
+} catch {
+  $code = $null
+  if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+  if ($code -eq 401) { Write-Host '[ERR] Team Key 無效，請確認後重試'; exit 1 }
+  Write-Host '[WARN] 無法驗證 Team Key (Server 未回應)，繼續安裝'
+}
+
+# 4. 寫入設定（UTF-8 無 BOM）
+Write-Host '[3/4] 寫入設定...'
+New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+$config = [ordered]@{ server_url = $ServerUrl; team_key = $TeamKey; member_name = $MemberName }
+[System.IO.File]::WriteAllText($ConfigFile, ($config | ConvertTo-Json))
+Write-Host ('[OK] Config 寫入 ' + $ConfigFile)
+
+# 下載 hook scripts
+Invoke-WebRequest -Uri ($ServerUrl + '/scripts/session-end.mjs') -OutFile $EndMjs -UseBasicParsing
+Invoke-WebRequest -Uri ($ServerUrl + '/scripts/session-start.mjs') -OutFile $StartMjs -UseBasicParsing
+Write-Host '[OK] Hook scripts 下載完成'
+
+# 5. 安裝 Claude Code hooks（node 命令，正斜線路徑避免 JSON 轉義）
+Write-Host '[4/4] 安裝 Claude Code hooks...'
+$EndCmd = 'node "' + $EndMjs.Replace([char]92, [char]47) + '"'
+$StartCmd = 'node "' + $StartMjs.Replace([char]92, [char]47) + '"'
+
+if (Test-Path $ClaudeSettings) {
+  Copy-Item $ClaudeSettings ($ClaudeSettings + '.backup') -Force
+  $settings = Get-Content $ClaudeSettings -Raw | ConvertFrom-Json
+} else {
+  New-Item -ItemType Directory -Force -Path $ClaudeDir | Out-Null
+  $settings = [PSCustomObject]@{}
+}
+if (-not $settings.PSObject.Properties['hooks']) { $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([PSCustomObject]@{}) }
+foreach ($evt in @('SessionStart', 'SessionEnd')) {
+  if (-not $settings.hooks.PSObject.Properties[$evt]) { $settings.hooks | Add-Member -NotePropertyName $evt -NotePropertyValue @() }
+}
+function Add-HookIfMissing($eventName, $cmd) {
+  $existing = @($settings.hooks.$eventName)
+  foreach ($entry in $existing) {
+    foreach ($h in @($entry.hooks)) {
+      if ($h.command -eq $cmd) { return }
+    }
+  }
+  $settings.hooks.$eventName = $existing + ([PSCustomObject]@{ matcher = ''; hooks = @([PSCustomObject]@{ type = 'command'; command = $cmd }) })
+}
+Add-HookIfMissing 'SessionStart' $StartCmd
+Add-HookIfMissing 'SessionEnd' $EndCmd
+[System.IO.File]::WriteAllText($ClaudeSettings, ($settings | ConvertTo-Json -Depth 20))
+Write-Host '[OK] SessionStart + SessionEnd hooks 已安裝'
+
+# 6. 驗證
+Write-Host ''
+try {
+  Invoke-RestMethod -Uri ($ServerUrl + '/api/health') -TimeoutSec 10 | Out-Null
+  Write-Host '[OK] Server 連線正常'
+} catch {
+  Write-Host '[WARN] Server 無法連線，但設定已完成'
+}
+Write-Host ''
+Write-Host '  ===================================='
+Write-Host ('  [OK] 安裝完成! 成員: ' + $MemberName)
+Write-Host '  之後 Claude Code 用量會自動上報'
+Write-Host '  ===================================='
+Write-Host ''
 `;
 }
