@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { createDatabase } from "./db";
 import admin from "./routes/admin";
 import ingest from "./routes/ingest";
@@ -15,6 +15,20 @@ export type AppEnv = {
   };
 };
 
+// 從請求推導 server URL，並用 URL.origin 正規化，杜絕 Host header 注入安裝腳本模板（引號/換行）
+function resolveServerUrl(c: Context<AppEnv>): string {
+  const proto = c.req.header("X-Forwarded-Proto") || "https";
+  const host = c.req.header("Host") || new URL(c.req.url).host;
+  const candidate = process.env.SERVER_URL || `${proto}://${host}`;
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("invalid protocol");
+    return u.origin;
+  } catch {
+    return "https://ccusage-tracker.zeabur.app";
+  }
+}
+
 export function createApp(db?: Database): Hono<AppEnv> {
   const database = db ?? createDatabase(process.env.DB_PATH || "data.db");
   const app = new Hono<AppEnv>();
@@ -29,18 +43,14 @@ export function createApp(db?: Database): Hono<AppEnv> {
   });
 
   app.get("/setup.sh", (c) => {
-    const proto = c.req.header("X-Forwarded-Proto") || "https";
-    const host = c.req.header("Host") || new URL(c.req.url).host;
-    const serverUrl = process.env.SERVER_URL || `${proto}://${host}`;
+    const serverUrl = resolveServerUrl(c);
     const teamKey = process.env.TEAM_KEY || "";
     c.header("Content-Type", "text/plain; charset=utf-8");
     return c.text(generateSetupScript(serverUrl, teamKey));
   });
 
   app.get("/uninstall.sh", (c) => {
-    const proto = c.req.header("X-Forwarded-Proto") || "https";
-    const host = c.req.header("Host") || new URL(c.req.url).host;
-    const serverUrl = process.env.SERVER_URL || `${proto}://${host}`;
+    const serverUrl = resolveServerUrl(c);
     c.header("Content-Type", "text/plain; charset=utf-8");
     return c.text(generateUninstallScript(serverUrl));
   });
@@ -57,9 +67,7 @@ export function createApp(db?: Database): Hono<AppEnv> {
 
   // ── 跨平台 Node.js 版（路線 C）+ Windows 安裝入口 ──
   app.get("/setup.ps1", (c) => {
-    const proto = c.req.header("X-Forwarded-Proto") || "https";
-    const host = c.req.header("Host") || new URL(c.req.url).host;
-    const serverUrl = process.env.SERVER_URL || `${proto}://${host}`;
+    const serverUrl = resolveServerUrl(c);
     c.header("Content-Type", "text/plain; charset=utf-8");
     return c.text(generateSetupPs1Script(serverUrl));
   });

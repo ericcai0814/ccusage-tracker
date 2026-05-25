@@ -165,16 +165,20 @@ echo ""
 
 # ── 移除 SessionStart + SessionEnd hooks ──
 if [ -f "\$CLAUDE_SETTINGS" ] && command -v jq &> /dev/null; then
-  UPDATED=\$(jq '
+  # 只有 jq 解析成功且輸出非空才寫回，避免 malformed JSON 時清空整個 settings.json
+  if UPDATED=\$(jq '
     if .hooks then
       .hooks |= (
         (if .SessionStart then .SessionStart |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end) |
         (if .SessionEnd then .SessionEnd |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end)
       )
     else . end
-  ' "\$CLAUDE_SETTINGS")
-  echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
-  echo "[OK] SessionStart + SessionEnd hooks 已移除"
+  ' "\$CLAUDE_SETTINGS") && [ -n "\$UPDATED" ]; then
+    echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
+    echo "[OK] SessionStart + SessionEnd hooks 已移除"
+  else
+    echo "[WARN] settings.json 解析失敗，未修改（避免清空）"
+  fi
 else
   echo "[--] 未發現 settings.json 或 jq"
 fi
@@ -770,7 +774,10 @@ async function main() {
   ]);
 }
 
-main().catch(() => {}).finally(() => process.exit(0));
+// 整體上限 20s：server 緩慢/不可達時，內部各 timeout 疊加最壞約 25s，
+// 這裡設一個總上界，避免拖住 Claude Code 的 session 結束。
+const __deadline = new Promise((resolve) => setTimeout(resolve, 20000));
+Promise.race([main(), __deadline]).catch(() => {}).finally(() => process.exit(0));
 `;
 }
 
@@ -797,6 +804,11 @@ Write-Host ''
 # 1. 檢查 Node.js（>=18，內建 fetch）
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   Write-Host '[ERR] 需要 Node.js (>=18)，請先安裝: https://nodejs.org'
+  exit 1
+}
+$nodeMajor = [int]((node --version).TrimStart('v').Split('.')[0])
+if ($nodeMajor -lt 18) {
+  Write-Host "[ERR] 需要 Node.js >=18（上報腳本用到內建 fetch），請升級: https://nodejs.org"
   exit 1
 }
 Write-Host '[1/4] [OK] Node.js 已安裝'
@@ -858,7 +870,8 @@ function Add-HookIfMissing($eventName, $cmd) {
   $existing = @($settings.hooks.$eventName)
   foreach ($entry in $existing) {
     foreach ($h in @($entry.hooks)) {
-      if ($h.command -eq $cmd) { return }
+      # 用路徑片段比對，新舊/正反斜線都認得，避免重複安裝造成雙倍上報
+      if ($h.command -like '*ccusage-tracker*') { return }
     }
   }
   $settings.hooks.$eventName = $existing + ([PSCustomObject]@{ matcher = ''; hooks = @([PSCustomObject]@{ type = 'command'; command = $cmd }) })
