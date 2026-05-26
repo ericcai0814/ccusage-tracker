@@ -4,7 +4,7 @@ description: Audit changed code for security sharp edges — dangerous defaults,
 category: Development
 ---
 
-<!-- SPECTRA:START v1.0.1 -->
+<!-- SPECTRA:START v1.0.2 -->
 
 Audit changed code for security sharp edges — API design traps, dangerous defaults, and interfaces that make it easy to do the wrong thing.
 
