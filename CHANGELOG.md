@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.2.1] - 2026-05-26
+
+### Added
+- **Session analytics**：接收 session 行為指標並產生週報（heatmap、異常閾值偵測）
+- **Session metrics**：SessionEnd hook 萃取並上報 session metrics；SessionStart hook 記錄 model，SessionEnd 計算 context 佔比
+- **週報重設計**：S29 風格、新區塊結構、移除無效指標，新增 Cost Snapshot 與 Footer
+- **Dashboard ↔ 週報雙向導航**
+- **Windows 支援**：上報腳本改為跨平台 Node.js（`session-start.mjs`），新增 Windows 安裝入口；`tracker setup` 補裝 SessionStart hook
+- monorepo workspaces 配置
+
+### Changed
+- 簡化 session-ingest payload 構建，抽取 `touchMemberLastSeen`
+- 簡化 session analytics：抽取異常閾值常數、優化 heatmap 迭代
+
+### Fixed
+- 修正 setup/uninstall script 的 SessionEnd hook 格式符合 Claude Code schema
+- 修正 code review 發現的安全與健壯性問題
+
 ## [0.2.0] - 2026-04-02
 
 ### Added
