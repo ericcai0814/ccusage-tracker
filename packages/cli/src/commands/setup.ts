@@ -31,9 +31,9 @@ function defaultCheckCcusage(): boolean {
   }
 }
 
-async function defaultFetchHookScript(serverUrl: string): Promise<string | null> {
+async function defaultFetchHookScript(serverUrl: string, scriptName: string): Promise<string | null> {
   try {
-    const res = await fetch(`${serverUrl}/scripts/session-end.mjs`, { signal: AbortSignal.timeout(10000) });
+    const res = await fetch(`${serverUrl}/scripts/${scriptName}`, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     return await res.text();
   } catch {
@@ -44,8 +44,12 @@ async function defaultFetchHookScript(serverUrl: string): Promise<string | null>
 export interface SetupDeps {
   prompt: (question: string) => Promise<string>;
   writeConfig: (config: TrackerConfig) => void;
-  installHook: (scriptContent: string) => { installed: boolean; backedUp: boolean };
-  fetchHookScript: (serverUrl: string) => Promise<string | null>;
+  installHook: (scripts: { sessionEnd: string; sessionStart: string }) => {
+    sessionEndInstalled: boolean;
+    sessionStartInstalled: boolean;
+    backedUp: boolean;
+  };
+  fetchHookScript: (serverUrl: string, scriptName: string) => Promise<string | null>;
   checkServer: (serverUrl: string) => Promise<boolean>;
   checkCcusage: () => boolean;
   log: (msg: string) => void;
@@ -100,21 +104,28 @@ export async function setupCommand(overrides?: Partial<SetupDeps>): Promise<void
   deps.writeConfig(config);
   deps.log("\nConfig saved.");
 
-  // Install hook（從 server 下載最新的 .mjs 上報腳本，與 setup.sh/setup.ps1 一致）
-  const scriptContent = await deps.fetchHookScript(config.server_url);
-  if (scriptContent) {
+  // Install hooks（從 server 下載最新的 .mjs 上報腳本，與 setup.sh/setup.ps1 一致：
+  // SessionEnd 上報用量、SessionStart 記錄 model）
+  const [sessionEnd, sessionStart] = await Promise.all([
+    deps.fetchHookScript(config.server_url, "session-end.mjs"),
+    deps.fetchHookScript(config.server_url, "session-start.mjs"),
+  ]);
+  if (sessionEnd && sessionStart) {
     try {
-      const { installed, backedUp } = deps.installHook(scriptContent);
-      if (installed) {
-        deps.log("SessionEnd hook installed." + (backedUp ? " (settings.json backed up)" : ""));
+      const { sessionEndInstalled, sessionStartInstalled, backedUp } = deps.installHook({
+        sessionEnd,
+        sessionStart,
+      });
+      if (sessionEndInstalled || sessionStartInstalled) {
+        deps.log("SessionStart + SessionEnd hooks installed." + (backedUp ? " (settings.json backed up)" : ""));
       } else {
-        deps.log("SessionEnd hook already installed.");
+        deps.log("SessionStart + SessionEnd hooks already installed.");
       }
     } catch (err) {
-      deps.warn("Warning: Could not install hook automatically. " + (err as Error).message);
+      deps.warn("Warning: Could not install hooks automatically. " + (err as Error).message);
     }
   } else {
-    deps.warn("Warning: Could not download hook script from " + config.server_url);
+    deps.warn("Warning: Could not download hook scripts from " + config.server_url);
   }
 
   // Verify server
