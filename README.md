@@ -48,23 +48,18 @@
 
 ## 成員安裝
 
-一行指令，約 30 秒完成。
-
-**macOS / Linux**（Git Bash 亦可）：
+一行指令、跨平台、約 30 秒完成。先確保已安裝 [Node.js](https://nodejs.org)（>=18）。
 
 ```bash
-curl -fsSL https://cctracker.erictree.me/setup.sh | bash
+npx ccusage-tracker setup
 ```
 
-**Windows（PowerShell，不需 Git Bash）**：
+會依序詢問：
+- **Your name**：成員名字（會顯示在 dashboard）
+- **Server URL**：團隊自架的 tracker 網址（例如 `https://cctracker.erictree.me`）
+- **Team Key**：向管理員索取，會即時驗證
 
-```powershell
-irm https://cctracker.erictree.me/setup.ps1 | iex
-```
-
-安裝時會要求輸入名字和 **Team Key**（向管理員索取），Team Key 會即時驗證。上報腳本以 Node.js 執行（`node session-end.mjs`），三個平台共用，安裝後不再依賴 bash 或 jq。
-
-> Windows 需先安裝 [Node.js](https://nodejs.org)（>=18）。`irm | iex` 會下載並執行安裝腳本；若想先檢視內容，可單獨執行 `irm https://cctracker.erictree.me/setup.ps1`。
+> 也提供 shell-only 安裝（不經 npm，由 server 直接下發 setup script）：`curl -fsSL <server>/setup.sh | bash` 或 PowerShell `irm <server>/setup.ps1 | iex`。兩條路最終效果相同。
 
 ### Setup 做了什麼
 
@@ -97,21 +92,13 @@ irm https://cctracker.erictree.me/setup.ps1 | iex
 
 ### 更新 Hook 腳本
 
-當 server 發布新版本後，成員需要更新本機的 hook 腳本：
-
-**macOS / Linux**：
+當 server 發布新版本後，重跑安裝指令即可，`@latest` 強制 npm 抓最新版：
 
 ```bash
-curl -fsSL https://cctracker.erictree.me/scripts/session-end.mjs -o ~/.config/ccusage-tracker/session-end.mjs
+npx ccusage-tracker@latest setup
 ```
 
-**Windows（PowerShell）**：
-
-```powershell
-irm https://cctracker.erictree.me/scripts/session-end.mjs -OutFile "$env:USERPROFILE\.config\ccusage-tracker\session-end.mjs"
-```
-
-或直接重跑安裝指令（會覆蓋為最新版）。
+config 會被覆寫但已收集的本機暫存（`buffer.jsonl`）會保留，下次 session 結束會自動補回切換期間的回報。
 
 ## 卸載
 

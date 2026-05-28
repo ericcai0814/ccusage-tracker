@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.0] - 2026-05-28
+
+### Added
+- **npm 套件發布**：CLI 透過 npm 對外發布為 [`ccusage-tracker`](https://www.npmjs.com/package/ccusage-tracker)，一條跨平台指令安裝：`npx ccusage-tracker setup`（取代原本依平台分歧的 curl/irm 兩種方法）
+
+### Changed
+- **部署遷移至自架 dedicated server + custom domain**：從 Zeabur AWS Tokyo 共享叢集（`ccusage-tracker.zeabur.app`）搬到 Linode Seattle dedicated server（`https://cctracker.erictree.me`），未來搬遷不再受 Zeabur generated 子網域保留機制限制
+- README 安裝/更新 hook 指南更新為 `npx ccusage-tracker` 流程
+- root package 由 `ccusage-tracker` 改名為 `ccusage-tracker-monorepo` 以避免與發布到 npm 的 CLI 套件撞名（純內部變更，無外部影響）
+
+### Fixed
+- 修正 Dockerfile 啟動目錄為 `/app/packages/server`，使 Bun 讀到 `packages/server/tsconfig.json` 的 `jsxImportSource: hono/jsx` 設定；原本從 `/app` 啟動會 fallback 到 default React JSX runtime，載入 `dashboard.tsx` 時 crash
+
+### Upgrade
+成員請重跑安裝指令（會覆寫舊 config 與 hook script，本機 `buffer.jsonl` 不受影響，下次 session 結束會自動把切換期間累積的回報補回新站）：
+
+```bash
+npx ccusage-tracker@latest setup
+```
+
+### Known issues
+- CLI 0.1.0 的 `setup` 在 piped stdin 無延遲狀態下會 silent fail（readline 緩衝邊緣情況）。互動使用不受影響，CI/automation 場景需等 0.1.1 修正（共用單一 readline interface）。
+
 ## [0.2.1] - 2026-05-26
 
 ### Added
