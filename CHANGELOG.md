@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.1] - 2026-05-28
+
+### Fixed
+- **CLI 0.1.1**：修正 `ccusage-tracker setup` 在 piped stdin（CI/automation）下會卡在第二題的 silent fail。改用 readline 的 `Symbol.asyncIterator` 取代每題 `rl.question`/`rl.close()`，避免一次性灌入時 `line` event 比 `await` 註冊還快、被吞掉的 race。互動模式行為不變。
+
 ## [0.3.0] - 2026-05-28
 
 ### Added
@@ -21,7 +26,7 @@ npx ccusage-tracker@latest setup
 ```
 
 ### Known issues
-- CLI 0.1.0 的 `setup` 在 piped stdin 無延遲狀態下會 silent fail（readline 緩衝邊緣情況）。互動使用不受影響，CI/automation 場景需等 0.1.1 修正（共用單一 readline interface）。
+- CLI 0.1.0 的 `setup` 在 piped stdin 無延遲狀態下會 silent fail（readline 緩衝邊緣情況）。互動使用不受影響，CI/automation 場景需等 0.1.1 修正。**已於 0.3.1 修復**。
 
 ## [0.2.1] - 2026-05-26
 

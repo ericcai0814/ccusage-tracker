@@ -1,15 +1,29 @@
-import { createInterface } from "node:readline";
+import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { writeConfig, type TrackerConfig } from "../config";
 import { installHook } from "../hooks";
 
-function defaultPrompt(question: string): Promise<string> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((resolve) => {
-    rl.question(question, (answer) => {
-      rl.close();
-      resolve(answer.trim());
-    });
-  });
+// piped stdin 下，readline 的 'line' event 會在下一個 rl.question 註冊監聽器前就觸發，
+// 導致行被吞掉、後續 prompt 永遠等不到 callback。
+// 改用 readline 的 async iterator：line 會 buffer，await .next() 一筆筆取，避免 race。
+let sharedRl: ReadlineInterface | null = null;
+let lineIterator: AsyncIterator<string> | null = null;
+
+async function defaultPrompt(question: string): Promise<string> {
+  if (!sharedRl || !lineIterator) {
+    sharedRl = createInterface({ input: process.stdin, output: process.stdout });
+    lineIterator = sharedRl[Symbol.asyncIterator]();
+  }
+  process.stdout.write(question);
+  const { value, done } = await lineIterator.next();
+  return done ? "" : value.trim();
+}
+
+function closeSharedPrompt(): void {
+  if (sharedRl) {
+    sharedRl.close();
+    sharedRl = null;
+    lineIterator = null;
+  }
 }
 
 async function defaultCheckServer(serverUrl: string): Promise<boolean> {
@@ -72,6 +86,14 @@ const defaultDeps: SetupDeps = {
 export async function setupCommand(overrides?: Partial<SetupDeps>): Promise<void> {
   const deps = { ...defaultDeps, ...overrides };
 
+  try {
+    await runSetup(deps);
+  } finally {
+    closeSharedPrompt();
+  }
+}
+
+async function runSetup(deps: SetupDeps): Promise<void> {
   deps.log("ccusage-tracker setup\n");
 
   const name = await deps.prompt("Your name: ");
