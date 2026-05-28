@@ -34,6 +34,24 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
     expect(mjs).toContain("process.exit(0)");
   });
 
+  it("支援 --mode argv（Stop hook 用 --mode=stop，SessionEnd 用 --mode=session-end）", () => {
+    expect(mjs).toContain("--mode=");
+    expect(mjs).toContain("'session-end'"); // 預設值
+    expect(mjs).toContain("MODE === 'stop'");
+    expect(mjs).toContain("MODE === 'session-end'");
+  });
+
+  it("Stop hook 走 5 分鐘 throttle（last-flush.txt）", () => {
+    expect(mjs).toContain("last-flush.txt");
+    expect(mjs).toContain("THROTTLE_MS");
+    expect(mjs).toContain("5 * 60 * 1000");
+  });
+
+  it("spawnSync(ccusage) 有 timeout 避免 sync 阻塞 event loop", () => {
+    expect(mjs).toContain("timeout: 8000");
+    expect(mjs).toContain("killSignal: 'SIGKILL'");
+  });
+
   it("session-start.mjs 合法且不依賴 jq", () => {
     const ss = generateSessionStartMjsScript();
     expect(ss).toContain("#!/usr/bin/env node");
@@ -58,6 +76,17 @@ describe("Windows 安裝腳本 (setup.ps1)", () => {
     expect(ps1).toContain("session-end.mjs");
   });
 
+  it("注入三條 hook（SessionStart + SessionEnd + Stop），都帶 --mode 或 SessionStart", () => {
+    expect(ps1).toContain("'Stop'");
+    expect(ps1).toContain("--mode=session-end");
+    expect(ps1).toContain("--mode=stop");
+  });
+
+  it("Migration：先移除舊 ccusage-tracker hook 再插入新版", () => {
+    expect(ps1).toContain("Remove-OurHooks");
+    expect(ps1).toContain("ccusage-tracker");
+  });
+
   it("不依賴 jq（PowerShell 原生 JSON）", () => {
     expect(ps1).not.toContain("jq ");
   });
@@ -74,10 +103,25 @@ describe("舊 bash 腳本向後相容 (regression)", () => {
     expect(sh).toContain("session-end.mjs");
   });
 
-  it("uninstall.sh 同時清理 SessionStart 與 SessionEnd", () => {
+  it("setup.sh 注入 Stop hook 與 --mode 命令", () => {
+    const sh = generateSetupScript("https://x.app", "tk");
+    expect(sh).toContain("HOOK_STOP_CMD");
+    expect(sh).toContain("--mode=stop");
+    expect(sh).toContain("--mode=session-end");
+    expect(sh).toContain(".hooks.Stop");
+  });
+
+  it("setup.sh 用 migration jq pattern（移除舊 ccusage-tracker entry 再插入新版）", () => {
+    const sh = generateSetupScript("https://x.app", "tk");
+    expect(sh).toContain('contains("ccusage-tracker")');
+    expect(sh).toContain(".hooks.SessionEnd |= map(select");
+  });
+
+  it("uninstall.sh 同時清理 SessionStart / SessionEnd / Stop", () => {
     const sh = generateUninstallScript("https://x.app");
     expect(sh).toContain(".SessionStart");
     expect(sh).toContain(".SessionEnd");
+    expect(sh).toContain(".Stop");
   });
 });
 
