@@ -18,4 +18,8 @@ ENV NODE_ENV=production
 ENV DB_PATH=/data/ccusage-tracker.db
 EXPOSE 3000
 
-CMD ["bun", "run", "packages/server/src/index.ts"]
+# Run from the server package dir so Bun reads packages/server/tsconfig.json
+# (jsxImportSource: hono/jsx). Running from /app makes Bun fall back to the
+# default React JSX runtime and crash on `react/jsx-runtime`.
+WORKDIR /app/packages/server
+CMD ["bun", "run", "src/index.ts"]
