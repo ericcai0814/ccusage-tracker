@@ -1,6 +1,21 @@
 # ccusage-tracker
 
-團隊 Claude Code token 用量追蹤工具，基於 [ccusage](https://github.com/ryoppippi/ccusage) 建立多人彙整層。
+[![npm version](https://img.shields.io/npm/v/ccusage-tracker?color=cb3837&label=npm&logo=npm)](https://www.npmjs.com/package/ccusage-tracker)
+[![npm downloads](https://img.shields.io/npm/dw/ccusage-tracker?color=cb3837&label=downloads&logo=npm)](https://www.npmjs.com/package/ccusage-tracker)
+[![license](https://img.shields.io/github/license/ericcai0814/ccusage-tracker?color=blue)](./LICENSE)
+[![node](https://img.shields.io/node/v/ccusage-tracker?logo=node.js&logoColor=white)](https://nodejs.org)
+[![built with Bun](https://img.shields.io/badge/built%20with-Bun-fbf0df?logo=bun&logoColor=000)](https://bun.sh)
+[![framework Hono](https://img.shields.io/badge/framework-Hono-E36002?logo=hono&logoColor=white)](https://hono.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)](https://sqlite.org)
+[![deploy Zeabur](https://img.shields.io/badge/deploy-Zeabur-6300FF)](https://zeabur.com)
+[![Claude Code hook](https://img.shields.io/badge/Claude%20Code-Stop%20%2B%20SessionEnd%20hook-D97757)](https://www.anthropic.com/claude-code)
+[![CHANGELOG](https://img.shields.io/badge/CHANGELOG-v0.3.3-informational)](./CHANGELOG.md)
+
+> 團隊 Claude Code token 用量追蹤工具，基於 [ccusage](https://github.com/ryoppippi/ccusage) 建立多人彙整層。
+> 一行 `npx ccusage-tracker setup` 安裝、跨平台、不傳對話內容、失敗自動暫存重試。
+
+`#claude-code` · `#ccusage` · `#token-usage` · `#self-hosted` · `#hono` · `#bun` · `#sqlite` · `#typescript` · `#zeabur`
 
 ## 它解決什麼問題
 
