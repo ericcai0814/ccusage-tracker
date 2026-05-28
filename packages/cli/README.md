@@ -2,7 +2,7 @@
 
 CLI for [ccusage-tracker](https://github.com/ericcai0814/ccusage-tracker) — a self-hosted Claude Code usage tracker for teams.
 
-Install Claude Code SessionStart/SessionEnd hooks that report token usage to a self-hosted tracker server. Runs on macOS, Linux, and Windows.
+Install Claude Code SessionStart/SessionEnd/Stop hooks that report token usage to a self-hosted tracker server. Runs on macOS, Linux, and Windows.
 
 ## Quick start
 
@@ -24,12 +24,13 @@ After installation, the binary is also available as `tracker` (if installed glob
 
 ## What it does
 
-`setup` writes a config file to `~/.config/ccusage-tracker/config.json` and adds two hooks to your Claude Code `~/.claude/settings.json`:
+`setup` writes a config file to `~/.config/ccusage-tracker/config.json` and adds three hooks to your Claude Code `~/.claude/settings.json`:
 
 - **SessionStart** — records the model at session start
-- **SessionEnd** — POSTs token usage (and session metrics in 0.2.1+) to your team's tracker server
+- **Stop** (0.1.2+) — primary reporting path: POSTs token usage + session metrics after each assistant turn, throttled to once per 5 minutes
+- **SessionEnd** — backup path: same payload at session exit, in case Stop missed the last window
 
-Hook scripts are downloaded from your tracker server, so they always match the server version.
+Hook scripts are downloaded from your tracker server, so they always match the server version. Re-running `setup` migrates old (no `--mode`) commands in-place — no manual cleanup needed.
 
 ## Requirements
 

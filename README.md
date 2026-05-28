@@ -11,12 +11,13 @@
 ```
 成員的電腦                              中央 Server
 ┌─────────────────────────┐            ┌──────────────────────┐
-│ Claude Code session 結束 │            │ Hono + Bun           │
-│ --> SessionEnd hook 觸發 │            │ --> SQLite 儲存       │
-│ --> 重送暫存的失敗紀錄   │   POST     │ --> 更新 last_seen_at │
-│ --> ccusage 取得 token   │ ────────>  │ --> Dashboard 顯示    │
-│ --> 背景 curl 上報       │            │ --> Report API        │
-│ --> 失敗時暫存到本機     │            │                      │
+│ Claude Code 每輪對話結束 │            │ Hono + Bun           │
+│ --> Stop hook 觸發       │            │ --> SQLite 儲存       │
+│     (5min throttle)     │            │ --> 更新 last_seen_at │
+│ --> ccusage 取得 token   │   POST     │ --> Dashboard 顯示    │
+│ --> 抽 session metrics   │ ────────>  │ --> Report API        │
+│ --> fetch 上報           │            │                      │
+│ --> 失敗時暫存到本機     │            │ (SessionEnd 兜底)    │
 └─────────────────────────┘            └──────────────────────┘
 ```
 
@@ -32,14 +33,16 @@
 
 ### 資料流
 
-1. Claude Code session 結束 --> 觸發 `SessionEnd` hook
-2. Hook 檢查本機暫存（`buffer.jsonl`），逐筆重送失敗的紀錄（15 秒上限）
-3. 清除超過 7 天的暫存紀錄
-4. Hook 呼叫 `ccusage daily --json --since today` 取得當日 token 數據
-5. Hook 用背景 `curl` POST 到 server 的 `/api/ingest`
-6. POST 失敗時，payload 暫存到 `buffer.jsonl`，下次自動重送
-7. Server 驗證 TEAM_KEY，自動建立/識別成員，寫入 SQLite，更新 `last_seen_at`
-8. Dashboard / API 讀取 SQLite 產出報表，超過 24 小時未回報的成員顯示警告
+1. Claude Code 每輪對話結束 --> 觸發 `Stop` hook（v0.3.2+ 主要路徑）
+2. 檢查 `~/.config/ccusage-tracker/last-flush.txt`：距上次 < 5 分鐘就直接 `exit 0`（throttle）
+3. 過 throttle 後立即寫 last-flush 戳記（避免 race / 失敗時連續打 server）
+4. Hook 檢查本機暫存（`buffer.jsonl`），逐筆重送失敗的紀錄（15 秒上限）
+5. Hook 呼叫 `ccusage daily --json --since today` 取得當日 token 數據（8 秒 timeout）
+6. Hook 抽 session 行為指標（turns、tool_calls 等）+ POST 到 server 的 `/api/ingest` 與 `/api/ingest/session`（upsert，重複上報安全）
+7. POST 失敗時，payload 暫存到 `buffer.jsonl`，下次自動重送
+8. session 結束時，`SessionEnd` hook 跑一次「兜底」（無 throttle）— 若主程序退出 race 導致 Stop 最近沒跑成，這裡補上
+9. Server 驗證 TEAM_KEY，自動建立/識別成員，寫入 SQLite，更新 `last_seen_at`
+10. Dashboard / API 讀取 SQLite 產出報表，超過 24 小時未回報的成員顯示警告
 
 ### 隱私
 
@@ -70,7 +73,7 @@ npx ccusage-tracker setup
 | 1 | 檢查 Node.js / 安裝 `ccusage` | `npm install -g ccusage@latest` |
 | 2 | 寫入設定檔 | `~/.config/ccusage-tracker/config.json` |
 | 3a | 下載 hook scripts | `~/.config/ccusage-tracker/session-end.mjs`、`session-start.mjs` |
-| 3b | 注入 SessionStart + SessionEnd hook | 修改 `~/.claude/settings.json`（先備份） |
+| 3b | 注入 SessionStart + SessionEnd + Stop hook | 修改 `~/.claude/settings.json`（先備份；命令字串會自動 migrate 0.1.1 舊格式） |
 | 4 | 驗證 server 連線 | `GET /api/health` |
 
 > macOS/Linux 的 `setup.sh` 另會自動安裝 `jq`（brew/apt/apk）用於合併 `settings.json`；Windows 的 `setup.ps1` 改用 PowerShell 原生 JSON，不需 jq。兩者裝出的上報 hook 都是 `node session-end.mjs`。
@@ -80,14 +83,15 @@ npx ccusage-tracker setup
 ```
 ~/.config/ccusage-tracker/
   config.json          # server URL、team key、成員名字
-  session-end.mjs      # SessionEnd hook script（Node.js，跨平台）
+  session-end.mjs      # 共用上報腳本（Stop 與 SessionEnd 都跑這個，靠 --mode 區分）
   session-start.mjs    # SessionStart hook script（記錄 model）
   sessions/            # 各 session 的 model 暫存（SessionEnd 讀後清除）
+  last-flush.txt       # Stop hook 上次上報時間戳（5min throttle 用）
   buffer.jsonl         # POST 失敗時的本機暫存（自動建立/清除）
 
 ~/.claude/
-  settings.json        # 被加入了 SessionStart + SessionEnd hooks
-  settings.json.backup # 原始 settings.json 備份
+  settings.json        # 被加入了 SessionStart + SessionEnd + Stop hooks
+  settings.json.backup # 原始 settings.json 備份（只有 settings 真有變動時才產生）
 ```
 
 ### 更新 Hook 腳本
@@ -109,8 +113,8 @@ curl -fsSL https://cctracker.erictree.me/uninstall.sh | bash
 ```
 
 卸載會：
-1. 從 `~/.claude/settings.json` 移除 SessionEnd hook
-2. 刪除 `~/.config/ccusage-tracker/` 目錄（config + hook script + buffer）
+1. 從 `~/.claude/settings.json` 移除 SessionStart + SessionEnd + Stop 三條 ccusage-tracker hook（不動其他 hook）
+2. 刪除 `~/.config/ccusage-tracker/` 目錄（config + hook script + buffer + last-flush）
 
 不影響 jq 和 ccusage，它們是獨立工具。
 
