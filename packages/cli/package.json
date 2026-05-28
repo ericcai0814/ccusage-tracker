@@ -1,15 +1,47 @@
 {
-  "name": "@ccusage-tracker/cli",
+  "name": "ccusage-tracker",
   "version": "0.1.0",
-  "private": true,
+  "description": "CLI for ccusage-tracker — install Claude Code SessionStart/SessionEnd hooks to report token usage to a self-hosted team tracker.",
   "type": "module",
   "bin": {
-    "tracker": "./dist/index.js"
+    "ccusage-tracker": "dist/index.js",
+    "tracker": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun",
+    "build": "bun build src/index.ts --outdir dist --target node",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ericcai0814/ccusage-tracker.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/ericcai0814/ccusage-tracker#readme",
+  "bugs": {
+    "url": "https://github.com/ericcai0814/ccusage-tracker/issues"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "ccusage",
+    "tracker",
+    "usage",
+    "tokens",
+    "cli",
+    "hook"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/bun": "latest",

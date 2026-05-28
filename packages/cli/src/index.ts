@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 import { setupCommand } from "./commands/setup";
 import { reportCommand } from "./commands/report";
