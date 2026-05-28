@@ -27,7 +27,7 @@ After installation, the binary is also available as `tracker` (if installed glob
 `setup` writes a config file to `~/.config/ccusage-tracker/config.json` and adds three hooks to your Claude Code `~/.claude/settings.json`:
 
 - **SessionStart** — records the model at session start
-- **Stop** (0.1.2+) — primary reporting path: POSTs token usage + session metrics after each assistant turn, throttled to once per 5 minutes
+- **Stop** — primary reporting path: POSTs token usage + session metrics after each assistant turn, throttled to once per 5 minutes
 - **SessionEnd** — backup path: same payload at session exit, in case Stop missed the last window
 
 Hook scripts are downloaded from your tracker server, so they always match the server version. Re-running `setup` migrates old (no `--mode`) commands in-place — no manual cleanup needed.
