@@ -25,7 +25,7 @@ function resolveServerUrl(c: Context<AppEnv>): string {
     if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("invalid protocol");
     return u.origin;
   } catch {
-    return "https://ccusage-tracker.zeabur.app";
+    return "https://cctracker.erictree.me";
   }
 }
 

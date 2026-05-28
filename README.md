@@ -53,18 +53,18 @@
 **macOS / Linux**（Git Bash 亦可）：
 
 ```bash
-curl -fsSL https://ccusage-tracker.zeabur.app/setup.sh | bash
+curl -fsSL https://cctracker.erictree.me/setup.sh | bash
 ```
 
 **Windows（PowerShell，不需 Git Bash）**：
 
 ```powershell
-irm https://ccusage-tracker.zeabur.app/setup.ps1 | iex
+irm https://cctracker.erictree.me/setup.ps1 | iex
 ```
 
 安裝時會要求輸入名字和 **Team Key**（向管理員索取），Team Key 會即時驗證。上報腳本以 Node.js 執行（`node session-end.mjs`），三個平台共用，安裝後不再依賴 bash 或 jq。
 
-> Windows 需先安裝 [Node.js](https://nodejs.org)（>=18）。`irm | iex` 會下載並執行安裝腳本；若想先檢視內容，可單獨執行 `irm https://ccusage-tracker.zeabur.app/setup.ps1`。
+> Windows 需先安裝 [Node.js](https://nodejs.org)（>=18）。`irm | iex` 會下載並執行安裝腳本；若想先檢視內容，可單獨執行 `irm https://cctracker.erictree.me/setup.ps1`。
 
 ### Setup 做了什麼
 
@@ -102,13 +102,13 @@ irm https://ccusage-tracker.zeabur.app/setup.ps1 | iex
 **macOS / Linux**：
 
 ```bash
-curl -fsSL https://ccusage-tracker.zeabur.app/scripts/session-end.mjs -o ~/.config/ccusage-tracker/session-end.mjs
+curl -fsSL https://cctracker.erictree.me/scripts/session-end.mjs -o ~/.config/ccusage-tracker/session-end.mjs
 ```
 
 **Windows（PowerShell）**：
 
 ```powershell
-irm https://ccusage-tracker.zeabur.app/scripts/session-end.mjs -OutFile "$env:USERPROFILE\.config\ccusage-tracker\session-end.mjs"
+irm https://cctracker.erictree.me/scripts/session-end.mjs -OutFile "$env:USERPROFILE\.config\ccusage-tracker\session-end.mjs"
 ```
 
 或直接重跑安裝指令（會覆蓋為最新版）。
@@ -118,7 +118,7 @@ irm https://ccusage-tracker.zeabur.app/scripts/session-end.mjs -OutFile "$env:US
 一行指令：
 
 ```bash
-curl -fsSL https://ccusage-tracker.zeabur.app/uninstall.sh | bash
+curl -fsSL https://cctracker.erictree.me/uninstall.sh | bash
 ```
 
 卸載會：
@@ -134,7 +134,7 @@ curl -fsSL https://ccusage-tracker.zeabur.app/uninstall.sh | bash
 打開瀏覽器訪問：
 
 ```
-https://ccusage-tracker.zeabur.app
+https://cctracker.erictree.me
 ```
 
 支援 Today / Week / Month 切換。Dashboard 包含：
@@ -147,11 +147,11 @@ https://ccusage-tracker.zeabur.app
 ```bash
 # 摘要報表（含 last_seen_at）
 curl -H "Authorization: Bearer <TEAM_KEY>" \
-  "https://ccusage-tracker.zeabur.app/api/report/summary?period=month"
+  "https://cctracker.erictree.me/api/report/summary?period=month"
 
 # 每日明細
 curl -H "Authorization: Bearer <TEAM_KEY>" \
-  "https://ccusage-tracker.zeabur.app/api/report/daily?from=2026-03-01&to=2026-03-31"
+  "https://cctracker.erictree.me/api/report/daily?from=2026-03-01&to=2026-03-31"
 ```
 
 ## 管理員
