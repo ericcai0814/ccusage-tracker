@@ -59,8 +59,9 @@ export interface SetupDeps {
   prompt: (question: string) => Promise<string>;
   writeConfig: (config: TrackerConfig) => void;
   installHook: (scripts: { sessionEnd: string; sessionStart: string }) => {
-    sessionEndInstalled: boolean;
-    sessionStartInstalled: boolean;
+    sessionEndChanged: boolean;
+    sessionStartChanged: boolean;
+    stopChanged: boolean;
     backedUp: boolean;
   };
   fetchHookScript: (serverUrl: string, scriptName: string) => Promise<string | null>;
@@ -134,14 +135,15 @@ async function runSetup(deps: SetupDeps): Promise<void> {
   ]);
   if (sessionEnd && sessionStart) {
     try {
-      const { sessionEndInstalled, sessionStartInstalled, backedUp } = deps.installHook({
+      const { sessionEndChanged, sessionStartChanged, stopChanged, backedUp } = deps.installHook({
         sessionEnd,
         sessionStart,
       });
-      if (sessionEndInstalled || sessionStartInstalled) {
-        deps.log("SessionStart + SessionEnd hooks installed." + (backedUp ? " (settings.json backed up)" : ""));
+      const anyChanged = sessionEndChanged || sessionStartChanged || stopChanged;
+      if (anyChanged) {
+        deps.log("SessionStart + SessionEnd + Stop hooks installed/updated." + (backedUp ? " (settings.json backed up)" : ""));
       } else {
-        deps.log("SessionStart + SessionEnd hooks already installed.");
+        deps.log("SessionStart + SessionEnd + Stop hooks already up to date.");
       }
     } catch (err) {
       deps.warn("Warning: Could not install hooks automatically. " + (err as Error).message);

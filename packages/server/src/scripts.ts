@@ -101,11 +101,14 @@ curl -fsSL "\$SERVER_URL/scripts/session-end.mjs" -o "\$HOOK_SCRIPT"
 curl -fsSL "\$SERVER_URL/scripts/session-start.mjs" -o "\$HOOK_START_SCRIPT"
 echo "[OK] Hook scripts 下載完成"
 
-# ── 安裝 SessionStart + SessionEnd hooks ──
+# ── 安裝 SessionStart + SessionEnd + Stop hooks ──
 echo "[4/4] 安裝 Claude Code hooks..."
 
-HOOK_START_CMD="node \$HOOK_START_SCRIPT"
-HOOK_CMD="node \$HOOK_SCRIPT"
+# 路徑用 "..." 包住，避免 \$HOME 含空白時 Claude Code 執行時 shell-split 失敗
+# 用 mixed quoting（'...'"\$VAR"'...'）保證 literal " 進到 settings.json 命令字串
+HOOK_START_CMD='node "'"\$HOOK_START_SCRIPT"'"'
+HOOK_END_CMD='node "'"\$HOOK_SCRIPT"'" --mode=session-end'
+HOOK_STOP_CMD='node "'"\$HOOK_SCRIPT"'" --mode=stop'
 
 if [ -f "\$CLAUDE_SETTINGS" ]; then
   cp "\$CLAUDE_SETTINGS" "\$CLAUDE_SETTINGS.backup"
@@ -115,21 +118,24 @@ else
   echo '{}' > "\$CLAUDE_SETTINGS"
 fi
 
-# 用 jq 安全地 deep merge hooks
-UPDATED=\$(jq --arg startcmd "\$HOOK_START_CMD" --arg endcmd "\$HOOK_CMD" '
+# 用 jq 做 migration：先移除所有舊 ccusage-tracker hook，再插入三條新版（idempotent + upgrade-safe）
+UPDATED=\$(jq --arg startcmd "\$HOOK_START_CMD" --arg endcmd "\$HOOK_END_CMD" --arg stopcmd "\$HOOK_STOP_CMD" '
   .hooks //= {} |
   .hooks.SessionStart //= [] |
   .hooks.SessionEnd //= [] |
-  if [.hooks.SessionStart[]?.hooks[]?.command] | index(\$startcmd) then .
-  else .hooks.SessionStart += [{"matcher": "", "hooks": [{"type": "command", "command": \$startcmd}]}]
-  end |
-  if [.hooks.SessionEnd[]?.hooks[]?.command] | index(\$endcmd) then .
-  else .hooks.SessionEnd += [{"matcher": "", "hooks": [{"type": "command", "command": \$endcmd}]}]
-  end
+  .hooks.Stop //= [] |
+  (.hooks.SessionStart, .hooks.SessionEnd, .hooks.Stop) |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) |
+  .hooks.SessionStart += [{"matcher": "*", "hooks": [{"type": "command", "command": \$startcmd}]}] |
+  .hooks.SessionEnd += [{"matcher": "*", "hooks": [{"type": "command", "command": \$endcmd, "timeout": 25}]}] |
+  .hooks.Stop += [{"matcher": "*", "hooks": [{"type": "command", "command": \$stopcmd, "timeout": 25}]}]
 ' "\$CLAUDE_SETTINGS")
 
-echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
-echo "[OK] SessionStart + SessionEnd hooks 已安裝"
+if [ -n "\$UPDATED" ]; then
+  echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
+  echo "[OK] SessionStart + SessionEnd + Stop hooks 已安裝"
+else
+  echo "[ERR] jq 解析 settings.json 失敗，未修改（避免清空）；請檢查 \$CLAUDE_SETTINGS 格式"
+fi
 
 # ── 驗證 ──
 echo ""
@@ -163,19 +169,21 @@ echo "  ccusage-tracker 卸載程式"
 echo "  ========================"
 echo ""
 
-# ── 移除 SessionStart + SessionEnd hooks ──
+# ── 移除 SessionStart + SessionEnd + Stop hooks ──
 if [ -f "\$CLAUDE_SETTINGS" ] && command -v jq &> /dev/null; then
   # 只有 jq 解析成功且輸出非空才寫回，避免 malformed JSON 時清空整個 settings.json
   if UPDATED=\$(jq '
+    def strip_ours: map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not));
     if .hooks then
       .hooks |= (
-        (if .SessionStart then .SessionStart |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end) |
-        (if .SessionEnd then .SessionEnd |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end)
+        (if .SessionStart then .SessionStart |= strip_ours else . end) |
+        (if .SessionEnd then .SessionEnd |= strip_ours else . end) |
+        (if .Stop then .Stop |= strip_ours else . end)
       )
     else . end
   ' "\$CLAUDE_SETTINGS") && [ -n "\$UPDATED" ]; then
     echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
-    echo "[OK] SessionStart + SessionEnd hooks 已移除"
+    echo "[OK] SessionStart + SessionEnd + Stop hooks 已移除"
   else
     echo "[WARN] settings.json 解析失敗，未修改（避免清空）"
   fi
@@ -507,7 +515,14 @@ const CONFIG_DIR = join(homedir(), '.config', 'ccusage-tracker');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 const BUFFER_FILE = join(CONFIG_DIR, 'buffer.jsonl');
 const SESSIONS_DIR = join(CONFIG_DIR, 'sessions');
+const LAST_FLUSH_FILE = join(CONFIG_DIR, 'last-flush.txt');
 const CONTEXT_LIMIT = 200000;
+const THROTTLE_MS = 5 * 60 * 1000;
+
+// --mode=stop: Stop hook 每輪對話結束跑，5 分鐘 throttle
+// --mode=session-end（預設）: SessionEnd hook，無 throttle，跑完清 model file
+// 比較前 toLowerCase，避免 --mode=Stop / --mode=SESSION-END 等大小寫差異 silent fall-through
+const MODE = ((process.argv.find((a) => a.toLowerCase().startsWith('--mode=')) || '').slice(7) || 'session-end').toLowerCase();
 
 function readStdin(timeoutMs) {
   return new Promise((resolve) => {
@@ -716,7 +731,9 @@ async function postCurrentUsage(cfg) {
   const dashDate = now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate());
 
   // shell: true → 在 Windows 能找到 npm 全域安裝的 ccusage.cmd
-  const r = spawnSync('ccusage', ['daily', '--json', '--since', yyyymmdd], { encoding: 'utf8', shell: true });
+  // timeout: spawnSync 是 sync 阻塞 event loop，外層 __deadline 救不了，必須在這裡硬上限
+  const r = spawnSync('ccusage', ['daily', '--json', '--since', yyyymmdd],
+    { encoding: 'utf8', shell: true, timeout: 8000, killSignal: 'SIGKILL' });
   if (!r || r.status !== 0 || !r.stdout) return;
   let totals;
   try { totals = JSON.parse(r.stdout).totals; } catch { return; }
@@ -747,6 +764,19 @@ async function main() {
   const cfg = readConfig();
   if (!cfg) return;
 
+  // Stop hook：距上次上報 < 5 分鐘就跳過，避免每輪對話都打 server
+  if (MODE === 'stop') {
+    if (existsSync(LAST_FLUSH_FILE)) {
+      try {
+        const last = parseInt(readFileSync(LAST_FLUSH_FILE, 'utf8'), 10);
+        if (!isNaN(last) && Date.now() - last < THROTTLE_MS) return;
+      } catch { /* 讀不到當沒紀錄，繼續跑 */ }
+    }
+    // 過 throttle 立刻 mark：若後續 __deadline 贏走 race（process.exit(0)），下次仍正確被 throttle
+    // 失去「失敗則下次重試」的能力，但 Stop 是 best-effort、SessionEnd 兜底，這個 trade-off 合理
+    try { writeFileSync(LAST_FLUSH_FILE, String(Date.now())); } catch { /* 靜默 */ }
+  }
+
   const payload = await readStdin(1000);
   let transcriptPath = '';
   let hookSessionId = '';
@@ -763,7 +793,10 @@ async function main() {
     const mf = join(SESSIONS_DIR, hookSessionId);
     if (existsSync(mf)) {
       try { sessionModel = readFileSync(mf, 'utf8').trim(); } catch { /* 忽略 */ }
-      try { unlinkSync(mf); } catch { /* 忽略 */ }
+      // Stop mode 反覆執行只讀不刪，保證後續 Stop 仍能讀到 model；SessionEnd 才刪
+      if (MODE === 'session-end') {
+        try { unlinkSync(mf); } catch { /* 忽略 */ }
+      }
     }
   }
 
@@ -772,6 +805,7 @@ async function main() {
     postSessionMetrics(cfg, sessionModel, transcriptPath),
     postCurrentUsage(cfg),
   ]);
+  // 注意：last-flush.txt 在 throttle 通過時就已寫；session-end mode 不寫，避免重置 Stop 窗口
 }
 
 // 整體上限 20s：server 緩慢/不可達時，內部各 timeout 疊加最壞約 25s，
@@ -852,8 +886,10 @@ Write-Host '[OK] Hook scripts 下載完成'
 
 # 5. 安裝 Claude Code hooks（node 命令，正斜線路徑避免 JSON 轉義）
 Write-Host '[4/4] 安裝 Claude Code hooks...'
-$EndCmd = 'node "' + $EndMjs.Replace([char]92, [char]47) + '"'
+$EndMjsPath = $EndMjs.Replace([char]92, [char]47)
 $StartCmd = 'node "' + $StartMjs.Replace([char]92, [char]47) + '"'
+$EndCmd = 'node "' + $EndMjsPath + '" --mode=session-end'
+$StopCmd = 'node "' + $EndMjsPath + '" --mode=stop'
 
 if (Test-Path $ClaudeSettings) {
   Copy-Item $ClaudeSettings ($ClaudeSettings + '.backup') -Force
@@ -863,23 +899,30 @@ if (Test-Path $ClaudeSettings) {
   $settings = [PSCustomObject]@{}
 }
 if (-not $settings.PSObject.Properties['hooks']) { $settings | Add-Member -NotePropertyName hooks -NotePropertyValue ([PSCustomObject]@{}) }
-foreach ($evt in @('SessionStart', 'SessionEnd')) {
+foreach ($evt in @('SessionStart', 'SessionEnd', 'Stop')) {
   if (-not $settings.hooks.PSObject.Properties[$evt]) { $settings.hooks | Add-Member -NotePropertyName $evt -NotePropertyValue @() }
 }
-function Add-HookIfMissing($eventName, $cmd) {
-  $existing = @($settings.hooks.$eventName)
-  foreach ($entry in $existing) {
-    foreach ($h in @($entry.hooks)) {
-      # 用路徑片段比對，新舊/正反斜線都認得，避免重複安裝造成雙倍上報
-      if ($h.command -like '*ccusage-tracker*') { return }
-    }
-  }
-  $settings.hooks.$eventName = $existing + ([PSCustomObject]@{ matcher = ''; hooks = @([PSCustomObject]@{ type = 'command'; command = $cmd }) })
+# Migration: 先移除所有舊 ccusage-tracker entry（避免重複），再插入新版
+function Remove-OurHooks($eventName) {
+  $kept = @(@($settings.hooks.$eventName) | Where-Object {
+    -not (@($_.hooks) | Where-Object { $_.command -like '*ccusage-tracker*' })
+  })
+  $settings.hooks.$eventName = $kept
 }
-Add-HookIfMissing 'SessionStart' $StartCmd
-Add-HookIfMissing 'SessionEnd' $EndCmd
+function Add-Hook($eventName, $cmd, $withTimeout) {
+  $hookEntry = [PSCustomObject]@{ type = 'command'; command = $cmd }
+  if ($withTimeout) { $hookEntry | Add-Member -NotePropertyName timeout -NotePropertyValue 25 }
+  $matcherEntry = [PSCustomObject]@{ matcher = '*'; hooks = @($hookEntry) }
+  $settings.hooks.$eventName = @($settings.hooks.$eventName) + $matcherEntry
+}
+Remove-OurHooks 'SessionStart'
+Remove-OurHooks 'SessionEnd'
+Remove-OurHooks 'Stop'
+Add-Hook 'SessionStart' $StartCmd $false
+Add-Hook 'SessionEnd' $EndCmd $true
+Add-Hook 'Stop' $StopCmd $true
 [System.IO.File]::WriteAllText($ClaudeSettings, ($settings | ConvertTo-Json -Depth 20))
-Write-Host '[OK] SessionStart + SessionEnd hooks 已安裝'
+Write-Host '[OK] SessionStart + SessionEnd + Stop hooks 已安裝'
 
 # 6. 驗證
 Write-Host ''

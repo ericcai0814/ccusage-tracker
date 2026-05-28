@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.2] - 2026-05-28
+
+### Added
+- **Stop hook + throttle**：每輪對話結束時跑 ccusage-tracker 的上報路徑（`Stop` hook），主程序仍活著、不會被 cancel；新增 `~/.config/ccusage-tracker/last-flush.txt` 做 5 分鐘 throttle 避免狂打 server。SessionEnd 保留為備援
+- **`session-end.mjs` 加 `--mode` 參數**：`--mode=stop`（Stop hook，throttled、不刪 model file）與 `--mode=session-end`（SessionEnd，無 throttle、清 model file）
+- **`spawnSync(ccusage)` 加 timeout**：8s 上限 + SIGKILL，避免 sync 阻塞 event loop 時內部 `__deadline` 無效
+- **CLI 0.1.2 注入三條 hook**：原本只注入 SessionStart + SessionEnd，現在加 Stop hook 並把 SessionEnd 命令升級為帶 `--mode=session-end`
+- **CLI 0.1.2 hook migration**：偵測到舊命令（無 `--mode`）時原地替換為新命令；舊使用者重跑 `npx ccusage-tracker@latest setup` 就會升級
+- **`setup.sh` / `setup.ps1` 同步**：curl/irm 安裝路徑也注入 Stop hook 並做 migration
+
+### Fixed
+- **`Hook cancelled` 偶發**：SessionEnd 把網路 IO 放在退出路徑導致主程序退出時 race。Stop hook 接手後不再發生資料漏報
+
+### Upgrade
+成員請重跑安裝指令（會自動升級 hook 命令並新增 Stop hook，舊命令會被原地替換）：
+
+```bash
+npx ccusage-tracker@latest setup
+```
+
 ## [0.3.1] - 2026-05-28
 
 ### Fixed

@@ -18,7 +18,12 @@ function createMockDeps(prompts: string[]): SetupDeps & MockState {
     writtenConfig: null,
     prompt: async () => prompts[promptIndex++] ?? "",
     writeConfig: (config) => { deps.writtenConfig = config; },
-    installHook: () => ({ sessionEndInstalled: true, sessionStartInstalled: true, backedUp: false }),
+    installHook: () => ({
+      sessionEndChanged: true,
+      sessionStartChanged: true,
+      stopChanged: true,
+      backedUp: false,
+    }),
     fetchHookScript: async () => "// mock hook script",
     checkServer: async () => true,
     checkCcusage: () => true,
