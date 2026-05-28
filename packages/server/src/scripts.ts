@@ -104,9 +104,11 @@ echo "[OK] Hook scripts 下載完成"
 # ── 安裝 SessionStart + SessionEnd + Stop hooks ──
 echo "[4/4] 安裝 Claude Code hooks..."
 
-HOOK_START_CMD="node \$HOOK_START_SCRIPT"
-HOOK_END_CMD="node \$HOOK_SCRIPT --mode=session-end"
-HOOK_STOP_CMD="node \$HOOK_SCRIPT --mode=stop"
+# 路徑用 "..." 包住，避免 \$HOME 含空白時 Claude Code 執行時 shell-split 失敗
+# 用 mixed quoting（'...'"\$VAR"'...'）保證 literal " 進到 settings.json 命令字串
+HOOK_START_CMD='node "'"\$HOOK_START_SCRIPT"'"'
+HOOK_END_CMD='node "'"\$HOOK_SCRIPT"'" --mode=session-end'
+HOOK_STOP_CMD='node "'"\$HOOK_SCRIPT"'" --mode=stop'
 
 if [ -f "\$CLAUDE_SETTINGS" ]; then
   cp "\$CLAUDE_SETTINGS" "\$CLAUDE_SETTINGS.backup"
@@ -122,16 +124,18 @@ UPDATED=\$(jq --arg startcmd "\$HOOK_START_CMD" --arg endcmd "\$HOOK_END_CMD" --
   .hooks.SessionStart //= [] |
   .hooks.SessionEnd //= [] |
   .hooks.Stop //= [] |
-  .hooks.SessionStart |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) |
-  .hooks.SessionEnd |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) |
-  .hooks.Stop |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) |
+  (.hooks.SessionStart, .hooks.SessionEnd, .hooks.Stop) |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) |
   .hooks.SessionStart += [{"matcher": "*", "hooks": [{"type": "command", "command": \$startcmd}]}] |
   .hooks.SessionEnd += [{"matcher": "*", "hooks": [{"type": "command", "command": \$endcmd, "timeout": 25}]}] |
   .hooks.Stop += [{"matcher": "*", "hooks": [{"type": "command", "command": \$stopcmd, "timeout": 25}]}]
 ' "\$CLAUDE_SETTINGS")
 
-echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
-echo "[OK] SessionStart + SessionEnd + Stop hooks 已安裝"
+if [ -n "\$UPDATED" ]; then
+  echo "\$UPDATED" > "\$CLAUDE_SETTINGS"
+  echo "[OK] SessionStart + SessionEnd + Stop hooks 已安裝"
+else
+  echo "[ERR] jq 解析 settings.json 失敗，未修改（避免清空）；請檢查 \$CLAUDE_SETTINGS 格式"
+fi
 
 # ── 驗證 ──
 echo ""
@@ -169,11 +173,12 @@ echo ""
 if [ -f "\$CLAUDE_SETTINGS" ] && command -v jq &> /dev/null; then
   # 只有 jq 解析成功且輸出非空才寫回，避免 malformed JSON 時清空整個 settings.json
   if UPDATED=\$(jq '
+    def strip_ours: map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not));
     if .hooks then
       .hooks |= (
-        (if .SessionStart then .SessionStart |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end) |
-        (if .SessionEnd then .SessionEnd |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end) |
-        (if .Stop then .Stop |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) else . end)
+        (if .SessionStart then .SessionStart |= strip_ours else . end) |
+        (if .SessionEnd then .SessionEnd |= strip_ours else . end) |
+        (if .Stop then .Stop |= strip_ours else . end)
       )
     else . end
   ' "\$CLAUDE_SETTINGS") && [ -n "\$UPDATED" ]; then
@@ -516,7 +521,8 @@ const THROTTLE_MS = 5 * 60 * 1000;
 
 // --mode=stop: Stop hook 每輪對話結束跑，5 分鐘 throttle
 // --mode=session-end（預設）: SessionEnd hook，無 throttle，跑完清 model file
-const MODE = (process.argv.find((a) => a.startsWith('--mode=')) || '').slice(7) || 'session-end';
+// 比較前 toLowerCase，避免 --mode=Stop / --mode=SESSION-END 等大小寫差異 silent fall-through
+const MODE = ((process.argv.find((a) => a.toLowerCase().startsWith('--mode=')) || '').slice(7) || 'session-end').toLowerCase();
 
 function readStdin(timeoutMs) {
   return new Promise((resolve) => {
@@ -759,11 +765,16 @@ async function main() {
   if (!cfg) return;
 
   // Stop hook：距上次上報 < 5 分鐘就跳過，避免每輪對話都打 server
-  if (MODE === 'stop' && existsSync(LAST_FLUSH_FILE)) {
-    try {
-      const last = parseInt(readFileSync(LAST_FLUSH_FILE, 'utf8'), 10);
-      if (!isNaN(last) && Date.now() - last < THROTTLE_MS) return;
-    } catch { /* 讀不到當沒紀錄，繼續跑 */ }
+  if (MODE === 'stop') {
+    if (existsSync(LAST_FLUSH_FILE)) {
+      try {
+        const last = parseInt(readFileSync(LAST_FLUSH_FILE, 'utf8'), 10);
+        if (!isNaN(last) && Date.now() - last < THROTTLE_MS) return;
+      } catch { /* 讀不到當沒紀錄，繼續跑 */ }
+    }
+    // 過 throttle 立刻 mark：若後續 __deadline 贏走 race（process.exit(0)），下次仍正確被 throttle
+    // 失去「失敗則下次重試」的能力，但 Stop 是 best-effort、SessionEnd 兜底，這個 trade-off 合理
+    try { writeFileSync(LAST_FLUSH_FILE, String(Date.now())); } catch { /* 靜默 */ }
   }
 
   const payload = await readStdin(1000);
@@ -794,8 +805,7 @@ async function main() {
     postSessionMetrics(cfg, sessionModel, transcriptPath),
     postCurrentUsage(cfg),
   ]);
-
-  try { writeFileSync(LAST_FLUSH_FILE, String(Date.now())); } catch { /* 靜默 */ }
+  // 注意：last-flush.txt 在 throttle 通過時就已寫；session-end mode 不寫，避免重置 Stop 窗口
 }
 
 // 整體上限 20s：server 緩慢/不可達時，內部各 timeout 疊加最壞約 25s，

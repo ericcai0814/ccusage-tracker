@@ -14,10 +14,13 @@ const startCmd = getStartHookCommand();
 const endCmd = getHookCommand();
 const stopCmd = getStopHookCommand();
 
-function matcher(command: string, opts: { timeout?: number; matcher?: string } = {}) {
+function matcher(
+  command: string,
+  opts: { timeout?: number; matcher?: string } = {}
+) {
   const hook: { type: string; command: string; timeout?: number } = { type: "command", command };
-  if (opts.timeout) hook.timeout = opts.timeout;
-  return { matcher: opts.matcher ?? "", hooks: [hook] };
+  if (opts.timeout !== undefined) hook.timeout = opts.timeout;
+  return { matcher: opts.matcher ?? "*", hooks: [hook] };
 }
 
 describe("hook 命令", () => {
@@ -51,6 +54,7 @@ describe("applyTrackerHooks", () => {
     expect(r.sessionStartChanged).toBe(true);
     expect(r.sessionEndChanged).toBe(true);
     expect(r.stopChanged).toBe(true);
+    expect(r.anyChanged).toBe(true);
     expect(r.updated.hooks?.SessionStart).toHaveLength(1);
     expect(r.updated.hooks?.SessionEnd).toHaveLength(1);
     expect(r.updated.hooks?.Stop).toHaveLength(1);
@@ -72,7 +76,24 @@ describe("applyTrackerHooks", () => {
     expect(r.sessionStartChanged).toBe(false);
     expect(r.sessionEndChanged).toBe(false);
     expect(r.stopChanged).toBe(false);
+    expect(r.anyChanged).toBe(false);
     expect(r.updated).toBe(existing);
+  });
+
+  it("matcher \"\" 與 \"*\" 視為等價：命令對、只是 matcher 不同 → noop（不觸發 spurious 重寫）", () => {
+    // Claude Code 對 SessionEnd 把 "" 跟 "*" 都視為 match-all，兩者語意等價。
+    // 設計選擇：保守 — 不動 user 的 matcher 字面值，只在等價時當 noop。
+    // 避免 0.1.1 設下的 matcher: "" 觸發每次 setup 都寫一次 settings.json。
+    const existing = {
+      hooks: {
+        SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: endCmd, timeout: 25 }] }],
+        // SessionStart / Stop 缺失，下面只斷言 SessionEnd 不被視為 changed
+      },
+    };
+    const r = applyTrackerHooks(existing);
+    expect(r.sessionEndChanged).toBe(false);
+    // matcher 字面值不變
+    expect(r.updated.hooks?.SessionEnd?.[0].matcher).toBe("");
   });
 
   it("Migration：偵測到舊命令（無 --mode、無 timeout）→ 原地替換為新命令", () => {
@@ -119,20 +140,56 @@ describe("applyTrackerHooks", () => {
 
     expect(r.updated.model).toBe("opus");
     expect(r.updated.hooks?.PreToolUse).toHaveLength(1);
-    // 第三方 SessionEnd 保留、tracker 新增
     expect(r.updated.hooks?.SessionEnd).toHaveLength(2);
-    // 第三方 Stop 保留、tracker 新增
     expect(r.updated.hooks?.Stop).toHaveLength(2);
-    expect(r.sessionStartChanged).toBe(true);
-    expect(r.sessionEndChanged).toBe(true);
-    expect(r.stopChanged).toBe(true);
+  });
+
+  it("E-1 regression：tracker hook 與第三方 hook bundled 在同 matcher 內，第三方 hook 必須保留", () => {
+    // 用戶手動把第三方 hook 加進了 tracker matcher 的同個 hooks 陣列
+    const legacyEndCmd = "node /home/u/.config/ccusage-tracker/session-end.mjs";
+    const settings = {
+      hooks: {
+        SessionEnd: [
+          {
+            matcher: "*",
+            hooks: [
+              { type: "command", command: legacyEndCmd }, // tracker（舊）
+              { type: "command", command: "node my-custom-tool.js" }, // 第三方
+            ],
+          },
+        ],
+      },
+    };
+    const r = applyTrackerHooks(settings);
+
+    // 第三方 hook 必須出現在結果中（在自己的 matcher entry 內）
+    const allCommands = r.updated.hooks?.SessionEnd?.flatMap((m) => m.hooks.map((h) => h.command)) ?? [];
+    expect(allCommands).toContain("node my-custom-tool.js");
+    expect(allCommands).toContain(endCmd); // 我們的新命令也在
+    // 舊命令必須被清掉
+    expect(allCommands).not.toContain(legacyEndCmd);
+  });
+
+  it("E-4 regression：殘留 duplicate tracker matcher 必須被清成單一份", () => {
+    const legacyEndCmd = "node /home/u/.config/ccusage-tracker/session-end.mjs";
+    const settings = {
+      hooks: {
+        SessionEnd: [
+          matcher(legacyEndCmd, { matcher: "" }),
+          matcher(endCmd, { matcher: "*", timeout: 25 }),
+        ],
+      },
+    };
+    const r = applyTrackerHooks(settings);
+
+    expect(r.updated.hooks?.SessionEnd).toHaveLength(1);
+    expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].command).toBe(endCmd);
   });
 
   it("不變動原始輸入物件（immutability）", () => {
     const settings = { hooks: { SessionEnd: [matcher(endCmd, { timeout: 25, matcher: "*" })] } };
     applyTrackerHooks(settings);
 
-    // 原 SessionEnd 仍只有 1 筆、未新增 SessionStart / Stop
     expect(settings.hooks.SessionEnd).toHaveLength(1);
     expect(settings.hooks).not.toHaveProperty("SessionStart");
     expect(settings.hooks).not.toHaveProperty("Stop");

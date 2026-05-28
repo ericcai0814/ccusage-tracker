@@ -50,43 +50,57 @@ function isCcusageTrackerHook(command?: string): boolean {
   return !!command && command.includes("ccusage-tracker");
 }
 
+// Claude Code 將 matcher: "" 與 "*" 視為等價（都是 match-all）；早期 setup.sh 寫 "" 新版寫 "*"
+function matcherEquivalent(a: string, b: string): boolean {
+  const norm = (s: string) => (s === "" ? "*" : s);
+  return norm(a) === norm(b);
+}
+
 interface UpsertOptions {
   matcher?: string;
   timeout?: number;
 }
 
-// 對單一 hook 陣列做 upsert：
-// - 找到屬於我們的 entry 且命令完全相同 → noop
-// - 找到屬於我們的 entry 但命令不同 → 原地替換（migration 路徑：舊命令升級到新命令）
-// - 找不到 → append
+// Upsert tracker hook：
+// 1) 從所有現有 matcher 的 hooks[] 中濾掉**所有** tracker entries（同時處理 duplicate matcher
+//    與 co-bundled 第三方 hook 場景，第三方 hook 留在原 matcher 中不會被誤刪）
+// 2) 若 matcher 的 hooks[] 因此變空，丟掉該 matcher
+// 3) 在尾端 append 一條 canonical matcher
+// 4) 若結果與既有等價（normalize matcher "" / "*"），返回 changed: false 並保留 reference
 function upsertHook(
   existing: HookMatcher[],
   command: string,
   opts: UpsertOptions = {}
 ): { matchers: HookMatcher[]; changed: boolean } {
   const newEntry: HookEntry = { type: "command", command };
-  if (opts.timeout) newEntry.timeout = opts.timeout;
+  if (opts.timeout !== undefined) newEntry.timeout = opts.timeout;
   const newMatcher: HookMatcher = { matcher: opts.matcher ?? "*", hooks: [newEntry] };
 
-  const ourIdx = existing.findIndex((m) => m.hooks?.some((h) => isCcusageTrackerHook(h.command)));
+  const filtered = existing
+    .map((m) => ({
+      matcher: m.matcher,
+      hooks: (m.hooks ?? []).filter((h) => !isCcusageTrackerHook(h.command)),
+    }))
+    .filter((m) => m.hooks.length > 0);
 
-  if (ourIdx === -1) {
-    return { matchers: [...existing, newMatcher], changed: true };
+  const next = [...filtered, newMatcher];
+  const changed = !sameMatchers(existing, next);
+  return { matchers: changed ? next : existing, changed };
+}
+
+function sameMatchers(a: HookMatcher[], b: HookMatcher[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (!matcherEquivalent(a[i].matcher, b[i].matcher)) return false;
+    const ha = a[i].hooks ?? [];
+    const hb = b[i].hooks ?? [];
+    if (ha.length !== hb.length) return false;
+    for (let j = 0; j < ha.length; j++) {
+      if (ha[j].command !== hb[j].command) return false;
+      if (ha[j].timeout !== hb[j].timeout) return false;
+    }
   }
-
-  const current = existing[ourIdx];
-  const sameCommand =
-    current.hooks?.length === 1 &&
-    current.hooks[0].command === command &&
-    current.hooks[0].timeout === opts.timeout &&
-    current.matcher === (opts.matcher ?? "*");
-  if (sameCommand) {
-    return { matchers: existing, changed: false };
-  }
-
-  const next = [...existing];
-  next[ourIdx] = newMatcher;
-  return { matchers: next, changed: true };
+  return true;
 }
 
 // 純函式：在記憶體中對 settings 三條 tracker hook 做 upsert（install / update / noop）。
@@ -96,6 +110,7 @@ export function applyTrackerHooks(settings: ClaudeSettings): {
   sessionStartChanged: boolean;
   sessionEndChanged: boolean;
   stopChanged: boolean;
+  anyChanged: boolean;
 } {
   const start = upsertHook(settings.hooks?.SessionStart ?? [], getStartHookCommand());
   const end = upsertHook(settings.hooks?.SessionEnd ?? [], getHookCommand(), { timeout: HOOK_TIMEOUT_SEC });
@@ -119,6 +134,7 @@ export function applyTrackerHooks(settings: ClaudeSettings): {
     sessionStartChanged: start.changed,
     sessionEndChanged: end.changed,
     stopChanged: stop.changed,
+    anyChanged,
   };
 }
 
@@ -138,10 +154,6 @@ export function installHook(scripts: {
   if (existsSync(settingsPath)) {
     const raw = readFileSync(settingsPath, "utf-8");
     settings = JSON.parse(raw);
-
-    const backupPath = settingsPath + ".backup";
-    copyFileSync(settingsPath, backupPath);
-    backedUp = true;
   }
 
   // 寫出（或更新）兩個上報腳本到 config 目錄
@@ -151,8 +163,13 @@ export function installHook(scripts: {
   writeFileSync(join(destDir, "session-end.mjs"), scripts.sessionEnd);
   writeFileSync(join(destDir, "session-start.mjs"), scripts.sessionStart);
 
-  const { updated, sessionStartChanged, sessionEndChanged, stopChanged } = applyTrackerHooks(settings);
-  if (sessionStartChanged || sessionEndChanged || stopChanged) {
+  const { updated, sessionStartChanged, sessionEndChanged, stopChanged, anyChanged } = applyTrackerHooks(settings);
+  if (anyChanged) {
+    if (existsSync(settingsPath)) {
+      // 只有真的要寫才建 backup，避免 noop 跑也產生 .backup 殘檔
+      copyFileSync(settingsPath, settingsPath + ".backup");
+      backedUp = true;
+    }
     writeFileSync(settingsPath, JSON.stringify(updated, null, 2) + "\n");
   }
 
@@ -165,9 +182,10 @@ export function isHookInstalled(): boolean {
 
   try {
     const settings: ClaudeSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    return settings.hooks?.SessionEnd?.some(
-      (m) => m.hooks?.some((h) => isCcusageTrackerHook(h.command))
-    ) ?? false;
+    const hasIn = (arr?: HookMatcher[]) =>
+      arr?.some((m) => m.hooks?.some((h) => isCcusageTrackerHook(h.command))) ?? false;
+    // Stop hook 已是主要上報路徑；SessionEnd 是備援。任一存在即視為已安裝
+    return hasIn(settings.hooks?.Stop) || hasIn(settings.hooks?.SessionEnd);
   } catch {
     return false;
   }

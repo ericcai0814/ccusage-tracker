@@ -97,9 +97,11 @@ describe("舊 bash 腳本向後相容 (regression)", () => {
     expect(generateSessionEndScript()).toContain("jq ");
   });
 
-  it("setup.sh 改用 node 執行 .mjs hook", () => {
+  it("setup.sh 改用 node 執行 .mjs hook（mixed quoting 保證路徑含空白也安全）", () => {
     const sh = generateSetupScript("https://x.app", "tk");
-    expect(sh).toContain("node $HOOK_SCRIPT");
+    // mixed quoting: 'node "'"$VAR"'"' → HOOK_VAR 內含 literal " 字元
+    expect(sh).toContain(`'node "'"$HOOK_SCRIPT"'"`);
+    expect(sh).toContain(`'node "'"$HOOK_START_SCRIPT"'"'`);
     expect(sh).toContain("session-end.mjs");
   });
 
@@ -111,10 +113,15 @@ describe("舊 bash 腳本向後相容 (regression)", () => {
     expect(sh).toContain(".hooks.Stop");
   });
 
-  it("setup.sh 用 migration jq pattern（移除舊 ccusage-tracker entry 再插入新版）", () => {
+  it("setup.sh 用 migration jq pattern（path-alternation 移除所有 ccusage-tracker entry 再插入新版）", () => {
     const sh = generateSetupScript("https://x.app", "tk");
     expect(sh).toContain('contains("ccusage-tracker")');
-    expect(sh).toContain(".hooks.SessionEnd |= map(select");
+    expect(sh).toContain("(.hooks.SessionStart, .hooks.SessionEnd, .hooks.Stop) |= map(select");
+  });
+
+  it("setup.sh 寫 settings.json 前檢查 UPDATED 非空（避免 jq 失敗時清空檔案）", () => {
+    const sh = generateSetupScript("https://x.app", "tk");
+    expect(sh).toContain('[ -n "$UPDATED" ]');
   });
 
   it("uninstall.sh 同時清理 SessionStart / SessionEnd / Stop", () => {
