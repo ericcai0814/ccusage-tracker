@@ -160,6 +160,33 @@ curl -H "Authorization: Bearer <TEAM_KEY>" \
   "https://cctracker.erictree.me/api/report/daily?from=2026-03-01&to=2026-03-31"
 ```
 
+### CLI
+
+安裝（`setup`）後，可直接用 CLI 在終端機查看團隊用量，免開瀏覽器。bin 不在全域 PATH，請以 `npx ccusage-tracker@latest` 呼叫：
+
+```bash
+# 查看用量報表（預設 period 為 month）
+npx ccusage-tracker@latest report
+
+# 指定期間：today / week / month
+npx ccusage-tracker@latest report --period today
+npx ccusage-tracker@latest report --period week
+npx ccusage-tracker@latest report --period month
+
+# 以 JSON 輸出（方便接其他工具）
+npx ccusage-tracker@latest report --period today --json
+
+# 檢查本機設定、hook、server 連線、暫存筆數
+npx ccusage-tracker@latest status
+```
+
+| 指令 | 參數 | 說明 |
+|------|------|------|
+| `report` | `--period <today\|week\|month>` | 查看團隊用量摘要表，預設 `month`；無效值自動 fallback 為 `month` |
+| `report` | `--json` | 輸出原始 JSON（含每位成員的 input/output/cache token 與成本） |
+| `status` | （無） | 顯示 config 路徑、成員名字、server 可達性與版本、`buffer.jsonl` 待送筆數、`ccusage` 是否安裝 |
+| `setup` | （無） | 互動式設定 server 連線並注入 hook（見上方「成員安裝」） |
+
 ## 管理員
 
 ### 環境變數
@@ -201,7 +228,7 @@ ccusage-tracker/
           report.ts          # GET /api/report/*
           admin.ts           # POST/GET /api/admin/members
           dashboard.tsx      # GET / (Hono JSX SSR)
-    cli/                     # CLI 工具（tracker setup/report/status）
+    cli/                     # CLI 工具（npx ccusage-tracker@latest setup/report/status）
   Dockerfile                 # Bun + Alpine
   zeabur.json                # Zeabur 部署設定
   openspec/                  # Spectra SDD 規格文件
@@ -217,7 +244,7 @@ ccusage-tracker/
 不會。v0.2.0 起，POST 失敗時 payload 會暫存到本機 `buffer.jsonl`，下次 session 結束時自動重送。暫存保留 7 天。
 
 **Q: Dashboard 上成員顯示紅色警告是什麼意思？**
-表示該成員超過 24 小時未回報。可能是 hook 壞掉、設定錯誤、或未安裝。請該成員執行 `tracker status` 檢查。
+表示該成員超過 24 小時未回報。可能是 hook 壞掉、設定錯誤、或未安裝。請該成員執行 `npx ccusage-tracker@latest status` 檢查。
 
 **Q: 重複上報會導致數據重複嗎？**
 不會。Server 用 `(member_id, date, session_id)` 做唯一鍵，重複上報會覆蓋而非新增。
