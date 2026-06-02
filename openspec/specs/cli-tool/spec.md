@@ -8,7 +8,7 @@ TBD - created by archiving change 'ccusage-tracker-mvp'. Update Purpose after ar
 
 ### Requirement: Setup command
 
-The CLI SHALL provide a `setup` command that configures the user's machine for automatic usage reporting.
+The CLI SHALL provide a `setup` command that configures the user's machine for automatic usage reporting. Hook commands written by setup SHALL quote each tracker script absolute path with double quotes so paths containing spaces remain a single `node` argument.
 
 #### Scenario: Interactive setup
 
@@ -20,10 +20,25 @@ The CLI SHALL provide a `setup` command that configures the user's machine for a
 - **WHEN** setup completes successfully
 - **THEN** the CLI SHALL write the configuration to `~/.config/ccusage-tracker/config.json` containing `server_url`, `api_key`, and `member_name`
 
-#### Scenario: Install SessionEnd hook
+#### Scenario: Install SessionStart hook with quoted script path
 
 - **WHEN** setup completes successfully
-- **THEN** the CLI SHALL patch `~/.claude/settings.json` to add a SessionEnd hook entry, preserving all existing hooks via deep merge
+- **THEN** the CLI SHALL patch `~/.claude/settings.json` to add a SessionStart hook entry whose command is `node "<home>/.config/ccusage-tracker/session-start.mjs"`
+
+#### Scenario: Install SessionEnd hook with quoted script path
+
+- **WHEN** setup completes successfully
+- **THEN** the CLI SHALL patch `~/.claude/settings.json` to add a SessionEnd hook entry whose command is `node "<home>/.config/ccusage-tracker/session-end.mjs" --mode=session-end`, preserving all existing hooks via deep merge
+
+#### Scenario: Install Stop hook with quoted script path
+
+- **WHEN** setup completes successfully
+- **THEN** the CLI SHALL patch `~/.claude/settings.json` to add a Stop hook entry whose command is `node "<home>/.config/ccusage-tracker/session-end.mjs" --mode=stop`
+
+#### Scenario: Upgrade existing unquoted tracker hook commands
+
+- **WHEN** setup runs on a machine whose `~/.claude/settings.json` already contains ccusage-tracker hook commands without quoted script paths
+- **THEN** the CLI SHALL replace those tracker hook commands with the quoted canonical commands and report the affected hook as changed
 
 #### Scenario: Backup settings before patch
 
@@ -42,24 +57,12 @@ The CLI SHALL provide a `setup` command that configures the user's machine for a
 
 
 <!-- @trace
-source: ccusage-tracker-mvp
-updated: 2026-03-31
+source: fix-windows-hook-path-quoting
+updated: 2026-06-02
 code:
-  - packages/server/src/routes/report.ts
-  - packages/server/src/app.ts
-  - Dockerfile
-  - packages/server/src/routes/ingest.ts
-  - .dockerignore
-  - packages/server/src/routes/dashboard.tsx
-  - packages/server/src/queries.ts
-  - packages/server/src/middleware/team-auth.ts
-  - packages/server/src/scripts.ts
-  - README.md
+  - packages/cli/src/hooks.ts
 tests:
-  - packages/server/src/routes/report.test.ts
-  - packages/server/src/routes/ingest.test.ts
-  - packages/server/src/routes/dashboard.test.ts
-  - packages/server/src/queries.test.ts
+  - packages/cli/src/hooks.test.ts
 -->
 
 ---

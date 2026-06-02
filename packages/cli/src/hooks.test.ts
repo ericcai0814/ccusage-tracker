@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   applyTrackerHooks,
+  buildHookCommand,
   getHookCommand,
   getStartHookCommand,
   getStopHookCommand,
@@ -23,6 +24,16 @@ function matcher(
   return { matcher: opts.matcher ?? "*", hooks: [hook] };
 }
 
+function shellArgsForHookCommand(command: string): string[] {
+  const probe = command.replace(
+    "node ",
+    "node -e 'console.log(JSON.stringify(process.argv.slice(1)))' -- "
+  );
+  const result = Bun.spawnSync(["sh", "-c", probe]);
+  expect(result.exitCode).toBe(0);
+  return JSON.parse(result.stdout.toString().trim()) as string[];
+}
+
 describe("hook 命令", () => {
   it("getStartHookCommand 以 node 執行 session-start.mjs，且腳本路徑有雙引號", () => {
     expect(startCmd).toContain("node ");
@@ -41,6 +52,20 @@ describe("hook 命令", () => {
     expect(stopCmd).toContain("session-end.mjs");
     expect(stopCmd).toContain("--mode=stop");
     expect(stopCmd).toMatch(/^node ".*session-end\.mjs" --mode=stop$/);
+  });
+
+  it("含空格腳本路徑經 shell word-split 後仍保留為單一 node 參數", () => {
+    const scriptPath = "/Users/Gill Chiang/.config/ccusage-tracker/session-end.mjs";
+    const command = buildHookCommand(scriptPath, "stop");
+
+    expect(command).toBe(`node "${scriptPath}" --mode=stop`);
+    expect(shellArgsForHookCommand(command)).toEqual([scriptPath, "--mode=stop"]);
+  });
+
+  it("Windows 風格含空格腳本路徑會被雙引號包住", () => {
+    const scriptPath = String.raw`C:\Users\Gill Chiang\.config\ccusage-tracker\session-start.mjs`;
+
+    expect(buildHookCommand(scriptPath)).toBe(`node "${scriptPath}"`);
   });
 
   it("三條命令彼此不同", () => {

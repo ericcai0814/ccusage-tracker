@@ -37,16 +37,21 @@ function quoteScriptPath(path: string): string {
   return `"${path}"`;
 }
 
+export function buildHookCommand(scriptPath: string, mode?: "session-end" | "stop"): string {
+  const command = "node " + quoteScriptPath(scriptPath);
+  return mode ? `${command} --mode=${mode}` : command;
+}
+
 export function getHookCommand(): string {
-  return "node " + quoteScriptPath(sessionEndScriptPath()) + " --mode=session-end";
+  return buildHookCommand(sessionEndScriptPath(), "session-end");
 }
 
 export function getStopHookCommand(): string {
-  return "node " + quoteScriptPath(sessionEndScriptPath()) + " --mode=stop";
+  return buildHookCommand(sessionEndScriptPath(), "stop");
 }
 
 export function getStartHookCommand(): string {
-  return "node " + quoteScriptPath(join(homedir(), ".config", "ccusage-tracker", "session-start.mjs"));
+  return buildHookCommand(join(homedir(), ".config", "ccusage-tracker", "session-start.mjs"));
 }
 
 // 以路徑片段判斷，可同時辨識新版（含 --mode）與舊版（無 --mode）hook
