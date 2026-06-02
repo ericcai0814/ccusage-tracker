@@ -30,7 +30,7 @@ After installation, the binary is also available as `tracker` (if installed glob
 - **Stop** — primary reporting path: POSTs token usage + session metrics after each assistant turn, throttled to once per 5 minutes
 - **SessionEnd** — backup path: same payload at session exit, in case Stop missed the last window
 
-Hook scripts are downloaded from your tracker server, so they always match the server version. Re-running `setup` migrates old (no `--mode`) commands in-place — no manual cleanup needed.
+Hook scripts are downloaded from your tracker server, so they always match the server version. Re-running `setup` migrates old (no `--mode`) commands and unquoted tracker hook paths in-place — no manual cleanup needed.
 
 ## Requirements
 

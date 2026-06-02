@@ -10,7 +10,7 @@
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?logo=sqlite&logoColor=white)](https://sqlite.org)
 [![deploy Zeabur](https://img.shields.io/badge/deploy-Zeabur-6300FF)](https://zeabur.com)
 [![Claude Code hook](https://img.shields.io/badge/Claude%20Code-Stop%20%2B%20SessionEnd%20hook-D97757)](https://www.anthropic.com/claude-code)
-[![CHANGELOG](https://img.shields.io/badge/CHANGELOG-v0.3.3-informational)](./CHANGELOG.md)
+[![CHANGELOG](https://img.shields.io/badge/CHANGELOG-v0.3.4-informational)](./CHANGELOG.md)
 
 > 團隊 Claude Code token 用量追蹤工具，基於 [ccusage](https://github.com/ryoppippi/ccusage) 建立多人彙整層。
 > 一行 `npx ccusage-tracker setup` 安裝、跨平台、不傳對話內容、失敗自動暫存重試。

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.4] - 2026-06-03
+
+### Fixed
+- **CLI 0.1.4**：修正 macOS/Linux/Windows 使用者目錄含空格時，Claude Code hook command 的 script path 會被 shell 拆成多個參數，導致 `node` 找不到腳本。`SessionStart` / `SessionEnd` / `Stop` 現在都輸出 `node "<path>" ...`。
+- **Hook migration**：重跑 `npx ccusage-tracker@latest setup` 會把既有未加引號的 ccusage-tracker hook command 升級成 canonical quoted command。
+
+### Upgrade
+受影響成員請重跑：
+
+```bash
+npx ccusage-tracker@latest setup
+```
+
 ## [0.3.3] - 2026-05-28
 
 ### Changed
