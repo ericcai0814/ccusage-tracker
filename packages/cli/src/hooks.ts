@@ -33,16 +33,20 @@ function sessionEndScriptPath(): string {
   return join(homedir(), ".config", "ccusage-tracker", "session-end.mjs");
 }
 
+function quoteScriptPath(path: string): string {
+  return `"${path}"`;
+}
+
 export function getHookCommand(): string {
-  return "node " + sessionEndScriptPath() + " --mode=session-end";
+  return "node " + quoteScriptPath(sessionEndScriptPath()) + " --mode=session-end";
 }
 
 export function getStopHookCommand(): string {
-  return "node " + sessionEndScriptPath() + " --mode=stop";
+  return "node " + quoteScriptPath(sessionEndScriptPath()) + " --mode=stop";
 }
 
 export function getStartHookCommand(): string {
-  return "node " + join(homedir(), ".config", "ccusage-tracker", "session-start.mjs");
+  return "node " + quoteScriptPath(join(homedir(), ".config", "ccusage-tracker", "session-start.mjs"));
 }
 
 // 以路徑片段判斷，可同時辨識新版（含 --mode）與舊版（無 --mode）hook

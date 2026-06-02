@@ -24,20 +24,23 @@ function matcher(
 }
 
 describe("hook 命令", () => {
-  it("getStartHookCommand 以 node 執行 session-start.mjs", () => {
+  it("getStartHookCommand 以 node 執行 session-start.mjs，且腳本路徑有雙引號", () => {
     expect(startCmd).toContain("node ");
     expect(startCmd).toContain("session-start.mjs");
     expect(startCmd).not.toContain("--mode");
+    expect(startCmd).toMatch(/^node ".*session-start\.mjs"$/);
   });
 
-  it("getHookCommand 帶 --mode=session-end", () => {
+  it("getHookCommand 帶 --mode=session-end，且腳本路徑有雙引號", () => {
     expect(endCmd).toContain("session-end.mjs");
     expect(endCmd).toContain("--mode=session-end");
+    expect(endCmd).toMatch(/^node ".*session-end\.mjs" --mode=session-end$/);
   });
 
-  it("getStopHookCommand 帶 --mode=stop 且共用 session-end.mjs", () => {
+  it("getStopHookCommand 帶 --mode=stop 且共用 session-end.mjs，且腳本路徑有雙引號", () => {
     expect(stopCmd).toContain("session-end.mjs");
     expect(stopCmd).toContain("--mode=stop");
+    expect(stopCmd).toMatch(/^node ".*session-end\.mjs" --mode=stop$/);
   });
 
   it("三條命令彼此不同", () => {
@@ -112,6 +115,27 @@ describe("applyTrackerHooks", () => {
     expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].command).toBe(endCmd);
     expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].timeout).toBe(25);
     expect(r.updated.hooks?.Stop).toHaveLength(1);
+  });
+
+  it("Migration：既有無引號 tracker command 會被替換成有引號 canonical command", () => {
+    const unquotedStartCmd = startCmd.replace('node "', "node ").replace('"', "");
+    const unquotedEndCmd = endCmd.replace('node "', "node ").replace('"', "");
+    const unquotedStopCmd = stopCmd.replace('node "', "node ").replace('"', "");
+    const legacy = {
+      hooks: {
+        SessionStart: [matcher(unquotedStartCmd)],
+        SessionEnd: [matcher(unquotedEndCmd, { timeout: 25 })],
+        Stop: [matcher(unquotedStopCmd, { timeout: 25 })],
+      },
+    };
+    const r = applyTrackerHooks(legacy);
+
+    expect(r.sessionStartChanged).toBe(true);
+    expect(r.sessionEndChanged).toBe(true);
+    expect(r.stopChanged).toBe(true);
+    expect(r.updated.hooks?.SessionStart?.[0].hooks[0].command).toBe(startCmd);
+    expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].command).toBe(endCmd);
+    expect(r.updated.hooks?.Stop?.[0].hooks[0].command).toBe(stopCmd);
   });
 
   it("修復路徑：只有 SessionEnd 舊安裝 → SessionStart + Stop 補上，SessionEnd 升級", () => {
