@@ -17,6 +17,10 @@
 - **`last-error.txt` 失效痕跡**：`ccusage` 取數失敗（逾時 / 非零結束 / 輸出無法解析）時寫入時間戳與原因，取數成功時清除。這是整條上報鏈上唯一「連 buffer 都寫不了」的環節，先前完全無跡可循
 - **`tracker status` 顯示上報健康度**：新增 `Last upload`（有無失效痕跡）與 `Last hook run`（上次 hook 執行時間）。先前 status 五項全綠卻不代表用量有送出去，`Buffer: none` 更會被誤讀成好消息
 
+### Fixed（續）
+- **`ccusage: not found` 誤報**：`status.ts` 與 `setup.ts` 用 `Bun.spawnSync` 偵測 ccusage，但 bin 以 node 執行（shebang `#!/usr/bin/env node`、build `--target node`），`Bun` global 不存在會拋 `ReferenceError` 並被 `try/catch` 吞掉 —— 所有 npx 使用者一律被告知「ccusage 沒裝」，`setup` 也會誤警告。改用 `node:child_process` 的 `spawnSync`。此誤報會把診斷帶往錯誤方向，正好抵銷上面新增的診斷資訊
+- 新增 `runtime.test.ts` 守住「發布的原始碼不得使用 Bun 全域 API」：測試在 bun 下跑、`Bun` global 存在，這類誤用在測試中完全看不出來，只有使用者裝了才會炸
+
 ### Upgrade
 受影響成員請重跑（會同時更新 `session-end.mjs` 與 settings.json 的 hook timeout）：
 

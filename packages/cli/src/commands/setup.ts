@@ -1,4 +1,5 @@
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
+import { spawnSync } from "node:child_process";
 import { writeConfig, type TrackerConfig } from "../config";
 import { installHook } from "../hooks";
 
@@ -36,10 +37,11 @@ async function defaultCheckServer(serverUrl: string): Promise<boolean> {
   }
 }
 
+// 與 status.ts 的 probeCcusage 同理：bin 以 node 執行，Bun global 不存在；
+// 指令合成單一字串避免 DEP0190；shell: true 以相容 Windows 的 ccusage.cmd。
 function defaultCheckCcusage(): boolean {
   try {
-    Bun.spawnSync(["ccusage", "--version"]);
-    return true;
+    return spawnSync("ccusage --version", { encoding: "utf8", shell: true, timeout: 10000 }).status === 0;
   } catch {
     return false;
   }
