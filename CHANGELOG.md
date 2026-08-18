@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.3.5] - 2026-08-18
+
+### Fixed
+- **ccusage 逾時導致用量靜默漏報**：`session-end.mjs` 給 `ccusage` 的 8 秒上限太短。`ccusage` 每次執行都全量掃描歷史用量檔，耗時隨累積資料單調成長；資料量夠大的成員機器上實測需約 11 秒，會被穩定 SIGKILL。此路徑取不到 payload、連 `buffer.jsonl` 都寫不進，故障完全無聲 —— 用量停在某一天且無任何錯誤訊息（實際案例漏報 9 天才被發現）。三層上限一併放寬：
+
+  | 位置 | 原值 | 新值 |
+  |---|---|---|
+  | `session-end.mjs` `spawnSync(ccusage)` | 8s | 25s |
+  | `session-end.mjs` `__deadline` | 20s | 40s |
+  | `settings.json` SessionEnd / Stop hook timeout | 25 | 45 |
+
+  三層必須維持 `ccusage < __deadline < hook timeout` 的包含關係：`spawnSync` 是同步阻塞，外層 `__deadline` 的 `setTimeout` 排不進 event loop、救不了它；而 `__deadline` 一到就 `process.exit(0)`，若小於 `ccusage + 上報` 總和，放寬最內層等於白做。
+
+### Added
+- **`last-error.txt` 失效痕跡**：`ccusage` 取數失敗（逾時 / 非零結束 / 輸出無法解析）時寫入時間戳與原因，取數成功時清除。這是整條上報鏈上唯一「連 buffer 都寫不了」的環節，先前完全無跡可循
+- **`tracker status` 顯示上報健康度**：新增 `Last upload`（有無失效痕跡）與 `Last hook run`（上次 hook 執行時間）。先前 status 五項全綠卻不代表用量有送出去，`Buffer: none` 更會被誤讀成好消息
+
+### Upgrade
+受影響成員請重跑（會同時更新 `session-end.mjs` 與 settings.json 的 hook timeout）：
+
+```bash
+npx ccusage-tracker@latest setup
+```
+
+日常自檢：`tracker status`；若 `ccusage` 耗時接近 25 秒需再次放寬上限。
+
 ## [0.3.4] - 2026-06-03
 
 ### Fixed

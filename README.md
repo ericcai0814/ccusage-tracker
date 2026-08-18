@@ -52,7 +52,7 @@
 2. 檢查 `~/.config/ccusage-tracker/last-flush.txt`：距上次 < 5 分鐘就直接 `exit 0`（throttle）
 3. 過 throttle 後立即寫 last-flush 戳記（避免 race / 失敗時連續打 server）
 4. Hook 檢查本機暫存（`buffer.jsonl`），逐筆重送失敗的紀錄（15 秒上限）
-5. Hook 呼叫 `ccusage daily --json --since today` 取得當日 token 數據（8 秒 timeout）
+5. Hook 呼叫 `ccusage daily --json --since today` 取得當日 token 數據（25 秒 timeout）。取數失敗時寫 `last-error.txt`，可用 `tracker status` 查看
 6. Hook 抽 session 行為指標（turns、tool_calls 等）+ POST 到 server 的 `/api/ingest` 與 `/api/ingest/session`（upsert，重複上報安全）
 7. POST 失敗時，payload 暫存到 `buffer.jsonl`，下次自動重送
 8. session 結束時，`SessionEnd` hook 跑一次「兜底」（無 throttle）— 若主程序退出 race 導致 Stop 最近沒跑成，這裡補上
