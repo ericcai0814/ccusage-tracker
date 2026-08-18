@@ -1,6 +1,7 @@
 import { readConfig, getConfigPath } from "../config";
 import { isHookInstalled } from "../hooks";
 import { existsSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 
 export async function statusCommand(): Promise<void> {
@@ -81,11 +82,23 @@ export async function statusCommand(): Promise<void> {
   }
 
   // ccusage
+  // 必須用 node:child_process 而非 Bun.spawnSync：bin 的 shebang 是 node、build 也是
+  // --target node，Bun global 不存在會拋 ReferenceError 被 catch 吞掉，於是一律誤報
+  // 「沒裝」—— 對照 session-end.mjs 同樣以 node 執行、同樣用 node:child_process。
+  const probe = probeCcusage();
+  console.log(probe ? `ccusage: installed (${probe})` : "ccusage: not found (install with: npx ccusage@latest)");
+}
+
+// 回傳版本字串；偵測不到回 null。
+// 指令與參數合成單一字串再交給 shell，而非傳 args 陣列：後者在 Node 22+ 會噴 DEP0190
+// 警告，污染 CLI 輸出。此處指令為常數、無外部輸入，無注入風險。
+// shell: true 是為了 Windows —— npm 全域安裝的是 ccusage.cmd，不透過 shell 找不到。
+function probeCcusage(): string | null {
   try {
-    const result = Bun.spawnSync(["ccusage", "--version"]);
-    const version = new TextDecoder().decode(result.stdout).trim();
-    console.log(`ccusage: installed (${version || "version unknown"})`);
+    const r = spawnSync("ccusage --version", { encoding: "utf8", shell: true, timeout: 10000 });
+    if (r.status !== 0 || !r.stdout) return null;
+    return r.stdout.trim() || "version unknown";
   } catch {
-    console.log("ccusage: not found (install with: npx ccusage@latest)");
+    return null;
   }
 }
