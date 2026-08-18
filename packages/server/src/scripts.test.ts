@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import { createApp } from "./app";
 import { createDatabase } from "./db";
 import {
@@ -101,6 +103,25 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
   it("spawnSync 不同時使用 shell: true 與 args 陣列（否則每次執行噴 DEP0190）", () => {
     for (const script of [mjs, generateSessionStartMjsScript()]) {
       expect(script).not.toMatch(/spawnSync\([^)]*,\s*\[/);
+    }
+  });
+
+  // 迴歸防護：腳本若寫在 TS 的 String.raw 樣板裡，Bun 轉譯會把中文轉成 \uXXXX
+  // 一路帶進發出去的檔案。字串字面量內的還原得回來（node 會解碼），註解內的就是死的亂碼 ——
+  // 而 ~/.config/ccusage-tracker/session-end.mjs 正是出問題時第一個被打開來看的檔案。
+  it("發出的腳本保留原始中文，不含 \\uXXXX 逸出", () => {
+    for (const script of [mjs, generateSessionStartMjsScript()]) {
+      expect(script).not.toMatch(/\\u[0-9A-Fa-f]{4}/);
+    }
+  });
+
+  // 抽成獨立檔案後才做得到的事。這 357 行過去埋在 TS 樣板字串裡，
+  // 語法錯誤只能靠人工 node --check 事後抓，或等使用者裝上去才炸。
+  it("hook 腳本本身通過 node 語法檢查", () => {
+    for (const name of ["session-end.mjs", "session-start.mjs"]) {
+      const r = spawnSync("node", ["--check", join(import.meta.dir, "hook-scripts", name)], { encoding: "utf8" });
+      expect(r.stderr).toBe("");
+      expect(r.status).toBe(0);
     }
   });
 
