@@ -95,6 +95,15 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
     expect(mjs).toContain("clearError();");
   });
 
+  // 迴歸防護：Node 22+ 在「shell: true 且傳非空 args 陣列」時發出 DEP0190。
+  // hook 掛在 SessionEnd / Stop，這行警告會出現在使用者每次結束 session 時。
+  // shell: true 本身不能拿掉 —— Windows 上 npm 全域裝的是 ccusage.cmd，不透過 shell 找不到。
+  it("spawnSync 不同時使用 shell: true 與 args 陣列（否則每次執行噴 DEP0190）", () => {
+    for (const script of [mjs, generateSessionStartMjsScript()]) {
+      expect(script).not.toMatch(/spawnSync\([^)]*,\s*\[/);
+    }
+  });
+
   it("session-start.mjs 合法且不依賴 jq", () => {
     const ss = generateSessionStartMjsScript();
     expect(ss).toContain("#!/usr/bin/env node");

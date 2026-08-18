@@ -758,11 +758,14 @@ async function postCurrentUsage(cfg) {
   const dashDate = now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate());
 
   // shell: true → 在 Windows 能找到 npm 全域安裝的 ccusage.cmd
+  // 指令與參數合成單一字串、不傳 args 陣列：Node 22+ 對「shell: true + args 陣列」
+  // 發 DEP0190 警告，而這支 hook 每次結束 session 都跑，警告會直接噴在使用者眼前。
+  // yyyymmdd 由上面的 Date 組出、固定 8 位數字，無外部輸入，無注入風險。
   // timeout: spawnSync 是 sync 阻塞 event loop，外層 __deadline 救不了，必須在這裡硬上限。
   // 25s 而非 8s：ccusage 每次執行都全量掃描歷史用量檔，耗時隨累積資料單調成長。
   // 8s 在資料量夠大的成員機器上會被穩定 SIGKILL，且因為下面這條路徑取不到 payload、
   // 連 buffer 都寫不了，故障會完全無聲 —— 用量就停在某一天，沒有任何錯誤訊息。
-  const r = spawnSync('ccusage', ['daily', '--json', '--since', yyyymmdd],
+  const r = spawnSync('ccusage daily --json --since ' + yyyymmdd,
     { encoding: 'utf8', shell: true, timeout: 25000, killSignal: 'SIGKILL' });
   if (!r || r.status !== 0 || !r.stdout) {
     markError(r && r.signal ? 'ccusage 逾時被中止（>25s），當日用量未上報' : 'ccusage 執行失敗，當日用量未上報');
