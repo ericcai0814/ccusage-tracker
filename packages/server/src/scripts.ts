@@ -126,8 +126,8 @@ UPDATED=\$(jq --arg startcmd "\$HOOK_START_CMD" --arg endcmd "\$HOOK_END_CMD" --
   .hooks.Stop //= [] |
   (.hooks.SessionStart, .hooks.SessionEnd, .hooks.Stop) |= map(select(.hooks // [] | any(.command | contains("ccusage-tracker")) | not)) |
   .hooks.SessionStart += [{"matcher": "*", "hooks": [{"type": "command", "command": \$startcmd}]}] |
-  .hooks.SessionEnd += [{"matcher": "*", "hooks": [{"type": "command", "command": \$endcmd, "timeout": 25}]}] |
-  .hooks.Stop += [{"matcher": "*", "hooks": [{"type": "command", "command": \$stopcmd, "timeout": 25}]}]
+  .hooks.SessionEnd += [{"matcher": "*", "hooks": [{"type": "command", "command": \$endcmd, "timeout": 45}]}] |
+  .hooks.Stop += [{"matcher": "*", "hooks": [{"type": "command", "command": \$stopcmd, "timeout": 45}]}]
 ' "\$CLAUDE_SETTINGS")
 
 if [ -n "\$UPDATED" ]; then
@@ -516,6 +516,7 @@ const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
 const BUFFER_FILE = join(CONFIG_DIR, 'buffer.jsonl');
 const SESSIONS_DIR = join(CONFIG_DIR, 'sessions');
 const LAST_FLUSH_FILE = join(CONFIG_DIR, 'last-flush.txt');
+const LAST_ERROR_FILE = join(CONFIG_DIR, 'last-error.txt');
 const CONTEXT_LIMIT = 200000;
 const THROTTLE_MS = 5 * 60 * 1000;
 
@@ -723,6 +724,16 @@ async function postSessionMetrics(cfg, model, transcriptPath) {
   await postJson(cfg.server_url + '/api/ingest/session', cfg.team_key, body, 10000);
 }
 
+// 取數失敗是整條上報鏈上唯一「連 buffer 都寫不了」的環節（沒有 payload 可暫存）。
+// 留一行狀態到 last-error.txt，讓 tracker status 能把靜默失效變成看得見的東西。
+function markError(reason) {
+  try { writeFileSync(LAST_ERROR_FILE, new Date().toISOString() + ' ' + reason + '\n'); } catch { /* 靜默 */ }
+}
+
+function clearError() {
+  try { if (existsSync(LAST_ERROR_FILE)) unlinkSync(LAST_ERROR_FILE); } catch { /* 靜默 */ }
+}
+
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
 async function postCurrentUsage(cfg) {
@@ -731,13 +742,20 @@ async function postCurrentUsage(cfg) {
   const dashDate = now.getFullYear() + '-' + pad2(now.getMonth() + 1) + '-' + pad2(now.getDate());
 
   // shell: true → 在 Windows 能找到 npm 全域安裝的 ccusage.cmd
-  // timeout: spawnSync 是 sync 阻塞 event loop，外層 __deadline 救不了，必須在這裡硬上限
+  // timeout: spawnSync 是 sync 阻塞 event loop，外層 __deadline 救不了，必須在這裡硬上限。
+  // 25s 而非 8s：ccusage 每次執行都全量掃描歷史用量檔，耗時隨累積資料單調成長。
+  // 8s 在資料量夠大的成員機器上會被穩定 SIGKILL，且因為下面這條路徑取不到 payload、
+  // 連 buffer 都寫不了，故障會完全無聲 —— 用量就停在某一天，沒有任何錯誤訊息。
   const r = spawnSync('ccusage', ['daily', '--json', '--since', yyyymmdd],
-    { encoding: 'utf8', shell: true, timeout: 8000, killSignal: 'SIGKILL' });
-  if (!r || r.status !== 0 || !r.stdout) return;
+    { encoding: 'utf8', shell: true, timeout: 25000, killSignal: 'SIGKILL' });
+  if (!r || r.status !== 0 || !r.stdout) {
+    markError(r && r.signal ? 'ccusage 逾時被中止（>25s），當日用量未上報' : 'ccusage 執行失敗，當日用量未上報');
+    return;
+  }
   let totals;
-  try { totals = JSON.parse(r.stdout).totals; } catch { return; }
-  if (!totals) return;
+  try { totals = JSON.parse(r.stdout).totals; } catch { markError('ccusage 輸出無法解析為 JSON，當日用量未上報'); return; }
+  if (!totals) { markError('ccusage 輸出缺少 totals 欄位，當日用量未上報'); return; }
+  clearError();
 
   const body = JSON.stringify({
     member_name: cfg.member_name,
@@ -808,9 +826,10 @@ async function main() {
   // 注意：last-flush.txt 在 throttle 通過時就已寫；session-end mode 不寫，避免重置 Stop 窗口
 }
 
-// 整體上限 20s：server 緩慢/不可達時，內部各 timeout 疊加最壞約 25s，
-// 這裡設一個總上界，避免拖住 Claude Code 的 session 結束。
-const __deadline = new Promise((resolve) => setTimeout(resolve, 20000));
+// 整體上限 40s：這是硬性總上界（時間到直接 process.exit(0)），不是各段 timeout 的加總。
+// 必須大於 ccusage 25s + 上報 10s = 35s，否則放寬 ccusage 上限會被這裡提前砍掉，等於白做。
+// 上緣對齊 settings.json 的 hook timeout 45s，留 5s 讓 exit 收尾。
+const __deadline = new Promise((resolve) => setTimeout(resolve, 40000));
 Promise.race([main(), __deadline]).catch(() => {}).finally(() => process.exit(0));
 `;
 }
@@ -911,7 +930,7 @@ function Remove-OurHooks($eventName) {
 }
 function Add-Hook($eventName, $cmd, $withTimeout) {
   $hookEntry = [PSCustomObject]@{ type = 'command'; command = $cmd }
-  if ($withTimeout) { $hookEntry | Add-Member -NotePropertyName timeout -NotePropertyValue 25 }
+  if ($withTimeout) { $hookEntry | Add-Member -NotePropertyName timeout -NotePropertyValue 45 }
   $matcherEntry = [PSCustomObject]@{ matcher = '*'; hooks = @($hookEntry) }
   $settings.hooks.$eventName = @($settings.hooks.$eventName) + $matcherEntry
 }

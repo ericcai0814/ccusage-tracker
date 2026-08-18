@@ -23,7 +23,7 @@ interface ClaudeSettings {
   [key: string]: unknown;
 }
 
-const HOOK_TIMEOUT_SEC = 25; // 對齊 .mjs 內部 __deadline 20s + 5s 緩衝
+const HOOK_TIMEOUT_SEC = 45; // 對齊 .mjs 內部 __deadline 40s + 5s 緩衝（見 scripts.ts __deadline）
 
 export function getClaudeSettingsPath(): string {
   return join(homedir(), ".claude", "settings.json");

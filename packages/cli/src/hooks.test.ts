@@ -87,16 +87,16 @@ describe("applyTrackerHooks", () => {
     expect(r.updated.hooks?.SessionEnd).toHaveLength(1);
     expect(r.updated.hooks?.Stop).toHaveLength(1);
     expect(r.updated.hooks?.Stop?.[0].hooks[0].command).toContain("--mode=stop");
-    expect(r.updated.hooks?.Stop?.[0].hooks[0].timeout).toBe(25);
-    expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].timeout).toBe(25);
+    expect(r.updated.hooks?.Stop?.[0].hooks[0].timeout).toBe(45);
+    expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].timeout).toBe(45);
   });
 
   it("冪等：三條都正確時 noop，回傳同一物件參考", () => {
     const existing = {
       hooks: {
         SessionStart: [{ matcher: "*", hooks: [{ type: "command", command: startCmd }] }],
-        SessionEnd: [{ matcher: "*", hooks: [{ type: "command", command: endCmd, timeout: 25 }] }],
-        Stop: [{ matcher: "*", hooks: [{ type: "command", command: stopCmd, timeout: 25 }] }],
+        SessionEnd: [{ matcher: "*", hooks: [{ type: "command", command: endCmd, timeout: 45 }] }],
+        Stop: [{ matcher: "*", hooks: [{ type: "command", command: stopCmd, timeout: 45 }] }],
       },
     };
     const r = applyTrackerHooks(existing);
@@ -114,7 +114,7 @@ describe("applyTrackerHooks", () => {
     // 避免 0.1.1 設下的 matcher: "" 觸發每次 setup 都寫一次 settings.json。
     const existing = {
       hooks: {
-        SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: endCmd, timeout: 25 }] }],
+        SessionEnd: [{ matcher: "", hooks: [{ type: "command", command: endCmd, timeout: 45 }] }],
         // SessionStart / Stop 缺失，下面只斷言 SessionEnd 不被視為 changed
       },
     };
@@ -138,7 +138,7 @@ describe("applyTrackerHooks", () => {
     expect(r.stopChanged).toBe(true);
     expect(r.updated.hooks?.SessionEnd).toHaveLength(1); // 替換不重複
     expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].command).toBe(endCmd);
-    expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].timeout).toBe(25);
+    expect(r.updated.hooks?.SessionEnd?.[0].hooks[0].timeout).toBe(45);
     expect(r.updated.hooks?.Stop).toHaveLength(1);
   });
 
@@ -149,8 +149,8 @@ describe("applyTrackerHooks", () => {
     const legacy = {
       hooks: {
         SessionStart: [matcher(unquotedStartCmd)],
-        SessionEnd: [matcher(unquotedEndCmd, { timeout: 25 })],
-        Stop: [matcher(unquotedStopCmd, { timeout: 25 })],
+        SessionEnd: [matcher(unquotedEndCmd, { timeout: 45 })],
+        Stop: [matcher(unquotedStopCmd, { timeout: 45 })],
       },
     };
     const r = applyTrackerHooks(legacy);
@@ -225,7 +225,7 @@ describe("applyTrackerHooks", () => {
       hooks: {
         SessionEnd: [
           matcher(legacyEndCmd, { matcher: "" }),
-          matcher(endCmd, { matcher: "*", timeout: 25 }),
+          matcher(endCmd, { matcher: "*", timeout: 45 }),
         ],
       },
     };
@@ -236,7 +236,7 @@ describe("applyTrackerHooks", () => {
   });
 
   it("不變動原始輸入物件（immutability）", () => {
-    const settings = { hooks: { SessionEnd: [matcher(endCmd, { timeout: 25, matcher: "*" })] } };
+    const settings = { hooks: { SessionEnd: [matcher(endCmd, { timeout: 45, matcher: "*" })] } };
     applyTrackerHooks(settings);
 
     expect(settings.hooks.SessionEnd).toHaveLength(1);

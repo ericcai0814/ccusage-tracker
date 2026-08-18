@@ -48,8 +48,29 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
   });
 
   it("spawnSync(ccusage) 有 timeout 避免 sync 阻塞 event loop", () => {
-    expect(mjs).toContain("timeout: 8000");
+    expect(mjs).toContain("timeout: 25000");
     expect(mjs).toContain("killSignal: 'SIGKILL'");
+  });
+
+  // 迴歸防護：ccusage 耗時隨歷史資料成長，8s 上限曾使成員用量靜默漏報 9 天。
+  // 三層上限必須維持 ccusage < __deadline < hook timeout，否則放寬最內層無效。
+  it("三層 timeout 維持 ccusage 25s < __deadline 40s < hook 45s 的包含關係", () => {
+    expect(mjs).toContain("timeout: 25000");
+    expect(mjs).toContain("setTimeout(resolve, 40000)");
+    const setup = generateSetupScript("https://example.com", "k");
+    expect(setup).toContain('"timeout": 45');
+    expect(setup).not.toContain('"timeout": 25');
+  });
+
+  it("ccusage 取數失敗會寫 last-error.txt（此路徑無 payload 可進 buffer）", () => {
+    expect(mjs).toContain("last-error.txt");
+    expect(mjs).toContain("function markError(");
+    expect(mjs).toContain("function clearError(");
+    // 逾時（SIGKILL → r.signal）與一般執行失敗要能分辨，訊息才有診斷價值。
+    // 註：Bun 轉譯樣板字串時會把非 ASCII 轉成 \uXXXX，故此處不比對中文字面。
+    expect(mjs).toContain("markError(r && r.signal ?");
+    // 取數成功後必須清掉，否則舊錯誤會一直誤報
+    expect(mjs).toContain("clearError();");
   });
 
   it("session-start.mjs 合法且不依賴 jq", () => {
