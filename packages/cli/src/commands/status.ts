@@ -64,9 +64,9 @@ export async function statusCommand(): Promise<void> {
 
   const lastErrorPath = join(configDir, "last-error.txt");
   if (existsSync(lastErrorPath)) {
-    console.log(`\nLast upload: FAILED - ${readFileSync(lastErrorPath, "utf-8").trim()}`);
-    console.log("  用量目前並未上報。請量測 ccusage 耗時，若接近 25s 需再放寬 timeout：");
-    console.log("  time ccusage daily --json --since $(date +%Y%m%d)");
+    const reason = readFileSync(lastErrorPath, "utf-8").trim();
+    console.log(`\nLast upload: FAILED - ${reason}`);
+    console.log(uploadFailureHint(reason));
   } else {
     console.log("\nLast upload: no recorded failure");
   }
@@ -87,6 +87,22 @@ export async function statusCommand(): Promise<void> {
   // 「沒裝」—— 對照 session-end.mjs 同樣以 node 執行、同樣用 node:child_process。
   const probe = probeCcusage();
   console.log(probe ? `ccusage: installed (${probe})` : "ccusage: not found (install with: npx ccusage@latest)");
+}
+
+// last-error.txt 有兩種來源，下一步完全不同：ccusage 取不到數（去量它多久），
+// 或整體 deadline 到了被強制結束（ccusage 有跑完，卡的是上報那一段）。
+// 一律給同一句建議，等於讓診斷資訊自己把人帶偏。
+export function uploadFailureHint(reason: string): string {
+  if (reason.includes("ccusage")) {
+    return [
+      "  用量目前並未上報。請量測 ccusage 耗時，若接近 25s 需再放寬 timeout：",
+      "  time ccusage daily --json --since $(date +%Y%m%d)",
+    ].join("\n");
+  }
+  return [
+    "  用量目前並未上報。ccusage 有取到數，卡在送出那一段 —— 先確認 server 是否正常：",
+    "  tracker status（看上面的 Server 一行），並檢查網路 / VPN / proxy",
+  ].join("\n");
 }
 
 // 回傳版本字串；偵測不到回 null。
