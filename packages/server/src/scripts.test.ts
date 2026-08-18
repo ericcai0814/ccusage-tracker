@@ -56,10 +56,32 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
   // 三層上限必須維持 ccusage < __deadline < hook timeout，否則放寬最內層無效。
   it("三層 timeout 維持 ccusage 25s < __deadline 40s < hook 45s 的包含關係", () => {
     expect(mjs).toContain("timeout: 25000");
-    expect(mjs).toContain("setTimeout(resolve, 40000)");
+    expect(mjs).toContain("const DEADLINE_MS = 40000");
     const setup = generateSetupScript("https://example.com", "k");
     expect(setup).toContain('"timeout": 45');
     expect(setup).not.toContain('"timeout": 25');
+  });
+
+  // 關鍵路徑（當日快照）必須排在重送舊資料之前。反過來的話，buffer 積壓時
+  // flushBuffer 會先吃掉 15s，當日快照再撞 ccusage 慢，總和就會超過 DEADLINE_MS
+  // 而被 process.exit(0) 從中切斷 —— 又是一次沒有痕跡的靜默失敗。
+  it("當日快照排在 flushBuffer 之前（關鍵路徑優先拿時間預算）", () => {
+    const postIdx = mjs.indexOf("postCurrentUsage(cfg),");
+    const flushIdx = mjs.indexOf("await flushBuffer(cfg.server_url");
+    expect(postIdx).toBeGreaterThan(-1);
+    expect(flushIdx).toBeGreaterThan(-1);
+    expect(flushIdx).toBeGreaterThan(postIdx);
+  });
+
+  it("flushBuffer 依剩餘時間動態編預算，不再硬寫 15s", () => {
+    expect(mjs).toContain("function msLeft()");
+    expect(mjs).toContain("Math.min(15000, msLeft()");
+    // 單次重送的 timeout 也要收斂，否則最後一筆可能跨過 deadline
+    expect(mjs).toContain("Math.min(5000, msLeft()");
+  });
+
+  it("deadline 觸發時留下痕跡（此路徑同樣沒有 payload 可進 buffer）", () => {
+    expect(mjs).toContain("markError(DEADLINE_MS");
   });
 
   it("ccusage 取數失敗會寫 last-error.txt（此路徑無 payload 可進 buffer）", () => {

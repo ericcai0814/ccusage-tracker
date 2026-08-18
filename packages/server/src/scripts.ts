@@ -520,6 +520,14 @@ const LAST_ERROR_FILE = join(CONFIG_DIR, 'last-error.txt');
 const CONTEXT_LIMIT = 200000;
 const THROTTLE_MS = 5 * 60 * 1000;
 
+// 硬性總上界：時間到直接 process.exit(0)，正在 await 的 POST 會被當場切斷。
+// 不是各段 timeout 的加總 —— 必須大於 ccusage 25s + 上報 10s = 35s，
+// 否則放寬 ccusage 上限會被這裡提前砍掉，等於白做。
+// 上緣對齊 settings.json 的 hook timeout 45s，留 5s 讓 exit 收尾。
+const DEADLINE_MS = 40000;
+const STARTED_AT = Date.now();
+function msLeft() { return DEADLINE_MS - (Date.now() - STARTED_AT); }
+
 // --mode=stop: Stop hook 每輪對話結束跑，5 分鐘 throttle
 // --mode=session-end（預設）: SessionEnd hook，無 throttle，跑完清 model file
 // 比較前 toLowerCase，避免 --mode=Stop / --mode=SESSION-END 等大小寫差異 silent fall-through
@@ -577,11 +585,19 @@ async function flushBuffer(serverUrl, teamKey) {
   } catch { return; }
   if (lines.length === 0) return;
 
+  // 重送舊資料是次要目的，不能吃掉當日快照的時間預算，也不能自己跨過 DEADLINE_MS ——
+  // 被 process.exit(0) 從中切斷的話，下面那段清理與回寫都不會執行。
+  // 預算不足就整批留著：buffer 本來就是為了下次重送而存在，晚一輪沒有損失。
+  const budget = Math.min(15000, msLeft() - 3000);
+  if (budget <= 0) return;
+
   const remaining = [];
   const start = Date.now();
   for (let i = 0; i < lines.length; i++) {
-    if (Date.now() - start >= 15000) { remaining.push(...lines.slice(i)); break; }
-    const ok = await postJson(serverUrl + '/api/ingest', teamKey, lines[i], 5000);
+    // 逐筆再收斂一次：只看總預算的話，最後一筆仍可能帶著 5s timeout 跨過 deadline
+    const perRequest = Math.min(5000, msLeft() - 2000);
+    if (Date.now() - start >= budget || perRequest <= 0) { remaining.push(...lines.slice(i)); break; }
+    const ok = await postJson(serverUrl + '/api/ingest', teamKey, lines[i], perRequest);
     if (!ok) remaining.push(lines[i]);
   }
 
@@ -818,18 +834,27 @@ async function main() {
     }
   }
 
-  await flushBuffer(cfg.server_url, cfg.team_key);
+  // 當日快照優先於重送舊資料。反過來的話，buffer 積壓時 flushBuffer 會先吃掉 15s，
+  // 當日快照再撞上慢的 ccusage，總和 1 + 15 + 35 = 51s 就會超過 DEADLINE_MS 被切斷。
+  // 兩者無資料相依，但不能併發：flushBuffer 結尾會整檔回寫 buffer，
+  // 而 postCurrentUsage 上報失敗時會 append 到同一個檔，併發會讓回寫吃掉剛存的快照。
   await Promise.all([
     postSessionMetrics(cfg, sessionModel, transcriptPath),
     postCurrentUsage(cfg),
   ]);
+  // 排在後面還多一個好處：當日快照剛落 buffer 就會被立刻重送一次（/api/ingest 是
+  // (member, date, session_id) 的 upsert，重複送安全）
+  await flushBuffer(cfg.server_url, cfg.team_key);
   // 注意：last-flush.txt 在 throttle 通過時就已寫；session-end mode 不寫，避免重置 Stop 窗口
 }
 
-// 整體上限 40s：這是硬性總上界（時間到直接 process.exit(0)），不是各段 timeout 的加總。
-// 必須大於 ccusage 25s + 上報 10s = 35s，否則放寬 ccusage 上限會被這裡提前砍掉，等於白做。
-// 上緣對齊 settings.json 的 hook timeout 45s，留 5s 讓 exit 收尾。
-const __deadline = new Promise((resolve) => setTimeout(resolve, 40000));
+// 走到這裡代表有東西卡住超過預期（正常最壞路徑是 1 + 35 = 36s）。
+// 和 ccusage 取數失敗同一種處境：POST 被切斷，沒有 payload 可進 buffer，
+// 不留痕跡就是又一次靜默失效。
+const __deadline = new Promise((resolve) => setTimeout(() => {
+  markError(DEADLINE_MS / 1000 + 's 內未完成上報，程序被強制結束');
+  resolve();
+}, DEADLINE_MS));
 Promise.race([main(), __deadline]).catch(() => {}).finally(() => process.exit(0));
 `;
 }
