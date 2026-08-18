@@ -1,6 +1,6 @@
 {
   "name": "ccusage-tracker",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "CLI for ccusage-tracker — install Claude Code SessionStart/SessionEnd/Stop hooks to report token usage to a self-hosted team tracker.",
   "type": "module",
   "bin": {
