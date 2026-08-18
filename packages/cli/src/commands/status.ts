@@ -100,8 +100,8 @@ export function uploadFailureHint(reason: string): string {
     ].join("\n");
   }
   return [
-    "  用量目前並未上報。ccusage 有取到數，卡在送出那一段 —— 先確認 server 是否正常：",
-    "  tracker status（看上面的 Server 一行），並檢查網路 / VPN / proxy",
+    "  用量目前並未上報。ccusage 有取到數，卡在送出那一段 —— 先看上面的 Server 一行，",
+    "  再檢查網路 / VPN / proxy。當日快照是整日累計，下次 hook 跑成就會補齊",
   ].join("\n");
 }
 

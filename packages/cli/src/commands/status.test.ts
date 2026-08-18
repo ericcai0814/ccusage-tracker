@@ -13,6 +13,7 @@ describe("uploadFailureHint", () => {
   it("deadline 被觸發 → 不叫人去量 ccusage（多半不是它造成的）", () => {
     const hint = uploadFailureHint("40s 內未完成上報，程序被強制結束");
     expect(hint).not.toContain("time ccusage daily");
-    expect(hint).toContain("server");
+    // 指向 status 自己輸出的 Server 一行（大小寫需與該行標籤一致，使用者要照著找）
+    expect(hint).toContain("Server");
   });
 });
