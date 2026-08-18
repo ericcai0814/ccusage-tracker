@@ -55,6 +55,31 @@ export async function statusCommand(): Promise<void> {
     console.log("Buffer: none");
   }
 
+  // 上報健康度。
+  // 這裡是本工具最容易誤導人的地方：config / hook / server / buffer 全綠，
+  // 不代表用量有送出去 —— ccusage 取數失敗時拿不到 payload，連 buffer 都寫不進，
+  // 故障完全無聲。last-error.txt 就是為了讓這種失效在這裡現形。
+  const configDir = dirname(configPath);
+
+  const lastErrorPath = join(configDir, "last-error.txt");
+  if (existsSync(lastErrorPath)) {
+    console.log(`\nLast upload: FAILED - ${readFileSync(lastErrorPath, "utf-8").trim()}`);
+    console.log("  用量目前並未上報。請量測 ccusage 耗時，若接近 25s 需再放寬 timeout：");
+    console.log("  time ccusage daily --json --since $(date +%Y%m%d)");
+  } else {
+    console.log("\nLast upload: no recorded failure");
+  }
+
+  // last-flush.txt 在 throttle 通過時就寫入，代表「上次 hook 跑起來」而非「上次送達成功」
+  const lastFlushPath = join(configDir, "last-flush.txt");
+  if (existsSync(lastFlushPath)) {
+    const ts = parseInt(readFileSync(lastFlushPath, "utf-8").trim(), 10);
+    if (!isNaN(ts)) {
+      const ageMin = Math.floor((Date.now() - ts) / 60000);
+      console.log(`Last hook run: ${new Date(ts).toISOString()} (${ageMin} 分鐘前)`);
+    }
+  }
+
   // ccusage
   try {
     const result = Bun.spawnSync(["ccusage", "--version"]);
