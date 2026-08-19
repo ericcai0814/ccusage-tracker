@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.3.6] - 2026-08-18
+
+承 0.3.5，收掉當時記錄下來、但沒有一併處理的三個已知問題。
+
+### Fixed
+- **buffer 積壓時上報仍可能被 `__deadline` 從中切斷**（#6）：最壞路徑是 `readStdin 1s + flushBuffer 15s + 當日快照 35s = 51s`，超過 `__deadline` 的 40s。時間一到 `process.exit(0)`，正在 await 的 `/api/ingest` 被切斷，而 `clearError()` 早在 `ccusage` 成功時就跑過，`last-error.txt` 不會留下痕跡 —— 與 0.3.5 修掉的是同一種靜默失效，只是觸發條件較窄（需要「buffer 非空」與「ccusage 慢」同時成立）。三項調整：
+  - 當日快照移到 `flushBuffer` 之前。重送舊資料是次要目的，不該先吃掉 15s
+  - `flushBuffer` 改依剩餘時間動態編預算，並逐筆收斂單次 timeout，確保它不會自己跨過 deadline（被中途切斷的話，連 buffer 的清理與回寫都不會執行）
+  - `__deadline` 觸發時寫 `last-error.txt`。此路徑同樣沒有 payload 可退進 buffer
+
+  未採用「`flushBuffer` 與當日快照併發」的方案：`flushBuffer` 結尾會整檔回寫 `buffer.jsonl`，而當日快照上報失敗時會 append 到同一個檔，併發會讓回寫吃掉剛存進去的快照。改為 36s 後 `__deadline` 已不該被觸發，它現在是「有東西卡住超出預期」的訊號。
+- **`session-end.mjs` 每次執行噴 DEP0190 警告**（#7）：Node 22+ 對「`shell: true` 且傳非空 args 陣列」發出棄用警告。hook 掛在 SessionEnd / Stop，等於每次結束 session 都印在使用者眼前。指令與參數合成單一字串即可；`shell: true` 保留 —— Windows 上 npm 全域安裝的是 `ccusage.cmd`，不透過 shell 找不到。
+- **`tracker status` 對 deadline 逾時給錯建議**：`last-error.txt` 現在有兩種來源，下一步完全不同（`ccusage` 取不到數 → 量它多久；deadline 到了 → `ccusage` 有跑完，卡的是送出那段）。一律給同一句建議會讓診斷資訊自己把人帶偏。
+
+### Changed
+- **兩支 hook 腳本抽成獨立 `.mjs` 檔**（#8）：先前以 `String.raw` 樣板存在 `scripts.ts` 裡，Bun 轉譯時把非 ASCII 一律轉成 `\uXXXX`，而 raw 樣板不會還原，這串字元原樣進到發出去的檔案。字串字面量裡的 node 解析時會解碼（所以 `last-error.txt` 的中文一直是對的），註解裡的就是死的亂碼 —— 偏偏 `~/.config/ccusage-tracker/session-end.mjs` 正是排查時第一個被打開的檔案。改以 text import 讀獨立檔案，912 個逸出歸零。
+
+  範圍只有這兩支：`setup.sh` / `setup.ps1` / `uninstall.sh` / `session-end.sh` 用的是一般樣板，逸出在執行期就解碼回真字元，產出零逸出。
+
+### Added
+- `node --check` 語法檢查測試：腳本抽成獨立檔案後才做得到。這 357 行過去藏在樣板字串裡，語法錯誤只能等使用者裝上去才炸
+- DEP0190 迴歸測試：掃描產生出來的腳本，確保 `shell: true` 不會再與 args 陣列同時出現
+- `\uXXXX` 迴歸測試：確保腳本不會被搬回樣板字串
+
+### Upgrade
+server 端部署後，成員重跑即可取得新腳本：
+
+```bash
+npx ccusage-tracker@latest setup
+```
+
 ## [0.3.5] - 2026-08-18
 
 ### Fixed

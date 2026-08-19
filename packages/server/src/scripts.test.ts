@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
 import { createApp } from "./app";
 import { createDatabase } from "./db";
 import {
@@ -56,10 +58,32 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
   // 三層上限必須維持 ccusage < __deadline < hook timeout，否則放寬最內層無效。
   it("三層 timeout 維持 ccusage 25s < __deadline 40s < hook 45s 的包含關係", () => {
     expect(mjs).toContain("timeout: 25000");
-    expect(mjs).toContain("setTimeout(resolve, 40000)");
+    expect(mjs).toContain("const DEADLINE_MS = 40000");
     const setup = generateSetupScript("https://example.com", "k");
     expect(setup).toContain('"timeout": 45');
     expect(setup).not.toContain('"timeout": 25');
+  });
+
+  // 關鍵路徑（當日快照）必須排在重送舊資料之前。反過來的話，buffer 積壓時
+  // flushBuffer 會先吃掉 15s，當日快照再撞 ccusage 慢，總和就會超過 DEADLINE_MS
+  // 而被 process.exit(0) 從中切斷 —— 又是一次沒有痕跡的靜默失敗。
+  it("當日快照排在 flushBuffer 之前（關鍵路徑優先拿時間預算）", () => {
+    const postIdx = mjs.indexOf("postCurrentUsage(cfg),");
+    const flushIdx = mjs.indexOf("await flushBuffer(cfg.server_url");
+    expect(postIdx).toBeGreaterThan(-1);
+    expect(flushIdx).toBeGreaterThan(-1);
+    expect(flushIdx).toBeGreaterThan(postIdx);
+  });
+
+  it("flushBuffer 依剩餘時間動態編預算，不再硬寫 15s", () => {
+    expect(mjs).toContain("function msLeft()");
+    expect(mjs).toContain("Math.min(15000, msLeft()");
+    // 單次重送的 timeout 也要收斂，否則最後一筆可能跨過 deadline
+    expect(mjs).toContain("Math.min(5000, msLeft()");
+  });
+
+  it("deadline 觸發時留下痕跡（此路徑同樣沒有 payload 可進 buffer）", () => {
+    expect(mjs).toContain("markError(DEADLINE_MS");
   });
 
   it("ccusage 取數失敗會寫 last-error.txt（此路徑無 payload 可進 buffer）", () => {
@@ -71,6 +95,34 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
     expect(mjs).toContain("markError(r && r.signal ?");
     // 取數成功後必須清掉，否則舊錯誤會一直誤報
     expect(mjs).toContain("clearError();");
+  });
+
+  // 迴歸防護：Node 22+ 在「shell: true 且傳非空 args 陣列」時發出 DEP0190。
+  // hook 掛在 SessionEnd / Stop，這行警告會出現在使用者每次結束 session 時。
+  // shell: true 本身不能拿掉 —— Windows 上 npm 全域裝的是 ccusage.cmd，不透過 shell 找不到。
+  it("spawnSync 不同時使用 shell: true 與 args 陣列（否則每次執行噴 DEP0190）", () => {
+    for (const script of [mjs, generateSessionStartMjsScript()]) {
+      expect(script).not.toMatch(/spawnSync\([^)]*,\s*\[/);
+    }
+  });
+
+  // 迴歸防護：腳本若寫在 TS 的 String.raw 樣板裡，Bun 轉譯會把中文轉成 \uXXXX
+  // 一路帶進發出去的檔案。字串字面量內的還原得回來（node 會解碼），註解內的就是死的亂碼 ——
+  // 而 ~/.config/ccusage-tracker/session-end.mjs 正是出問題時第一個被打開來看的檔案。
+  it("發出的腳本保留原始中文，不含 \\uXXXX 逸出", () => {
+    for (const script of [mjs, generateSessionStartMjsScript()]) {
+      expect(script).not.toMatch(/\\u[0-9A-Fa-f]{4}/);
+    }
+  });
+
+  // 抽成獨立檔案後才做得到的事。這 357 行過去埋在 TS 樣板字串裡，
+  // 語法錯誤只能靠人工 node --check 事後抓，或等使用者裝上去才炸。
+  it("hook 腳本本身通過 node 語法檢查", () => {
+    for (const name of ["session-end.mjs", "session-start.mjs"]) {
+      const r = spawnSync("node", ["--check", join(import.meta.dir, "hook-scripts", name)], { encoding: "utf8" });
+      expect(r.stderr).toBe("");
+      expect(r.status).toBe(0);
+    }
   });
 
   it("session-start.mjs 合法且不依賴 jq", () => {
