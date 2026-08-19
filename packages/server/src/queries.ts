@@ -8,6 +8,7 @@ export interface Member {
   api_key_hash: string;
   created_at: string;
   last_seen_at: string | null;
+  last_user_agent: string | null;
 }
 
 export interface UsageRecord {
@@ -73,11 +74,21 @@ export interface SessionMetricsPayload {
   context_estimate_pct?: number;
 }
 
-function touchMemberLastSeen(db: Database, memberId: string): void {
+// UA 由外部決定內容與長度，截斷後才存 —— 這欄是診斷用的，不該讓上報端左右資料庫大小
+const MAX_USER_AGENT_LEN = 120;
+
+function touchMemberLastSeen(db: Database, memberId: string, userAgent?: string | null): void {
+  if (userAgent) {
+    db.run("UPDATE members SET last_seen_at = datetime('now'), last_user_agent = ? WHERE id = ?", [
+      userAgent.slice(0, MAX_USER_AGENT_LEN),
+      memberId,
+    ]);
+    return;
+  }
   db.run("UPDATE members SET last_seen_at = datetime('now') WHERE id = ?", [memberId]);
 }
 
-export function insertSessionMetrics(db: Database, memberId: string, payload: SessionMetricsPayload): void {
+export function insertSessionMetrics(db: Database, memberId: string, payload: SessionMetricsPayload, userAgent?: string | null): void {
   const tx = db.transaction(() => {
     db.run(
       `INSERT INTO session_metrics
@@ -137,7 +148,7 @@ export function insertSessionMetrics(db: Database, memberId: string, payload: Se
         payload.context_estimate_pct ?? 0,
       ]
     );
-    touchMemberLastSeen(db, memberId);
+    touchMemberLastSeen(db, memberId, userAgent);
   });
   tx();
 }
@@ -159,10 +170,14 @@ export function findMemberByApiKeyHash(db: Database, apiKeyHash: string): Member
 }
 
 export function listMembers(db: Database): Omit<Member, "api_key_hash">[] {
-  return db.query("SELECT id, name, created_at FROM members ORDER BY created_at").all() as Omit<Member, "api_key_hash">[];
+  // 回傳型別本來就宣告有 last_seen_at，但 SELECT 沒取 —— 那是個沉默的型別謊言。
+  // 這次要靠 last_user_agent 查出誰還在用舊腳本，順手把兩欄一起補上。
+  return db
+    .query("SELECT id, name, created_at, last_seen_at, last_user_agent FROM members ORDER BY created_at")
+    .all() as Omit<Member, "api_key_hash">[];
 }
 
-export function insertUsageRecord(db: Database, memberId: string, payload: IngestPayload): void {
+export function insertUsageRecord(db: Database, memberId: string, payload: IngestPayload, userAgent?: string | null): void {
   const tx = db.transaction(() => {
     db.run(
       `INSERT INTO usage_records
@@ -187,7 +202,7 @@ export function insertUsageRecord(db: Database, memberId: string, payload: Inges
         JSON.stringify(payload.models),
       ]
     );
-    touchMemberLastSeen(db, memberId);
+    touchMemberLastSeen(db, memberId, userAgent);
   });
   tx();
 }
