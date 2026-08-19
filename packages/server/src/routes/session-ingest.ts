@@ -65,7 +65,7 @@ sessionIngest.post("/", async (c) => {
   const db = c.get("db");
   const member = findOrCreateMember(db, body.member_name!);
 
-  insertSessionMetrics(db, member.id, body as SessionMetricsPayload);
+  insertSessionMetrics(db, member.id, body as SessionMetricsPayload, c.req.header("user-agent"));
 
   return c.json({ ok: true });
 });

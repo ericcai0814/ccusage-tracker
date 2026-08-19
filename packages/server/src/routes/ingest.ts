@@ -66,7 +66,7 @@ ingest.post("/", async (c) => {
     models: body.models!,
   };
 
-  insertUsageRecord(db, member.id, payload);
+  insertUsageRecord(db, member.id, payload, c.req.header("user-agent"));
 
   return c.json({ ok: true });
 });

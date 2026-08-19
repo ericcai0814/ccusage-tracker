@@ -61,6 +61,7 @@ export function createDatabase(path: string = "data.db"): Database {
   db.exec("PRAGMA foreign_keys = ON");
   db.exec(SCHEMA);
   migrateLastSeenAt(db);
+  migrateLastUserAgent(db);
   migrateSessionMetricsModel(db);
   return db;
 }
@@ -72,6 +73,16 @@ function migrateSessionMetricsModel(db: Database): void {
   }
   if (!columns.some((c) => c.name === "context_estimate_pct")) {
     db.exec("ALTER TABLE session_metrics ADD COLUMN context_estimate_pct INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+// 記錄成員上一次上報用的 client。舊版 bash session-end.sh 用 curl 送、
+// 現行 .mjs 用 Node 內建 fetch 送（UA 分別是 curl/x.y.z 與 node），
+// 有這欄就能查出誰還掛著舊腳本，不必請每位成員自己去翻 settings.json。
+function migrateLastUserAgent(db: Database): void {
+  const columns = db.query("SELECT name FROM pragma_table_info('members')").all() as { name: string }[];
+  if (!columns.some((c) => c.name === "last_user_agent")) {
+    db.exec("ALTER TABLE members ADD COLUMN last_user_agent TEXT");
   }
 }
 
