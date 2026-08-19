@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.7] - 2026-08-19
+
+治本收尾。0.3.5 / 0.3.6 都在調整 timeout 與觀測性，但沒有動到結構：只要上報還在 hook 的時間預算裡，`ccusage` 的耗時成長遲早會再次追上。
+
+### Changed
+- **上報改為背景 worker**（#5）：hook 程序只讀 stdin 然後把上報 detach 出去，自己立刻 `exit 0`。worker 自成 process group，脫離 Claude Code 的 hook timeout。
+
+  | 指標 | 0.3.6 | 0.3.7 |
+  |---|---|---|
+  | session 結束等待 | ccusage 耗時（實測 4~11s，隨資料成長） | **0.04s**（不隨資料成長） |
+  | `ccusage` 上限 | 25s | 120s |
+  | 整體上限 | 40s（受 hook timeout 45s 箝制） | 180s（worker，不受箝制） |
+
+  `ccusage` 每次執行都全量掃描歷史用量檔（開發機實測 782MB / 399 檔）。8s 上限被追上時造成漏報 9 天；放寬到 25s 只是把同一條線往後推。detach 之後 timeout 不再是會被追上的線。
+
+- **`tracker status` 的 `Last upload:` 改名為 `Upload error:`**：新增「上次成功上報」後兩行都叫 Last upload 會被誤讀 —— 那正是 `Buffer: none` 當初的問題。
+
+### Added
+- **worker 檔案鎖**：SessionEnd 與 Stop 可能前後腳觸發，兩個 worker 會各自全量掃一次 `ccusage`（使用者感覺得到的 CPU），且 `flushBuffer` 結尾的整檔回寫會互相覆蓋。以 PID + 時效雙條件判斷：只看時效會在 worker 被 kill 後空等，只看 PID 會因 PID 被系統回收而誤判。上報是 upsert，搶不到鎖直接放棄不排隊。
+- **`last-upload.txt` 成功時戳**：非同步帶來一個新的無聲路徑 —— worker 可能根本沒被啟動（spawn 被擋、機器立刻關機），那條路徑不會寫任何錯誤，於是「沒有失敗痕跡」不再等於「有送出去」。`tracker status` 顯示距今多久，超過 24 小時明講可能停擺。
+
+### Upgrade
+server 端部署後，成員重跑即可取得新腳本：
+
+```bash
+npx ccusage-tracker@latest setup
+```
+
 ## [0.3.6] - 2026-08-18
 
 承 0.3.5，收掉當時記錄下來、但沒有一併處理的三個已知問題。

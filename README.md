@@ -51,14 +51,18 @@
 1. Claude Code 每輪對話結束 --> 觸發 `Stop` hook（v0.3.2+ 主要路徑）
 2. 檢查 `~/.config/ccusage-tracker/last-flush.txt`：距上次 < 5 分鐘就直接 `exit 0`（throttle）
 3. 過 throttle 後立即寫 last-flush 戳記（避免 race / 失敗時連續打 server）
-4. Hook 呼叫 `ccusage daily --json --since today` 取得當日 token 數據（25 秒 timeout）。取數失敗時寫 `last-error.txt`，可用 `tracker status` 查看
-5. Hook 抽 session 行為指標（turns、tool_calls 等）+ POST 到 server 的 `/api/ingest` 與 `/api/ingest/session`（upsert，重複上報安全）
-6. POST 失敗時，payload 暫存到 `buffer.jsonl`，下次自動重送
-7. 最後才處理 `buffer.jsonl` 的重送（上限 15 秒，並依剩餘時間動態縮減）。當日快照排在前面，才不會被積壓的舊資料吃掉時間預算
-8. 整支腳本 40 秒硬性上限（`__deadline`），逾時直接結束並寫 `last-error.txt`
-9. session 結束時，`SessionEnd` hook 跑一次「兜底」（無 throttle）— 若主程序退出 race 導致 Stop 最近沒跑成，這裡補上
-10. Server 驗證 TEAM_KEY，自動建立/識別成員，寫入 SQLite，更新 `last_seen_at`
-11. Dashboard / API 讀取 SQLite 產出報表，超過 24 小時未回報的成員顯示警告
+4. Hook 讀 stdin 取得 transcript 路徑與 session id，然後把上報 **detach 給背景 worker**，自己立刻 `exit 0`（實測約 0.04 秒）
+5. Worker 自成 process group，脫離 hook timeout。以檔案鎖（PID + 時效）避免 SessionEnd 與 Stop 前後腳觸發時重複執行
+6. Worker 呼叫 `ccusage daily --json --since today` 取得當日 token 數據（120 秒 timeout）。取數失敗時寫 `last-error.txt`
+7. Worker 抽 session 行為指標（turns、tool_calls 等）+ POST 到 server 的 `/api/ingest` 與 `/api/ingest/session`（upsert，重複上報安全）
+8. 上報成功寫 `last-upload.txt` 時戳；失敗時 payload 暫存到 `buffer.jsonl`，下次自動重送
+9. 最後才處理 `buffer.jsonl` 的重送（上限 15 秒，並依剩餘時間動態縮減）。當日快照排在前面，才不會被積壓的舊資料吃掉時間預算
+10. Worker 有 180 秒硬性上限，逾時直接結束並寫 `last-error.txt`
+11. session 結束時，`SessionEnd` hook 跑一次「兜底」（無 throttle）— 若主程序退出 race 導致 Stop 最近沒跑成，這裡補上
+12. Server 驗證 TEAM_KEY，自動建立/識別成員，寫入 SQLite，更新 `last_seen_at`
+13. Dashboard / API 讀取 SQLite 產出報表，超過 24 小時未回報的成員顯示警告
+
+> 為什麼要 detach：`ccusage` 每次執行都全量掃描歷史用量檔，耗時隨累積資料單調成長。只要上報還綁在 hook 的時間預算裡，timeout 就是一條會被追上的線，不是安全邊界。
 
 ### 隱私
 

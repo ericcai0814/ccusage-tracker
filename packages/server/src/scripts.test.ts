@@ -50,18 +50,33 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
   });
 
   it("spawnSync(ccusage) 有 timeout 避免 sync 阻塞 event loop", () => {
-    expect(mjs).toContain("timeout: 25000");
+    expect(mjs).toContain("timeout: CCUSAGE_TIMEOUT_MS");
     expect(mjs).toContain("killSignal: 'SIGKILL'");
   });
 
-  // 迴歸防護：ccusage 耗時隨歷史資料成長，8s 上限曾使成員用量靜默漏報 9 天。
-  // 三層上限必須維持 ccusage < __deadline < hook timeout，否則放寬最內層無效。
-  it("三層 timeout 維持 ccusage 25s < __deadline 40s < hook 45s 的包含關係", () => {
-    expect(mjs).toContain("timeout: 25000");
-    expect(mjs).toContain("const DEADLINE_MS = 40000");
+  // ccusage 耗時隨歷史資料成長，8s 上限曾使成員用量靜默漏報 9 天。放寬到 25s 只是
+  // 把同一條線往後推。改成背景 worker 之後，上限不再與 hook timeout 綁在一起，
+  // 可以給到 120s —— 對照觀測值（4s / 11s）留了一個量級的餘裕。
+  it("ccusage 上限放寬到 120s，且仍收斂在 worker deadline 之內", () => {
+    expect(mjs).toContain("const CCUSAGE_TIMEOUT_MS = 120000");
+    expect(mjs).toContain("const WORKER_DEADLINE_MS = 180000");
+  });
+
+  // hook 本身（parent）只做「讀 stdin + 丟 worker」，不再等 ccusage。
+  // 這條守住 #5 的核心：session 結束的耗時不再隨歷史資料成長。
+  // 注意比的是 main() 的「呼叫路徑」，不是檔案裡的函式定義順序 ——
+  // postCurrentUsage 定義在 main 之前，用檔案位置切會切錯。
+  it("hook 的 main() 只丟 worker，不自己跑上報", () => {
+    const start = mjs.indexOf("async function main() {");
+    const body = mjs.slice(start, mjs.indexOf("\n}", start));
+    expect(body).toContain("spawnWorker(sessionModel, transcriptPath)");
+    expect(body).not.toContain("postCurrentUsage");
+    expect(body).not.toContain("flushBuffer");
+  });
+
+  it("setup 注入的 hook timeout 維持 45（parent 已很快，此值只是保險）", () => {
     const setup = generateSetupScript("https://example.com", "k");
     expect(setup).toContain('"timeout": 45');
-    expect(setup).not.toContain('"timeout": 25');
   });
 
   // 關鍵路徑（當日快照）必須排在重送舊資料之前。反過來的話，buffer 積壓時
@@ -83,7 +98,36 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
   });
 
   it("deadline 觸發時留下痕跡（此路徑同樣沒有 payload 可進 buffer）", () => {
-    expect(mjs).toContain("markError(DEADLINE_MS");
+    expect(mjs).toContain("markError(WORKER_DEADLINE_MS");
+  });
+
+  // --- #5 背景上報 ---
+
+  it("hook 把上報 detach 到獨立程序，且不等它", () => {
+    expect(mjs).toContain("--mode=worker");
+    expect(mjs).toContain("detached: true");
+    expect(mjs).toContain("stdio: 'ignore'");
+    expect(mjs).toContain(".unref()");
+    // 用 process.execPath 而非字面 'node'：使用者的 node 未必在 PATH 上
+    expect(mjs).toContain("process.execPath");
+  });
+
+  it("worker 以檔案鎖避免重複執行（SessionEnd 與 Stop 可能疊在一起）", () => {
+    expect(mjs).toContain("worker.lock");
+    // 判斷鎖是否還活著要同時看時效與 PID，只看其中一個都會卡死或誤搶
+    expect(mjs).toContain("process.kill(pid, 0)");
+    expect(mjs).toContain("LOCK_TTL_MS");
+  });
+
+  // 改成非同步之後，「沒有錯誤」不再等於「有送出去」—— worker 可能根本沒被啟動。
+  // 成功時留下時間戳，tracker status 才有辦法分辨這兩件事。
+  it("上報成功寫 last-upload.txt，讓「worker 沒跑」也能被看見", () => {
+    expect(mjs).toContain("last-upload.txt");
+    expect(mjs).toContain("markSuccess(");
+  });
+
+  it("worker 啟動失敗要留痕（否則整條鏈又變回無聲）", () => {
+    expect(mjs).toContain("背景上報程序啟動失敗");
   });
 
   it("ccusage 取數失敗會寫 last-error.txt（此路徑無 payload 可進 buffer）", () => {
@@ -92,7 +136,7 @@ describe("Node.js 上報腳本 (.mjs, 路線 C)", () => {
     expect(mjs).toContain("function clearError(");
     // 逾時（SIGKILL → r.signal）與一般執行失敗要能分辨，訊息才有診斷價值。
     // 註：Bun 轉譯樣板字串時會把非 ASCII 轉成 \uXXXX，故此處不比對中文字面。
-    expect(mjs).toContain("markError(r && r.signal ?");
+    expect(mjs).toContain("markError(r && r.signal");
     // 取數成功後必須清掉，否則舊錯誤會一直誤報
     expect(mjs).toContain("clearError();");
   });
