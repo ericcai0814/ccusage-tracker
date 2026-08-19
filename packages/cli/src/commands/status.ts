@@ -65,11 +65,22 @@ export async function statusCommand(): Promise<void> {
   const lastErrorPath = join(configDir, "last-error.txt");
   if (existsSync(lastErrorPath)) {
     const reason = readFileSync(lastErrorPath, "utf-8").trim();
-    console.log(`\nLast upload: FAILED - ${reason}`);
+    console.log(`\nUpload error: ${reason}`);
     console.log(uploadFailureHint(reason));
   } else {
-    console.log("\nLast upload: no recorded failure");
+    console.log("\nUpload error: none recorded");
   }
+
+  // 上報已改成背景 worker（見 session-end.mjs），hook 只負責把它丟出去。
+  // 因此「沒有失敗痕跡」不再等於「有送出去」—— worker 可能根本沒被啟動。
+  // last-upload.txt 是唯一能分辨這兩件事的訊號。
+  const lastUploadPath = join(configDir, "last-upload.txt");
+  let lastUploadTs: number | null = null;
+  if (existsSync(lastUploadPath)) {
+    const parsed = parseInt(readFileSync(lastUploadPath, "utf-8").trim(), 10);
+    if (!isNaN(parsed)) lastUploadTs = parsed;
+  }
+  console.log(uploadAgeLine(lastUploadTs, Date.now()));
 
   // last-flush.txt 在 throttle 通過時就寫入，代表「上次 hook 跑起來」而非「上次送達成功」
   const lastFlushPath = join(configDir, "last-flush.txt");
@@ -87,6 +98,23 @@ export async function statusCommand(): Promise<void> {
   // 「沒裝」—— 對照 session-end.mjs 同樣以 node 執行、同樣用 node:child_process。
   const probe = probeCcusage();
   console.log(probe ? `ccusage: installed (${probe})` : "ccusage: not found (install with: npx ccusage@latest)");
+}
+
+// 只有「上報確實送達」才會更新 last-upload.txt。缺這一行的話，背景 worker
+// 沒被啟動時整份 status 會全綠 —— 那正是這一連串修正一直在對付的無聲失效。
+const STALE_UPLOAD_MS = 24 * 60 * 60 * 1000;
+
+export function uploadAgeLine(ts: number | null, now: number): string {
+  if (ts === null) {
+    return "Last successful upload: 尚無成功紀錄（剛安裝屬正常，跑完一次 session 後再看）";
+  }
+  const age = now - ts;
+  const when = new Date(ts).toISOString();
+  if (age >= STALE_UPLOAD_MS) {
+    const hours = Math.floor(age / 3600_000);
+    return `Last successful upload: ${when} (${hours} 小時前) — 超過 24 小時，上報可能已停擺`;
+  }
+  return `Last successful upload: ${when} (${Math.floor(age / 60_000)} 分鐘前)`;
 }
 
 // last-error.txt 有兩種來源，下一步完全不同：ccusage 取不到數（去量它多久），

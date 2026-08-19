@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 // ccusage-tracker SessionEnd hook（Node.js 跨平台版，對應 session-end.sh v4）
 // 上報今日用量快照 + session 行為指標。永遠 exit 0，絕不阻擋 Claude Code。
-// 與 bash 版差異：上報採 await（有 5~15s timeout 上限）而非背景 &，以確保送達。
+//
+// 兩段式：hook 程序（parent）只讀 stdin 然後把上報 detach 給 worker，立刻結束；
+// worker 脫離 Claude Code 的 hook timeout，慢慢跑完 ccusage 與上報。
+// 這麼做是因為 ccusage 每次都全量掃描歷史用量檔，耗時隨累積資料單調成長 ——
+// 只要上報還綁在 hook 的時間預算裡，timeout 就是一條會被追上的線，不是安全邊界。
 import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { spawnSync, spawn } from 'node:child_process';
 
 const CONFIG_DIR = join(homedir(), '.config', 'ccusage-tracker');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -13,21 +18,34 @@ const BUFFER_FILE = join(CONFIG_DIR, 'buffer.jsonl');
 const SESSIONS_DIR = join(CONFIG_DIR, 'sessions');
 const LAST_FLUSH_FILE = join(CONFIG_DIR, 'last-flush.txt');
 const LAST_ERROR_FILE = join(CONFIG_DIR, 'last-error.txt');
+const LAST_UPLOAD_FILE = join(CONFIG_DIR, 'last-upload.txt');
+const LOCK_FILE = join(CONFIG_DIR, 'worker.lock');
 const CONTEXT_LIMIT = 200000;
 const THROTTLE_MS = 5 * 60 * 1000;
 
-// 硬性總上界：時間到直接 process.exit(0)，正在 await 的 POST 會被當場切斷。
-// 不是各段 timeout 的加總 —— 必須大於 ccusage 25s + 上報 10s = 35s，
-// 否則放寬 ccusage 上限會被這裡提前砍掉，等於白做。
-// 上緣對齊 settings.json 的 hook timeout 45s，留 5s 讓 exit 收尾。
-const DEADLINE_MS = 40000;
+// ccusage 上限。脫離 hook timeout 之後不必再壓到 25s —— 對照觀測值（一台 4s、
+// 一台 11s）留一個量級的餘裕，真的撞到 120s 就該回頭處理架構而不是再放寬。
+const CCUSAGE_TIMEOUT_MS = 120000;
+
+// worker 的硬性總上界：時間到直接 process.exit(0)，正在 await 的 POST 會被切斷。
+// 不是各段 timeout 的加總 —— 必須大於 ccusage 120s + 上報 10s = 130s。
+const WORKER_DEADLINE_MS = 180000;
 const STARTED_AT = Date.now();
-function msLeft() { return DEADLINE_MS - (Date.now() - STARTED_AT); }
+function msLeft() { return WORKER_DEADLINE_MS - (Date.now() - STARTED_AT); }
+
+// 鎖的時效要大於 worker 最長壽命，否則還在跑就被別人搶走
+const LOCK_TTL_MS = WORKER_DEADLINE_MS + 30000;
 
 // --mode=stop: Stop hook 每輪對話結束跑，5 分鐘 throttle
 // --mode=session-end（預設）: SessionEnd hook，無 throttle，跑完清 model file
+// --mode=worker: 由上面兩者 detach 出來的背景程序，實際做上報
 // 比較前 toLowerCase，避免 --mode=Stop / --mode=SESSION-END 等大小寫差異 silent fall-through
 const MODE = ((process.argv.find((a) => a.toLowerCase().startsWith('--mode=')) || '').slice(7) || 'session-end').toLowerCase();
+
+function argValue(name) {
+  const hit = process.argv.find((a) => a.startsWith(name + '='));
+  return hit ? hit.slice(name.length + 1) : '';
+}
 
 function readStdin(timeoutMs) {
   return new Promise((resolve) => {
@@ -246,6 +264,13 @@ function clearError() {
   try { if (existsSync(LAST_ERROR_FILE)) unlinkSync(LAST_ERROR_FILE); } catch { /* 靜默 */ }
 }
 
+// 上報改成非同步之後，「沒有錯誤痕跡」不再等於「有送出去」——
+// worker 可能根本沒被啟動（spawn 被防毒攔下、系統立刻關機），那條路徑不會寫任何錯誤。
+// 成功時留一個時間戳，tracker status 才分得出「一切正常」與「整條鏈默默停擺」。
+function markSuccess() {
+  try { writeFileSync(LAST_UPLOAD_FILE, String(Date.now())); } catch { /* 靜默 */ }
+}
+
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
 async function postCurrentUsage(cfg) {
@@ -255,16 +280,16 @@ async function postCurrentUsage(cfg) {
 
   // shell: true → 在 Windows 能找到 npm 全域安裝的 ccusage.cmd
   // 指令與參數合成單一字串、不傳 args 陣列：Node 22+ 對「shell: true + args 陣列」
-  // 發 DEP0190 警告，而這支 hook 每次結束 session 都跑，警告會直接噴在使用者眼前。
+  // 發 DEP0190 警告，而這支腳本每次結束 session 都跑，警告會直接噴在使用者眼前。
   // yyyymmdd 由上面的 Date 組出、固定 8 位數字，無外部輸入，無注入風險。
-  // timeout: spawnSync 是 sync 阻塞 event loop，外層 __deadline 救不了，必須在這裡硬上限。
-  // 25s 而非 8s：ccusage 每次執行都全量掃描歷史用量檔，耗時隨累積資料單調成長。
-  // 8s 在資料量夠大的成員機器上會被穩定 SIGKILL，且因為下面這條路徑取不到 payload、
-  // 連 buffer 都寫不了，故障會完全無聲 —— 用量就停在某一天，沒有任何錯誤訊息。
+  // timeout: spawnSync 是 sync 阻塞 event loop，外層 deadline 救不了，必須在這裡硬上限。
+  // 這段只在 worker 裡跑，所以上限可以給到 120s 而不影響 session 結束的體感。
   const r = spawnSync('ccusage daily --json --since ' + yyyymmdd,
-    { encoding: 'utf8', shell: true, timeout: 25000, killSignal: 'SIGKILL' });
+    { encoding: 'utf8', shell: true, timeout: CCUSAGE_TIMEOUT_MS, killSignal: 'SIGKILL' });
   if (!r || r.status !== 0 || !r.stdout) {
-    markError(r && r.signal ? 'ccusage 逾時被中止（>25s），當日用量未上報' : 'ccusage 執行失敗，當日用量未上報');
+    markError(r && r.signal
+      ? 'ccusage 逾時被中止（>' + CCUSAGE_TIMEOUT_MS / 1000 + 's），當日用量未上報'
+      : 'ccusage 執行失敗，當日用量未上報');
     return;
   }
   let totals;
@@ -285,11 +310,77 @@ async function postCurrentUsage(cfg) {
   });
 
   const ok = await postJson(cfg.server_url + '/api/ingest', cfg.team_key, body, 10000);
-  if (!ok) {
-    try {
-      const buffered = JSON.stringify(Object.assign(JSON.parse(body), { _buffered_at: new Date().toISOString() }));
-      appendFileSync(BUFFER_FILE, buffered + '\n');
-    } catch { /* 靜默 */ }
+  if (ok) {
+    markSuccess();
+    return;
+  }
+  try {
+    const buffered = JSON.stringify(Object.assign(JSON.parse(body), { _buffered_at: new Date().toISOString() }));
+    appendFileSync(BUFFER_FILE, buffered + '\n');
+  } catch { /* 靜默 */ }
+}
+
+// ── 鎖：SessionEnd 與 Stop 可能前後腳觸發，兩個 worker 同時跑會各自全量掃一次
+// ccusage（使用者感覺得到的 CPU），而且 flushBuffer 結尾的整檔回寫會互相覆蓋。
+// 上報本身是 upsert，重複送不會錯，所以搶不到鎖就直接放棄，不排隊。
+function acquireLock() {
+  try {
+    if (existsSync(LOCK_FILE)) {
+      const parts = readFileSync(LOCK_FILE, 'utf8').trim().split(' ');
+      const pid = parseInt(parts[0], 10);
+      const at = parseInt(parts[1], 10);
+      const fresh = !isNaN(at) && Date.now() - at < LOCK_TTL_MS;
+      // 時效與存活缺一不可：只看時效會在 worker 被 kill 後空等，
+      // 只看 PID 會因為 PID 被系統回收而誤判成「還在跑」。
+      let alive = false;
+      try { process.kill(pid, 0); alive = true; } catch { /* 不存在或無權限，當作已結束 */ }
+      if (fresh && alive) return false;
+    }
+    writeFileSync(LOCK_FILE, process.pid + ' ' + Date.now());
+    return true;
+  } catch {
+    return true; // 鎖檔讀寫不了就照跑：寧可偶爾重複，也不要整條上報鏈默默停掉
+  }
+}
+
+function releaseLock() {
+  try { if (existsSync(LOCK_FILE)) unlinkSync(LOCK_FILE); } catch { /* 靜默 */ }
+}
+
+// worker：脫離 hook timeout，實際做上報
+async function runWorker() {
+  const cfg = readConfig();
+  if (!cfg) return;
+  if (!acquireLock()) return;
+  try {
+    // 當日快照優先於重送舊資料。反過來的話，buffer 積壓時 flushBuffer 會先吃掉 15s，
+    // 兩者無資料相依，但不能併發：flushBuffer 結尾會整檔回寫 buffer，
+    // 而 postCurrentUsage 上報失敗時會 append 到同一個檔，併發會讓回寫吃掉剛存的快照。
+    await Promise.all([
+      postSessionMetrics(cfg, argValue('--model'), argValue('--transcript')),
+      postCurrentUsage(cfg),
+    ]);
+    // 排在後面還多一個好處：當日快照剛落 buffer 就會被立刻重送一次（/api/ingest 是
+    // (member, date, session_id) 的 upsert，重複送安全）
+    await flushBuffer(cfg.server_url, cfg.team_key);
+  } finally {
+    releaseLock();
+  }
+}
+
+// hook：把上報丟給背景 worker，不等它。stdio 全部斷開、detached 自成 process group，
+// 這樣 Claude Code 結束 session 時的收尾不會連帶把 worker 帶走。
+function spawnWorker(model, transcriptPath) {
+  try {
+    const args = [fileURLToPath(import.meta.url), '--mode=worker'];
+    if (model) args.push('--model=' + model);
+    if (transcriptPath) args.push('--transcript=' + transcriptPath);
+    // process.execPath 而非字面 'node'：使用者的 node 未必在 hook 的 PATH 上
+    // （nvm / volta 尤其常見），而 parent 自己就是被 node 跑起來的。
+    const child = spawn(process.execPath, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+  } catch (err) {
+    markError('背景上報程序啟動失敗：' + ((err && err.message) || 'unknown'));
   }
 }
 
@@ -305,8 +396,6 @@ async function main() {
         if (!isNaN(last) && Date.now() - last < THROTTLE_MS) return;
       } catch { /* 讀不到當沒紀錄，繼續跑 */ }
     }
-    // 過 throttle 立刻 mark：若後續 __deadline 贏走 race（process.exit(0)），下次仍正確被 throttle
-    // 失去「失敗則下次重試」的能力，但 Stop 是 best-effort、SessionEnd 兜底，這個 trade-off 合理
     try { writeFileSync(LAST_FLUSH_FILE, String(Date.now())); } catch { /* 靜默 */ }
   }
 
@@ -333,25 +422,21 @@ async function main() {
     }
   }
 
-  // 當日快照優先於重送舊資料。反過來的話，buffer 積壓時 flushBuffer 會先吃掉 15s，
-  // 當日快照再撞上慢的 ccusage，總和 1 + 15 + 35 = 51s 就會超過 DEADLINE_MS 被切斷。
-  // 兩者無資料相依，但不能併發：flushBuffer 結尾會整檔回寫 buffer，
-  // 而 postCurrentUsage 上報失敗時會 append 到同一個檔，併發會讓回寫吃掉剛存的快照。
-  await Promise.all([
-    postSessionMetrics(cfg, sessionModel, transcriptPath),
-    postCurrentUsage(cfg),
-  ]);
-  // 排在後面還多一個好處：當日快照剛落 buffer 就會被立刻重送一次（/api/ingest 是
-  // (member, date, session_id) 的 upsert，重複送安全）
-  await flushBuffer(cfg.server_url, cfg.team_key);
-  // 注意：last-flush.txt 在 throttle 通過時就已寫；session-end mode 不寫，避免重置 Stop 窗口
+  // 這裡就結束 hook 的責任。ccusage 與上報全在 worker，session 結束不再等它們。
+  spawnWorker(sessionModel, transcriptPath);
 }
 
-// 走到這裡代表有東西卡住超過預期（正常最壞路徑是 1 + 35 = 36s）。
+// worker 走到這裡代表有東西卡住超過預期（正常最壞路徑是 ccusage 120s + 上報 10s）。
 // 和 ccusage 取數失敗同一種處境：POST 被切斷，沒有 payload 可進 buffer，
 // 不留痕跡就是又一次靜默失效。
-const __deadline = new Promise((resolve) => setTimeout(() => {
-  markError(DEADLINE_MS / 1000 + 's 內未完成上報，程序被強制結束');
-  resolve();
-}, DEADLINE_MS));
-Promise.race([main(), __deadline]).catch(() => {}).finally(() => process.exit(0));
+// parent 不套這個上界 —— 它只讀 stdin 加 spawn，撐死 1s，由 hook timeout 兜底就夠。
+if (MODE === 'worker') {
+  const __deadline = new Promise((resolve) => setTimeout(() => {
+    markError(WORKER_DEADLINE_MS / 1000 + 's 內未完成上報，背景程序被強制結束');
+    releaseLock();
+    resolve();
+  }, WORKER_DEADLINE_MS));
+  Promise.race([runWorker(), __deadline]).catch(() => {}).finally(() => process.exit(0));
+} else {
+  main().catch(() => {}).finally(() => process.exit(0));
+}
