@@ -2,7 +2,19 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, renameSy
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { validateScripts, type TrackerScripts } from "./scripts";
+import { CODEX_COMPATIBILITY_MESSAGE, validateScripts, type TrackerScripts } from "./scripts";
+import {
+  applyCodexHooks,
+  detectCodex,
+  findCodexTrackerIndexes,
+  getCodexHome,
+  getCodexHooksPath,
+  hasTrackerNotify,
+  isOnPath,
+  readCodexTrustState,
+  type CodexGroupIndexes,
+  type CodexHooksFile,
+} from "./codex-hooks";
 
 interface HookEntry {
   type: string;
@@ -58,9 +70,17 @@ export function getStartHookCommand(): string {
   return buildHookCommand(join(homedir(), ".config", "ccusage-tracker", "session-start.mjs"));
 }
 
-// 以路徑片段判斷，可同時辨識新版（含 --mode）與舊版（無 --mode）hook
+// 以路徑片段判斷，可同時辨識新版（含 --mode）與舊版（無 --mode）hook。
+// codex-sync.mjs 也算 tracker hook：它屬於 Codex 的 hooks.json，被手動塞進
+// Claude settings.json 時要一併收掉，否則會重複觸發。
 function isCcusageTrackerHook(command?: string): boolean {
-  return typeof command === "string" && /[/\\]ccusage-tracker(?:[/\\](?:session-end|session-start)\.(?:mjs|sh|ps1)|\.(?:sh|ps1))(?=["'\s]|$)/.test(command);
+  return typeof command === "string" && /[/\\]ccusage-tracker(?:[/\\](?:session-end|session-start|codex-sync)\.(?:mjs|sh|ps1)|\.(?:sh|ps1))(?=["'\s]|$)/.test(command);
+}
+
+// Claude 視為存在：~/.claude 目錄存在，或 claude 在 PATH。
+// home 可注入：bun 在 process 啟動時就快取 os.homedir()，測試無法改寫 $HOME。
+export function detectClaude(home = homedir()): boolean {
+  return existsSync(join(home, ".claude")) || isOnPath("claude");
 }
 
 // Claude Code 將 matcher: "" 與 "*" 視為等價（都是 match-all）；早期 setup.sh 寫 "" 新版寫 "*"
@@ -145,16 +165,46 @@ export function applyTrackerHooks(settings: ClaudeSettings): {
   };
 }
 
-export function installHook(scripts: TrackerScripts): {
+export interface InstallTargets {
+  claude: boolean;
+  codex: boolean;
+}
+
+export interface InstallResult {
   sessionEndChanged: boolean;
   sessionStartChanged: boolean;
   stopChanged: boolean;
+  claudeChanged: boolean;
+  codexStopChanged: boolean;
+  codexSessionEndChanged: boolean;
+  codexChanged: boolean;
+  codexWired: boolean;
+  codexIndexes: CodexGroupIndexes;
   backedUp: boolean;
-} {
+}
+
+function readCodexHooksFile(path: string): CodexHooksFile {
+  if (!existsSync(path)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    throw new Error("Codex hooks.json is not valid JSON; repair it before updating.");
+  }
+  return parsed as CodexHooksFile;
+}
+
+// scripts.codexSync 缺席（舊 server 回 404/410）時不接 Codex hook：hook 指向不存在的
+// 腳本比沒有 hook 更糟。settings.json 與 hooks.json 走同一筆 staged 交易與 rollback，
+// 任一步失敗兩邊都回到原狀。
+export function installHook(
+  scripts: TrackerScripts,
+  targets: InstallTargets = { claude: true, codex: false },
+): InstallResult {
   const settingsPath = getClaudeSettingsPath();
   let settings: ClaudeSettings = {};
 
-  if (existsSync(settingsPath)) {
+  if (targets.claude && existsSync(settingsPath)) {
     const raw = readFileSync(settingsPath, "utf-8");
     settings = JSON.parse(raw);
     if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
@@ -175,16 +225,103 @@ export function installHook(scripts: TrackerScripts): {
   }
 
   validateScripts(scripts);
-  const { updated, sessionStartChanged, sessionEndChanged, stopChanged, anyChanged } = applyTrackerHooks(settings);
+  const claude = applyTrackerHooks(settings);
+  const claudeChanged = targets.claude && claude.anyChanged;
+
+  const codexWired = targets.codex && scripts.codexSync !== undefined;
+  const codexHooksPath = getCodexHooksPath();
+  const codex = codexWired
+    ? applyCodexHooks(readCodexHooksFile(codexHooksPath))
+    : { updated: {} as CodexHooksFile, stopChanged: false, sessionEndChanged: false, anyChanged: false };
+
   const destDir = join(homedir(), ".config", "ccusage-tracker");
   const files = [
     { path: join(destDir, "session-end.mjs"), content: scripts.sessionEnd },
     { path: join(destDir, "session-start.mjs"), content: scripts.sessionStart },
     ...(scripts.codexSync === undefined ? [] : [{ path: join(destDir, "codex-sync.mjs"), content: scripts.codexSync }]),
-    ...(anyChanged ? [{ path: settingsPath, content: JSON.stringify(updated, null, 2) + "\n" }] : []),
+    ...(claudeChanged ? [{ path: settingsPath, content: JSON.stringify(claude.updated, null, 2) + "\n" }] : []),
+    ...(codex.anyChanged ? [{ path: codexHooksPath, content: JSON.stringify(codex.updated, null, 2) + "\n" }] : []),
   ];
   const backedUp = installFiles(files);
-  return { sessionEndChanged, sessionStartChanged, stopChanged, backedUp };
+  return {
+    sessionEndChanged: targets.claude && claude.sessionEndChanged,
+    sessionStartChanged: targets.claude && claude.sessionStartChanged,
+    stopChanged: targets.claude && claude.stopChanged,
+    claudeChanged,
+    codexStopChanged: codex.stopChanged,
+    codexSessionEndChanged: codex.sessionEndChanged,
+    codexChanged: codex.anyChanged,
+    codexWired,
+    codexIndexes: codexWired ? findCodexTrackerIndexes(codex.updated) : {},
+    backedUp,
+  };
+}
+
+export const NO_TOOL_MESSAGE =
+  "No supported tool detected (Claude Code or Codex). Install one, then run `tracker update`.";
+
+export const CODEX_TRUST_MESSAGE =
+  "Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.";
+
+export interface WiringDeps {
+  detectClaude: () => boolean;
+  detectCodex: () => boolean;
+  installHook: (scripts: TrackerScripts, targets: InstallTargets) => InstallResult;
+  readCodexConfig: () => string | null;
+  log: (msg: string) => void;
+  warn: (msg: string) => void;
+}
+
+export const defaultWiringDeps: Omit<WiringDeps, "log" | "warn"> = {
+  detectClaude: () => detectClaude(),
+  detectCodex,
+  installHook,
+  readCodexConfig: () => {
+    const path = join(getCodexHome(), "config.toml");
+    try {
+      return existsSync(path) ? readFileSync(path, "utf-8") : null;
+    } catch {
+      return null;
+    }
+  },
+};
+
+// setup 與 update 共用的逐工具接線：偵測、安裝、印出每個工具一行結果。
+// 不決定 exit code —— 由呼叫端依回傳的偵測結果決定（setup 0、update 非零）。
+export function wireTools(
+  scripts: TrackerScripts,
+  deps: WiringDeps,
+): { claudeDetected: boolean; codexDetected: boolean } {
+  const claudeDetected = deps.detectClaude();
+  const codexDetected = deps.detectCodex();
+  const result = deps.installHook(scripts, { claude: claudeDetected, codex: codexDetected });
+
+  if (!claudeDetected) deps.log("Claude Code: not detected");
+  else if (result.claudeChanged) deps.log("Claude Code: hooks installed/updated (SessionStart, SessionEnd, Stop)");
+  else deps.log("Claude Code: hooks already up to date");
+
+  if (scripts.codexSync === undefined) deps.warn(CODEX_COMPATIBILITY_MESSAGE);
+
+  const configToml = codexDetected ? deps.readCodexConfig() ?? "" : "";
+  if (!codexDetected) deps.log("Codex: not detected");
+  else if (!result.codexWired) deps.log("Codex: hooks not installed (this server does not provide the Codex script)");
+  else {
+    // 信任雜湊算的是 hook 設定身分，內容一改就作廢，所以只有「沒動過且已有紀錄」
+    // 才敢說 trust recorded；其餘一律請使用者跑一次 /hooks。
+    const trust = readCodexTrustState(configToml, getCodexHooksPath(), result.codexIndexes);
+    const states = Object.values(trust);
+    const recorded = states.length > 0 && states.every((state) => state === "recorded");
+    deps.log(!result.codexChanged && recorded ? "Codex: hooks already up to date (trust recorded)" : CODEX_TRUST_MESSAGE);
+  }
+
+  if (hasTrackerNotify(configToml)) {
+    deps.warn("Codex hooks now handle reporting. Remove the ccusage-tracker `notify` entry from $CODEX_HOME/config.toml to avoid triggering it twice; this tool never edits that file.");
+  }
+
+  if (result.backedUp) deps.log("Changed files backed up (.backup).");
+  if (!claudeDetected && !codexDetected) deps.log(NO_TOOL_MESSAGE);
+
+  return { claudeDetected, codexDetected };
 }
 
 interface StagedFile {

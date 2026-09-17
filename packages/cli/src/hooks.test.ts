@@ -1,11 +1,16 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   applyTrackerHooks,
   buildHookCommand,
+  detectClaude,
   getHookCommand,
   getStartHookCommand,
   getStopHookCommand,
 } from "./hooks";
+import { getCodexHookCommand } from "./codex-hooks";
 
 // 注意：installHook 會寫入真實 ~/.claude/settings.json 與 ~/.config（bun 的 os.homedir()
 // 在 process 啟動時就快取 $HOME，無法在測試內安全覆寫）。因此這裡只測試抽出的純合併
@@ -242,5 +247,58 @@ describe("applyTrackerHooks", () => {
     expect(settings.hooks.SessionEnd).toHaveLength(1);
     expect(settings.hooks).not.toHaveProperty("SessionStart");
     expect(settings.hooks).not.toHaveProperty("Stop");
+  });
+});
+
+// setup／update 現在對「偵測到的每個工具」接線，所以偵測本身必須可測。
+// homedir() 在 bun 內被快取（見檔頭註記），detectClaude 因此接受 home 參數。
+describe("detectClaude", () => {
+  const originalPath = process.env.PATH;
+  const temporaries: string[] = [];
+  const scratch = () => {
+    const dir = mkdtempSync(join(tmpdir(), "claude detect "));
+    temporaries.push(dir);
+    return dir;
+  };
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    while (temporaries.length) rmSync(temporaries.pop()!, { recursive: true, force: true });
+  });
+
+  it("~/.claude 目錄存在 → true", () => {
+    const home = scratch();
+    mkdirSync(join(home, ".claude"));
+    process.env.PATH = "";
+
+    expect(detectClaude(home)).toBe(true);
+  });
+
+  it("目錄不存在且 claude 不在 PATH → false", () => {
+    process.env.PATH = "";
+
+    expect(detectClaude(scratch())).toBe(false);
+  });
+
+  it("目錄不存在但 claude 在 PATH → true", () => {
+    const home = scratch();
+    const bin = join(home, "bin space");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.PATH = bin;
+
+    expect(detectClaude(home)).toBe(true);
+  });
+});
+
+// tracker hook 的辨識現在也涵蓋 codex-sync.mjs：手動塞進 Claude settings.json 的
+// Codex 腳本屬於 tracker 自己的殘留，升級時要被收掉，不能留著重複觸發。
+describe("tracker hook 辨識涵蓋 codex-sync.mjs", () => {
+  it("Claude SessionEnd 裡的 codex-sync hook 會被視為 tracker hook 收掉", () => {
+    const result = applyTrackerHooks({
+      hooks: { SessionEnd: [{ matcher: "*", hooks: [{ type: "command", command: getCodexHookCommand() }] }] },
+    });
+
+    const commands = result.updated.hooks!.SessionEnd!.flatMap((m) => m.hooks.map((h) => h.command));
+    expect(commands).toEqual([getHookCommand()]);
   });
 });
