@@ -1,8 +1,16 @@
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
-import { spawnSync } from "node:child_process";
 import { isTrackerConfig, writeConfig, type TrackerConfig } from "../config";
-import { installHook } from "../hooks";
-import { CODEX_COMPATIBILITY_MESSAGE, downloadScripts, fetchHookScript, type TrackerScripts } from "../scripts";
+import {
+  defaultWiringDeps,
+  detectClaude,
+  installHook,
+  wireTools,
+  type InstallResult,
+  type InstallTargets,
+} from "../hooks";
+import { detectCodex } from "../codex-hooks";
+import { defaultCollectorDeps, ensureCollector } from "../collector";
+import { downloadScripts, fetchHookScript, type TrackerScripts } from "../scripts";
 
 // piped stdin 下，readline 的 'line' event 會在下一個 rl.question 註冊監聽器前就觸發，
 // 導致行被吞掉、後續 prompt 永遠等不到 callback。
@@ -38,28 +46,17 @@ async function defaultCheckServer(serverUrl: string): Promise<boolean> {
   }
 }
 
-// 與 status.ts 的 probeCcusage 同理：bin 以 node 執行，Bun global 不存在；
-// 指令合成單一字串避免 DEP0190；shell: true 以相容 Windows 的 ccusage.cmd。
-function defaultCheckCcusage(): boolean {
-  try {
-    return spawnSync("ccusage --version", { encoding: "utf8", shell: true, timeout: 10000 }).status === 0;
-  } catch {
-    return false;
-  }
-}
-
 export interface SetupDeps {
   prompt: (question: string) => Promise<string>;
   writeConfig: (config: TrackerConfig) => void;
-  installHook: (scripts: TrackerScripts) => {
-    sessionEndChanged: boolean;
-    sessionStartChanged: boolean;
-    stopChanged: boolean;
-    backedUp: boolean;
-  };
+  installHook: (scripts: TrackerScripts, targets: InstallTargets) => InstallResult;
   fetchHookScript: (serverUrl: string, scriptName: string) => Promise<string | null>;
   checkServer: (serverUrl: string) => Promise<boolean>;
-  checkCcusage: () => boolean;
+  detectClaude: () => boolean;
+  detectCodex: () => boolean;
+  probeCollector: () => string | null;
+  installCollector: (command: string) => boolean;
+  readCodexConfig: () => string | null;
   log: (msg: string) => void;
   warn: (msg: string) => void;
   exit: (code: number) => void;
@@ -71,7 +68,11 @@ const defaultDeps: SetupDeps = {
   installHook,
   fetchHookScript,
   checkServer: defaultCheckServer,
-  checkCcusage: defaultCheckCcusage,
+  detectClaude: () => detectClaude(),
+  detectCodex,
+  probeCollector: defaultCollectorDeps.probe,
+  installCollector: defaultCollectorDeps.install,
+  readCodexConfig: defaultWiringDeps.readCodexConfig,
   log: (msg) => console.log(msg),
   warn: (msg) => console.warn(msg),
   exit: (code) => process.exit(code),
@@ -125,23 +126,31 @@ async function runSetup(deps: SetupDeps): Promise<void> {
   deps.writeConfig(config);
   deps.log("\nConfig saved.");
 
-  // Shell installers remain Claude-only; the CLI also downloads optional Codex support.
+  // Shell installers remain Claude-only; the CLI wires every detected tool.
+  // 未偵測到任何工具不算失敗：config 已寫好，裝了工具再跑 update 即可。
   try {
     const scripts = await downloadScripts(config.server_url, deps.fetchHookScript);
-    const { sessionEndChanged, sessionStartChanged, stopChanged, backedUp } = deps.installHook(scripts);
-    const anyChanged = sessionEndChanged || sessionStartChanged || stopChanged;
-    if (anyChanged) {
-      deps.log("SessionStart + SessionEnd + Stop hooks installed/updated." + (backedUp ? " (changed files backed up)" : ""));
-    } else {
-      deps.log("SessionStart + SessionEnd + Stop hooks already up to date.");
-    }
-    if (scripts.codexSync === undefined) deps.warn(CODEX_COMPATIBILITY_MESSAGE);
-    else deps.log("Codex support installed. Run `tracker sync codex` to report usage. Codex notify is manual opt-in; existing config.toml is unchanged.");
+    wireTools(scripts, {
+      detectClaude: deps.detectClaude,
+      detectCodex: deps.detectCodex,
+      installHook: deps.installHook,
+      readCodexConfig: deps.readCodexConfig,
+      log: deps.log,
+      warn: deps.warn,
+    });
   } catch (err) {
     deps.warn("Could not install tracker scripts. " + (err as Error).message + " Run `tracker update` after resolving the problem.");
     deps.exit(1);
     return;
   }
+
+  // 收集器：失敗只警告，不改 exit code —— hook 已就位，缺 collector 由 status 顯示。
+  ensureCollector({
+    probe: deps.probeCollector,
+    install: deps.installCollector,
+    log: deps.log,
+    warn: deps.warn,
+  });
 
   // Verify server
   const serverOk = await deps.checkServer(config.server_url);
@@ -149,14 +158,6 @@ async function runSetup(deps: SetupDeps): Promise<void> {
     deps.log("Server is reachable.");
   } else {
     deps.warn("Warning: Server is not reachable at " + config.server_url);
-  }
-
-  // Check ccusage
-  const hasCcusage = deps.checkCcusage();
-  if (hasCcusage) {
-    deps.log("ccusage is installed.");
-  } else {
-    deps.warn("Warning: ccusage not found. Install the verified Claude/Codex collector with: npm install -g ccusage@20.0.20");
   }
 
   deps.log("\nSetup complete!");

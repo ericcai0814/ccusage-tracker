@@ -4,6 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+// 偵測看的是 PATH 與家目錄，所以 PATH 必須完全由 fixture 決定：沿用開發者真實的
+// PATH 會讓本機有 claude／codex 的人測到假的綠燈。
+const nodeBin = Bun.which("node")!;
+const trackerHook = (command: unknown) => typeof command === "string" && command.includes("codex-sync.mjs");
+
 // Exercise the published Node entry point; never use the user's config or collectors.
 let buildDir: string;
 let home: string;
@@ -68,11 +73,24 @@ function configure(): string {
   writeFileSync(join(configDir, "config.json"), raw);
   return raw;
 }
+function codexHooks(): { hooks?: Record<string, { hooks: { type?: string; command?: string; timeout?: number }[] }[]> } {
+  return JSON.parse(readFileSync(join(home, "codex", "hooks.json"), "utf8"));
+}
 function cli(args: string[], input = "", preload?: string): Promise<{ code: number | null; output: string }> {
   writeFileSync(join(home, "http-replies.json"), JSON.stringify(replies));
   return new Promise((resolve, reject) => {
-    const child = spawn("node", [...(httpPreload ? ["--import", httpPreload] : []), ...(preload ? ["--import", preload] : []), join(buildDir, "index.js"), ...args], {
-      env: { ...process.env, HOME: home, CODEX_HOME: join(home, "codex"), PATH: `${join(home, "bin")}:${process.env.PATH}`, NODE_OPTIONS: "" },
+    const child = spawn(nodeBin, [...(httpPreload ? ["--import", httpPreload] : []), ...(preload ? ["--import", preload] : []), join(buildDir, "index.js"), ...args], {
+      env: {
+        ...process.env,
+        HOME: home,
+        CODEX_HOME: join(home, "codex"),
+        // PATH 只放 fixture 的 bin：偵測結果完全由測試決定。node 以絕對路徑啟動、
+        // 子程序用 process.execPath，shell: true 走 /bin/sh，都不需要 PATH。
+        PATH: join(home, "bin"),
+        NODE_OPTIONS: "",
+        // 測試絕不真的跑 npm install -g。
+        CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL: "1",
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let output = "";
@@ -110,6 +128,14 @@ describe("Node CLI update", () => {
     mkdirSync(join(home, "codex"));
     const toml = '# existing integration\nnotify = ["custom", "notify"]\n';
     writeFileSync(join(home, "codex", "config.toml"), toml);
+    const codexThirdParty = {
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: "echo codex-third-party", timeout: 3 }], note: "keep" }],
+        SessionStart: [{ hooks: [{ type: "command", command: "echo codex-start" }] }],
+      },
+    };
+    const codexRaw = JSON.stringify(codexThirdParty, null, 4) + "\n";
+    writeFileSync(join(home, "codex", "hooks.json"), codexRaw);
     const first = await cli(["update"]);
     expect(first.code).toBe(0);
     expect(first.output).toContain("updated");
@@ -123,16 +149,40 @@ describe("Node CLI update", () => {
     expect(installed.hooks.SessionEnd).toHaveLength(2);
     expect(readFileSync(join(home, ".claude", "settings.json.backup"), "utf8")).toBe(old.raw);
     expect(readFileSync(join(configDir, "session-end.mjs.backup"), "utf8")).toBe("// previous session-end.mjs");
+    // Codex：第三方群組位元組不變留在索引 0，tracker 只 append 到尾端
+    const hooks = codexHooks();
+    expect(JSON.stringify(hooks.hooks!.Stop![0])).toBe(JSON.stringify(codexThirdParty.hooks.Stop[0]));
+    expect(hooks.hooks!.Stop).toHaveLength(2);
+    expect(hooks.hooks!.SessionStart).toEqual(codexThirdParty.hooks.SessionStart);
+    for (const event of ["Stop", "SessionEnd"] as const) {
+      const tracker = hooks.hooks![event]!.filter((group) => group.hooks.some((hook) => trackerHook(hook.command)));
+      expect(tracker).toHaveLength(1);
+      expect(tracker[0]).toEqual({ hooks: [{ type: "command", command: tracker[0].hooks[0].command, timeout: 45 }] });
+      expect(tracker[0].hooks[0].command).toContain("--hook");
+      expect(tracker[0].hooks[0].command).toMatch(/^node ".*codex-sync\.mjs" --hook$/);
+    }
+    expect(readFileSync(join(home, "codex", "hooks.json.backup"), "utf8")).toBe(codexRaw);
+    expect(first.output).toContain("/hooks");
+
   const installedRaw = readFileSync(join(home, ".claude", "settings.json"), "utf8");
+    const codexInstalledRaw = readFileSync(join(home, "codex", "hooks.json"), "utf8");
     const second = await cli(["update"]);
     expect(second.code).toBe(0);
     expect(readFileSync(join(home, ".claude", "settings.json"), "utf8")).toBe(installedRaw);
+    expect(readFileSync(join(home, "codex", "hooks.json"), "utf8")).toBe(codexInstalledRaw);
+    expect(readFileSync(join(home, "codex", "config.toml"), "utf8")).toBe(toml);
     expect(readFileSync(join(home, ".claude", "settings.json.backup"), "utf8")).toBe(old.raw);
+    expect(readFileSync(join(home, "codex", "hooks.json.backup"), "utf8")).toBe(codexRaw);
     expect(readdirSync(configDir).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
+    expect(readdirSync(join(home, "codex")).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
+    // 完成訊息不再叫使用者自己跑 sync codex
+    expect(second.output).not.toContain("Run `tracker sync codex`");
   });
 
-  it("creates missing Claude settings directory and offers Codex manual sync", async () => {
+  it("creates missing Claude settings directory and keeps Codex manual sync available", async () => {
     configure();
+    // ~/.claude 還不存在，但 claude 在 PATH 上 —— 偵測得到就該把設定檔建出來
+    writeFileSync(join(home, "bin", "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     const result = await cli(["update"]);
     expect(result.code).toBe(0);
     expect(existsSync(join(home, ".claude", "settings.json"))).toBe(true);
@@ -184,6 +234,8 @@ describe("Node CLI update", () => {
       expect(result.code).toBe(status === 404 || status === 410 ? 0 : 1);
       expect(readFileSync(join(configDir, "codex-sync.mjs"), "utf8")).toBe("// previous codex-sync.mjs");
       if (status < 500 && status !== 403) expect(result.output).toContain("server");
+      // hook 指向不存在的腳本比沒有 hook 更糟：這條路徑一律不寫 hooks.json
+      expect(existsSync(join(home, "codex", "hooks.json"))).toBe(false);
     }
   });
 
@@ -221,17 +273,26 @@ describe("Node CLI update", () => {
 });
 
 describe("Node CLI Codex entry points", () => {
-  it("setup downloads Codex support and works without an existing Claude directory", async () => {
+  it("setup downloads Codex support and still saves config when no tool is detected", async () => {
     const result = await cli(["setup"], `Fixture\nhttp://127.0.0.1:${serverPort}\nfixture-team\n`);
     expect(result.code).toBe(0);
     expect(readFileSync(join(configDir, "codex-sync.mjs"), "utf8")).toBe(script);
-    expect(result.output).toContain("tracker sync codex");
+    expect(existsSync(join(configDir, "config.json"))).toBe(true);
+    expect(result.output).toContain("No supported tool detected");
+    expect(result.output).toContain("tracker update");
+    // sync codex 已降為手動補送，不再是安裝流程要求的下一步
+    expect(result.output).not.toContain("Run `tracker sync codex`");
+    expect(existsSync(join(home, "codex", "hooks.json"))).toBe(false);
+    expect(existsSync(join(home, ".claude", "settings.json"))).toBe(false);
   });
   it("setup remains usable for Codex-only users without a Claude CLI", async () => {
-    writeFileSync(join(home, "bin", "claude"), "#!/bin/sh\nexit 127\n", { mode: 0o755 });
+    mkdirSync(join(home, "codex"));
     expect(existsSync(join(home, ".claude"))).toBe(false);
     const result = await cli(["setup"], `Fixture\nhttp://127.0.0.1:${serverPort}\nfixture-team\n`);
     expect(result.code).toBe(0);
+    expect(result.output).toContain("Claude Code: not detected");
+    expect(existsSync(join(home, ".claude", "settings.json"))).toBe(false);
+    expect(codexHooks().hooks!.Stop).toHaveLength(1);
     expect((await cli(["sync", "codex"])).code).toBe(0);
   });
   it("setup reports failed installation instead of claiming success", async () => {
@@ -254,6 +315,7 @@ describe("Node CLI Codex entry points", () => {
   });
   it("status distinguishes Codex support, reader, pending entries, errors and successful upload", async () => {
     configure();
+    mkdirSync(join(home, "codex"));
     writeFileSync(join(configDir, "codex-sync.mjs"), script);
     writeFileSync(join(configDir, "codex-buffer.jsonl"), '{}\n{}\n');
     writeFileSync(join(configDir, "codex-last-error.txt"), 'fixture offline');
@@ -269,6 +331,7 @@ describe("Node CLI Codex entry points", () => {
   });
   it("status diagnoses unsupported or missing Codex collector with its verified install command", async () => {
     configure();
+    mkdirSync(join(home, "codex"));
     for (const versionCommand of ["echo 18.0.10", "exit 127"]) {
       writeFileSync(join(home, "bin", "ccusage"), `#!/bin/sh\n${versionCommand}\n`, { mode: 0o755 });
       const status = await cli(["status"]);
@@ -277,5 +340,111 @@ describe("Node CLI Codex entry points", () => {
       expect(status.output).toContain("npm install -g ccusage@20.0.20");
       expect(status.output).not.toContain("Node >=22");
     }
+  });
+});
+
+describe("Node CLI Codex hook wiring", () => {
+  const trustToml = (event: string, index: number) =>
+    `[hooks.state."${join(home, "codex", "hooks.json")}:${event}:${index}:0"]\ntrusted_hash = "sha256:fixture"\n`;
+
+  it("setup 接上 Codex hooks，且不碰 config.toml", async () => {
+    mkdirSync(join(home, "codex"));
+    const toml = 'model = "gpt-5"\n\n[tui]\ntheme = "dark"\n';
+    writeFileSync(join(home, "codex", "config.toml"), toml);
+
+    const result = await cli(["setup"], `Fixture\nhttp://127.0.0.1:${serverPort}\nfixture-team\n`);
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain("Open Codex and run /hooks once to trust");
+    expect(readFileSync(join(home, "codex", "config.toml"), "utf8")).toBe(toml);
+    const hooks = codexHooks();
+    for (const event of ["Stop", "SessionEnd"] as const) {
+      expect(hooks.hooks![event]).toHaveLength(1);
+      // Codex 的 Stop 不支援 matcher，群組只能有 hooks 鍵
+      expect(Object.keys(hooks.hooks![event]![0])).toEqual(["hooks"]);
+      expect(hooks.hooks![event]![0].hooks[0].command).toMatch(/^node ".*codex-sync\.mjs" --hook$/);
+    }
+    // Claude 未偵測到，settings.json 不該被建出來
+    expect(existsSync(join(home, ".claude", "settings.json"))).toBe(false);
+  });
+
+  it("兩個工具都沒偵測到：update 回非零並提示先安裝工具", async () => {
+    configure();
+
+    const result = await cli(["update"]);
+
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("No supported tool detected");
+    expect(result.output).toContain("tracker update");
+    expect(result.output).not.toContain("Update complete");
+    expect(existsSync(join(home, "codex", "hooks.json"))).toBe(false);
+  });
+
+  it("hooks.json 非法：整筆交易不寫任何檔，回非零並要求修復", async () => {
+    configure();
+    const old = existingInstall();
+    mkdirSync(join(home, "codex"));
+    for (const malformed of ['{"hooks": []}', '{"hooks": {"Stop": "invalid"}}', "not json", "[]"]) {
+      writeFileSync(join(home, "codex", "hooks.json"), malformed);
+
+      const result = await cli(["update"]);
+
+      expect(result.code).not.toBe(0);
+      expect(result.output).toContain("hooks.json");
+      expect(result.output).toContain("repair");
+      expect(readFileSync(join(home, "codex", "hooks.json"), "utf8")).toBe(malformed);
+      expect(readFileSync(join(home, ".claude", "settings.json"), "utf8")).toBe(old.raw);
+      expect(readFileSync(join(configDir, "session-end.mjs"), "utf8")).toBe("// previous session-end.mjs");
+      expect(existsSync(join(home, "codex", "hooks.json.backup"))).toBe(false);
+    }
+  });
+
+  it("使用者仍留著手動設定的 tracker notify：提示自行移除，TOML 位元組不變", async () => {
+    configure();
+    mkdirSync(join(home, "codex"));
+    const toml = `notify = ["node", "${join(home, ".config", "ccusage-tracker", "codex-sync.mjs")}", "--notify"]\n`;
+    writeFileSync(join(home, "codex", "config.toml"), toml);
+
+    const result = await cli(["update"]);
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain("Remove the ccusage-tracker `notify` entry");
+    expect(readFileSync(join(home, "codex", "config.toml"), "utf8")).toBe(toml);
+  });
+
+  it("status 分辨 Codex hook 的 awaiting trust、trust recorded、disabled 與未偵測", async () => {
+    configure();
+    expect((await cli(["status"])).output).toContain("Codex: not detected");
+
+    mkdirSync(join(home, "codex"));
+    expect((await cli(["update"])).code).toBe(0);
+    expect((await cli(["status"])).output).toContain("Codex hooks: installed, awaiting trust (open /hooks in Codex)");
+
+    writeFileSync(join(home, "codex", "config.toml"), trustToml("stop", 0) + trustToml("session_end", 0));
+    expect((await cli(["status"])).output).toContain("Codex hooks: installed, trust recorded");
+
+    writeFileSync(join(home, "codex", "config.toml"), trustToml("stop", 0) + "enabled = false\n" + trustToml("session_end", 0));
+    expect((await cli(["status"])).output).toContain("Codex hooks: installed, disabled in Codex");
+  });
+
+  it("重跑 update：已信任且未變更時回報 already up to date，不再要求信任", async () => {
+    configure();
+    mkdirSync(join(home, "codex"));
+    expect((await cli(["update"])).code).toBe(0);
+    writeFileSync(join(home, "codex", "config.toml"), trustToml("stop", 0) + trustToml("session_end", 0));
+
+    const second = await cli(["update"]);
+
+    expect(second.code).toBe(0);
+    expect(second.output).toContain("Codex: hooks already up to date (trust recorded)");
+    expect(second.output).not.toContain("Open Codex and run /hooks once");
+  });
+
+  it("說明文字把 sync codex 標為手動補送／除錯用途", async () => {
+    const result = await cli([]);
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain("Report Codex usage now (manual fallback / debugging)");
+    expect(result.output).not.toContain("Report Codex daily usage now");
   });
 });

@@ -1,5 +1,12 @@
 import { readConfig, getConfigPath } from "../config";
 import { isHookInstalled } from "../hooks";
+import {
+  detectCodex,
+  findCodexTrackerIndexes,
+  getCodexHooksPath,
+  readCodexTrustState,
+  type CodexHooksFile,
+} from "../codex-hooks";
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -102,8 +109,16 @@ export async function statusCommand(): Promise<void> {
   // 「沒裝」—— 對照 session-end.mjs 同樣以 node 執行、同樣用 node:child_process。
   const probe = probeCcusage();
   console.log(probe ? `ccusage: installed (${probe})` : "ccusage: not found (install with: npm install -g ccusage@20.0.20)");
+  // Codex 未安裝時整個區塊沒有意義：一行講完，不用六行說「都沒有」。
+  if (!detectCodex()) {
+    console.log("\nCodex: not detected");
+    return;
+  }
+
   const codexScript = join(configDir, "codex-sync.mjs");
   console.log(`\nCodex script: ${existsSync(codexScript) ? "installed" : "not installed (run tracker update with a Codex-capable server)"}`);
+  const hooksPath = getCodexHooksPath();
+  console.log(codexHooksLine(readTextFile(hooksPath), readTextFile(join(dirname(hooksPath), "config.toml")), hooksPath));
   console.log(`Codex Node runtime: ${process.versions.node}`);
   const hasCodexCollector = probe !== null && /^(?:ccusage\s+)?20\.0\.20$/.test(probe);
   console.log(hasCodexCollector
@@ -117,6 +132,33 @@ export async function statusCommand(): Promise<void> {
   const codexUploadPath = join(configDir, "codex-last-upload.txt");
   const codexUpload = existsSync(codexUploadPath) ? Number(readFileSync(codexUploadPath, "utf8").trim()) : NaN;
   console.log(`Codex last successful upload: ${Number.isFinite(codexUpload) && codexUpload > 0 && !Number.isNaN(new Date(codexUpload).getTime()) ? new Date(codexUpload).toISOString() : "none recorded (run tracker sync codex)"}`);
+}
+
+function readTextFile(path: string): string | null {
+  try {
+    return existsSync(path) ? readFileSync(path, "utf8") : null;
+  } catch {
+    return null;
+  }
+}
+
+// Codex 會略過尚未信任的 hook，而且信任紀錄是 Codex 內部雜湊，這裡不驗證雜湊值，
+// 只回報「有沒有留下紀錄」—— 所以措辭是 trust recorded 而不是 trusted。
+export function codexHooksLine(hooksJson: string | null, configToml: string | null, hooksPath: string): string {
+  let file: CodexHooksFile | null = null;
+  if (hooksJson !== null) {
+    try {
+      const parsed: unknown = JSON.parse(hooksJson);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) file = parsed as CodexHooksFile;
+    } catch { /* 壞掉的 hooks.json 等同沒安裝；修復指引由 update 給 */ }
+  }
+  const indexes = file ? findCodexTrackerIndexes(file) : {};
+  if (indexes.stop === undefined && indexes.sessionEnd === undefined) return "Codex hooks: not installed";
+
+  const states = Object.values(readCodexTrustState(configToml ?? "", hooksPath, indexes));
+  if (states.includes("disabled")) return "Codex hooks: installed, disabled in Codex";
+  if (states.every((state) => state === "recorded")) return "Codex hooks: installed, trust recorded";
+  return "Codex hooks: installed, awaiting trust (open /hooks in Codex)";
 }
 
 // 只有「上報確實送達」才會更新 last-upload.txt。缺這一行的話，背景 worker
