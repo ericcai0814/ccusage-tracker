@@ -25,6 +25,7 @@ if(f.delay) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, f.delay
 if(f.fail) { console.error('PRIVATE COLLECTOR CONTENT'); process.exit(1); }
 console.log(f.raw ?? JSON.stringify(f.result));\n`, { mode: 0o755 });
   writeFileSync(join(home, "mock.mjs"), `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
+fs.appendFileSync(process.env.HOME + '/argv.jsonl', JSON.stringify(process.argv.slice(1)) + '\\n');
 if(process.env.REPLACE_STALE_OWNER) {
  const originalRead = fs.readFileSync; let replaced = false;
  fs.readFileSync = (file,...args) => { const result = originalRead(file,...args);
@@ -39,12 +40,24 @@ return { status: fs.existsSync(process.env.HOME + '/offline') ? 503 : 200 };
   writeFileSync(join(dir, "config.json"), JSON.stringify({ server_url: "http://127.0.0.1:12345", team_key: "fixture-only", member_name: "test" }));
   const set = (result: unknown, other: Record<string, unknown> = {}) => writeFileSync(join(home, "fixture.json"), JSON.stringify({ result, ...other }));
   set({ daily: [row], totals: {} });
-  const run = (args: string[] = [], extra: Record<string, string> = {}) => spawnSync(node, ["--import", join(home, "mock.mjs"), script, ...args], {
+  const run = (args: string[] = [], extra: Record<string, string> = {}, input?: string) => spawnSync(node, ["--import", join(home, "mock.mjs"), script, ...args], {
     env: { HOME: home, CODEX_HOME: join(home, "codex"), CLAUDE_CONFIG_DIR: join(home, "claude"), PATH: bin, TZ: "Asia/Taipei", ...extra },
-    cwd: home, encoding: "utf8", timeout: 10000,
+    cwd: home, encoding: "utf8", timeout: 10000, ...(input === undefined ? {} : { input }),
   });
   const requests = () => existsSync(join(home, "requests.jsonl")) ? readFileSync(join(home, "requests.jsonl"), "utf8").trim().split("\n").map((s) => JSON.parse(s)) : [];
-  return { home, dir, collector, set, run, requests, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+  const read = (name: string) => existsSync(join(home, name)) ? readFileSync(join(home, name), "utf8") : "";
+  // worker 是 detached 的，所以判斷「有沒有啟動」要等它留下痕跡，而不是看父程序。
+  const settle = async (deadlineMs = 4000) => {
+    const deadline = Date.now() + deadlineMs;
+    while ((!existsSync(join(dir, "codex-last-upload.txt")) || existsSync(join(dir, "codex-worker.lock"))) && Date.now() < deadline) {
+      await Bun.sleep(30);
+    }
+  };
+  // 反證「沒有啟動 worker」必須等一段時間：detached worker 要先把 node 開起來，
+  // 立刻斷言等於每次都通過，測不到真正的回歸。
+  const quiet = () => Bun.sleep(700);
+  const workerEnv = { NODE_OPTIONS: '--import "' + join(home, "mock.mjs") + '"' };
+  return { home, dir, collector, set, run, requests, read, settle, quiet, workerEnv, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
 
 describe("Codex reporter executed by Node in an isolated HOME", () => {
@@ -251,6 +264,136 @@ describe("Codex reporter executed by Node in an isolated HOME", () => {
       expect(f.requests()).toEqual([]);
       expect(existsSync(join(f.dir, "codex-worker.lock"))).toBe(false);
       expect(readFileSync(join(f.dir, "codex-worker.lock.reclaim"), "utf8")).toBe("other acquisition");
+    } finally { f.cleanup(); }
+  });
+});
+
+// Codex hooks 每輪對話都會觸發 Stop，所以這條路徑的預設必須是「安靜地什麼都不做」：
+// 任何讀取、解析或驗證失敗都 exit 0 且不留錯誤檔，否則使用者每講一句話就多一行噪音。
+describe("Codex hook 進入點", () => {
+  const stopPayload = JSON.stringify({
+    hook_event_name: "Stop", session_id: "s1", cwd: "/tmp", stop_hook_active: false,
+    transcript_path: "/PRIVATE/transcript.jsonl", message: "PRIVATE PROMPT",
+  });
+
+  for (const event of ["Stop", "SessionEnd"]) {
+    it(`${event} 事件啟動一次背景 worker，且不轉交 payload 內容`, async () => {
+      const f = fixture();
+      try {
+        const r = f.run(["--hook"], f.workerEnv, JSON.stringify({
+          hook_event_name: event, session_id: "s1", cwd: "/tmp",
+          transcript_path: "/PRIVATE/transcript.jsonl", message: "PRIVATE PROMPT",
+        }));
+        expect(r.status).toBe(0);
+        expect(r.stdout + r.stderr).toBe("");
+        await f.settle();
+        expect(f.requests()).toHaveLength(1);
+        const traces = JSON.stringify(f.requests()) + f.read("collector-args.jsonl") + f.read("argv.jsonl") +
+          (existsSync(join(f.dir, "codex-buffer.jsonl")) ? readFileSync(join(f.dir, "codex-buffer.jsonl"), "utf8") : "");
+        expect(traces).not.toContain("PRIVATE");
+        expect(existsSync(join(f.dir, "codex-last-error.txt"))).toBe(false);
+      } finally { f.cleanup(); }
+    });
+  }
+
+  it("其他事件不啟動 worker，也不讀設定", async () => {
+    const f = fixture();
+    try {
+      rmSync(join(f.dir, "config.json"));
+      const r = f.run(["--hook"], f.workerEnv, JSON.stringify({ hook_event_name: "UserPromptSubmit", message: "PRIVATE PROMPT" }));
+      expect(r.status).toBe(0);
+      await f.quiet();
+      expect(r.stdout + r.stderr).toBe("");
+      expect(existsSync(join(f.home, "collector-args.jsonl"))).toBe(false);
+      expect(f.requests()).toEqual([]);
+      expect(existsSync(join(f.dir, "codex-last-error.txt"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  for (const [name, input] of [
+    ["非 JSON", "not json at all"],
+    ["空輸入", ""],
+    ["缺 hook_event_name", '{"session_id":"s1"}'],
+    ["超過 64 KB", '{"hook_event_name":"Stop","pad":"' + "P".repeat(70000) + '"}'],
+  ] as const) {
+    it(`${name} → exit 0、不啟動 worker、不寫錯誤檔`, async () => {
+      const f = fixture();
+      try {
+        const r = f.run(["--hook"], f.workerEnv, input);
+        expect(r.status).toBe(0);
+        expect(r.stdout + r.stderr).toBe("");
+        await f.quiet();
+        expect(existsSync(join(f.home, "collector-args.jsonl"))).toBe(false);
+        expect(existsSync(join(f.dir, "codex-last-error.txt"))).toBe(false);
+        expect(f.requests()).toEqual([]);
+      } finally { f.cleanup(); }
+    });
+  }
+
+  it("hook 觸發前先檢查 5 分鐘 throttle：窗內第二次不啟動 worker", async () => {
+    const f = fixture();
+    try {
+      const recent = String(Date.now() - 2 * 60 * 1000);
+      writeFileSync(join(f.dir, "codex-last-flush.txt"), recent);
+
+      const r = f.run(["--hook"], f.workerEnv, stopPayload);
+
+      expect(r.status).toBe(0);
+      await f.quiet();
+      expect(existsSync(join(f.home, "collector-args.jsonl"))).toBe(false);
+      expect(f.requests()).toEqual([]);
+      // 被 throttle 擋下時不重寫時間戳，否則反覆觸發會把窗口無限延後
+      expect(readFileSync(join(f.dir, "codex-last-flush.txt"), "utf8")).toBe(recent);
+    } finally { f.cleanup(); }
+  });
+
+  it("throttle 過期後再次觸發：先寫時間戳再啟動 worker", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "codex-last-flush.txt"), String(Date.now() - 6 * 60 * 1000));
+
+      const r = f.run(["--hook"], f.workerEnv, stopPayload);
+
+      expect(r.status).toBe(0);
+      await f.settle();
+      expect(f.requests()).toHaveLength(1);
+      expect(Date.now() - Number(readFileSync(join(f.dir, "codex-last-flush.txt"), "utf8"))).toBeLessThan(60000);
+    } finally { f.cleanup(); }
+  });
+
+  it("notify 相容路徑套用同一個 throttle（hook 與 notify 同時設定時不會重複上報）", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "codex-last-flush.txt"), String(Date.now() - 60 * 1000));
+
+      const r = f.run(["--notify", JSON.stringify({ type: "agent-turn-complete", "input-messages": ["PRIVATE PROMPT"] })], f.workerEnv);
+
+      expect(r.status).toBe(0);
+      await f.quiet();
+      expect(existsSync(join(f.home, "collector-args.jsonl"))).toBe(false);
+      expect(f.requests()).toEqual([]);
+    } finally { f.cleanup(); }
+  });
+
+  it("手動 sync codex 不受 throttle 限制", () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "codex-last-flush.txt"), String(Date.now()));
+
+      const r = f.run();
+
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain("Codex usage synced.");
+      expect(f.requests()).toHaveLength(1);
+    } finally { f.cleanup(); }
+  });
+
+  it("未知旗標仍然明確失敗，不被當成 hook 靜默吞掉", () => {
+    const f = fixture();
+    try {
+      const r = f.run(["--bogus"]);
+      expect(r.status).toBe(1);
+      expect(f.requests()).toEqual([]);
     } finally { f.cleanup(); }
   });
 });

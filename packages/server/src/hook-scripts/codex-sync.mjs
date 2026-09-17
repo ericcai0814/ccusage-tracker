@@ -11,7 +11,13 @@ const BUFFER = join(DIR, 'codex-buffer.jsonl');
 const LOCK = join(DIR, 'codex-worker.lock');
 const ERROR = join(DIR, 'codex-last-error.txt');
 const UPLOAD = join(DIR, 'codex-last-upload.txt');
+const FLUSH = join(DIR, 'codex-last-flush.txt');
 const DEADLINE_MS = 180000;
+// 與 Claude 的 Stop hook 同一個語意與長度：Codex 的 Stop 每輪對話都觸發，
+// 沒有節流的話每講一句話就重跑一次全量收集器。
+const THROTTLE_MS = 5 * 60 * 1000;
+const STDIN_TIMEOUT_MS = 2000;
+const STDIN_LIMIT_BYTES = 64 * 1024;
 const started = Date.now();
 const worker = process.argv[2] === '--worker';
 let ownsLock = false;
@@ -181,18 +187,70 @@ async function sync() {
   if (!worker) console.log(snapshot ? 'Codex usage synced.' : 'No Codex usage for today.');
 }
 
+// hook 模式的 stdin。逾時、超量或讀取錯誤一律回 null（連部分內容都不留），
+// 呼叫端只會安靜結束 —— hook 每輪都跑，任何噪音都會被放大成每輪一次。
+function readStdin(timeoutMs, limitBytes) {
+  return new Promise((resolve) => {
+    let data = '';
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      // Codex 若不關閉 stdin，flowing 的 stdin 會把 event loop 撐著不放。
+      try { process.stdin.pause(); } catch { /* 已結束 */ }
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    try {
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (chunk) => {
+        data += chunk;
+        if (Buffer.byteLength(data, 'utf8') > limitBytes) { clearTimeout(timer); data = ''; finish(null); }
+      });
+      process.stdin.on('end', () => { clearTimeout(timer); finish(data); });
+      process.stdin.on('error', () => { clearTimeout(timer); finish(null); });
+    } catch { clearTimeout(timer); finish(null); }
+  });
+}
+
+// 觸發式上報（hook 與相容的 notify）共用的節流。手動 sync 不走這裡。
+function throttled() {
+  try {
+    const last = parseInt(readFileSync(FLUSH, 'utf8'), 10);
+    if (Number.isFinite(last) && Date.now() - last < THROTTLE_MS) return true;
+  } catch { /* 沒有紀錄或讀不到，視為可以跑 */ }
+  return false;
+}
+
+function startWorker() {
+  if (throttled()) return;
+  // 先寫時間戳再 spawn：worker 失敗時下一次觸發仍受節流保護，避免壞掉的環境
+  // 每輪對話都重跑收集器。
+  try { writeFileSync(FLUSH, String(Date.now())); } catch { /* 寫不進去頂多多跑一次 */ }
+  // Only the event kind is examined. Do not pass messages, transcript path, cwd, or the raw payload to worker.
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--worker'], { detached: true, stdio: 'ignore', windowsHide: true });
+  child.on('error', () => error('Could not start Codex sync worker.'));
+  child.unref();
+}
+
 async function main() {
+  if (process.argv[2] === '--hook') {
+    const payload = await readStdin(STDIN_TIMEOUT_MS, STDIN_LIMIT_BYTES);
+    let event = null;
+    // payload 只用來判斷事件種類：不寫檔、不進 argv、不進任何訊息。
+    if (payload !== null) { try { event = JSON.parse(payload).hook_event_name; } catch { /* 非 JSON 就當沒發生 */ } }
+    if (event === 'Stop' || event === 'SessionEnd') startWorker();
+    // 明確結束，不等 stdin 或 spawn 的 error 事件：hook 永遠不該擋住 Codex。
+    process.exit(0);
+  }
   if (process.argv[2] === '--notify') {
     let type;
     try { type = JSON.parse(process.argv[3] || '').type; } catch { fail('Invalid Codex notify JSON.'); }
     if (type !== 'agent-turn-complete') return;
-    // Only event type is examined. Do not pass messages, thread id, cwd, or the raw argv to worker.
-    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--worker'], { detached: true, stdio: 'ignore', windowsHide: true });
-    child.on('error', () => error('Could not start Codex sync worker.'));
-    child.unref();
+    startWorker();
     return;
   }
-  if (process.argv.length > 2 && !worker) fail('Usage: codex-sync.mjs [--notify <event JSON>]');
+  if (process.argv.length > 2 && !worker) fail('Usage: codex-sync.mjs [--hook | --notify <event JSON>]');
   await sync();
 }
 
