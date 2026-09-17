@@ -9,6 +9,7 @@
 - typecheck、CLI build、server build 全綠；`spectra validate add-codex-hook-wiring` 通過；`git diff --check` 無 whitespace error。
 - Node built CLI 對 loopback Node HTTP server 的 smoke：暫存 HOME／CODEX_HOME（路徑含空白），setup 後 `settings.json` 與 `hooks.json` 都含 tracker hook，update 兩次後三個檔案 sha256 不變、`config.toml` 位元組不變。
 - **已知限制（med）**：`$CODEX_HOME/hooks.json` 若是 symlink（例如以 dotfiles 管理），既有的 `installFiles` 非一般檔案防護會拒絕寫入，整筆交易不執行並回傳非零。失敗可見且不破壞任何檔案，但該機器需先把 symlink 換成一般檔案。詳見下方「symlink 形狀」。
+- **Codex stop-review 閘未能執行**：該帳號的 Codex 額度已用盡（`ERROR: You've hit your usage limit ... try again at Sep 19th, 2026 5:00 PM`），連 `codex exec "Reply with exactly: PING_OK"` 都回同一個錯。因此本次變更**沒有經過獨立的 Codex 審查**，不冒稱已審。與前一個 change 的「跨模型 review 受額度限制」屬同一類限制。
 - 未發布 npm、未部署 server、未 push。Windows／Linux 未實機驗證，沿用前一個 change 的限制。
 
 ## 環境與隔離
