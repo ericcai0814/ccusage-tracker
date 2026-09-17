@@ -15,13 +15,13 @@
 > 團隊 Claude Code／Codex token 用量追蹤工具，基於 [ccusage](https://github.com/ryoppippi/ccusage) 建立多人彙整層。
 > 沿用訂閱／OAuth 的本機用量紀錄，不需要模型 API key，不上傳對話內容。
 
-**未發佈：** 本分支新增的 `update`、`sync codex` 與 Codex 腳本尚未發布到 npm 或部署到 server。以下新指令須等對應 CLI 發布、server 部署後才可使用；本機可先 build，再以 `node packages/cli/dist/index.js <command>` 執行。
+**未發佈：** 本分支新增的 `update`、Codex hooks 接線與 Codex 腳本尚未發布到 npm 或部署到 server。以下新指令須等對應 CLI 發布、server 部署後才可使用；本機可先 build，再以 `node packages/cli/dist/index.js <command>` 執行。
 
 `#claude-code` · `#ccusage` · `#token-usage` · `#self-hosted` · `#hono` · `#bun` · `#sqlite` · `#typescript` · `#zeabur`
 
 ## 它解決什麼問題
 
-彙整團隊成員的 Claude Code 與 Codex 用量。Claude 由每輪對話結束與 session 結束的 hooks 上報；Codex 可獨立手動同步，也可選擇每輪完成時通知上報，無須啟動 Claude。
+彙整團隊成員的 Claude Code 與 Codex 用量。兩邊都由每輪對話結束（Stop）與 session 結束（SessionEnd）的 hooks 自動上報，跑一次 `setup` 或 `update` 就接好；Codex 多一個平台強制的步驟：在 Codex 內執行一次 `/hooks` 信任。Codex 不需要安裝或啟動 Claude Code。
 
 ## 架構
 
@@ -69,7 +69,7 @@
 ### 隱私與成本
 
 - 用量上報只傳成員／日期／來源、token 計數、模型名稱和成本估算；Claude 另保留既有 session 行為統計，不傳原始 prompt、回覆或工具結果
-- Codex notify 的 JSON 可能含對話內容；tracker 只判斷事件種類，丟棄內容，不寫入 buffer 或日誌
+- Codex hook 事件（stdin JSON）與舊 notify payload 都可能含對話內容；tracker 只讀 `hook_event_name` 判斷事件種類，丟棄其餘內容，不寫入 buffer、argv 或日誌
 - 金額是 collector 估算的 API 等值成本，不是 ChatGPT／Claude 訂閱帳單；不會呼叫模型 API
 - Hook 失敗不影響 Claude Code 正常運作（永遠 exit 0）
 
@@ -86,7 +86,7 @@ npx ccusage-tracker@latest setup
 - **Server URL**：團隊自架的 tracker 網址（例如 `https://cctracker.erictree.me`）
 - **Team Key**：向管理員索取的 tracker 存取憑證，與模型 API key 無關
 
-> 既有 `curl -fsSL <server>/setup.sh | bash` 與 PowerShell `irm <server>/setup.ps1 | iex` 仍是 Claude 安裝入口；它們不下載 Codex 腳本、不設定 Codex notify，也不是非互動更新。採用 Codex 請使用本版 CLI 的 setup／update。
+> 既有 `curl -fsSL <server>/setup.sh | bash` 與 PowerShell `irm <server>/setup.ps1 | iex` 仍是 Claude 安裝入口；它們不下載 Codex 腳本、不接 Codex hooks，也不是非互動更新。採用 Codex 請使用本版 CLI 的 setup／update。
 
 ### Setup 做了什麼
 
@@ -94,11 +94,15 @@ npx ccusage-tracker@latest setup
 
 | 步驟 | 動作 | 路徑/說明 |
 |------|------|----------|
-| 1 | 詢問名字、server URL、Team Key | CLI 檢查 collector，但不自動安裝全域套件 |
+| 1 | 詢問名字、server URL、Team Key | 同時偵測本機有哪些工具（Claude Code／Codex），每個偵測到的工具各印一行結果 |
 | 2 | 寫入設定檔 | `~/.config/ccusage-tracker/config.json` |
 | 3a | 下載上報 scripts | `~/.config/ccusage-tracker/session-end.mjs`、`session-start.mjs`、支援時的 `codex-sync.mjs` |
-| 3b | 注入 SessionStart + SessionEnd + Stop hook | 修改 `~/.claude/settings.json`（先備份；命令字串會自動 migrate 0.1.1 舊格式） |
-| 4 | 驗證 server 連線 | `GET /api/health` |
+| 3b | 注入 Claude 的 SessionStart + SessionEnd + Stop hook | 修改 `~/.claude/settings.json`（先備份；命令字串會自動 migrate 0.1.1 舊格式） |
+| 3c | 注入 Codex 的 Stop + SessionEnd hook | append 到 `$CODEX_HOME/hooks.json`（先備份；不修改 `config.toml`）。之後要在 Codex 內跑一次 `/hooks` 信任 |
+| 4 | 確認 collector | 缺 `ccusage` 時自動執行 `npm install -g ccusage@20.0.20` 並印出該指令；設 `CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL=1` 可跳過 |
+| 5 | 驗證 server 連線 | `GET /api/health` |
+
+兩個工具都沒偵測到時，`setup` 仍會寫入設定並以 exit 0 結束，提示裝好工具後再跑 `update`；`update` 在同樣情況回傳非零。
 
 > macOS/Linux 的 `setup.sh` 另會自動安裝 `jq`（brew/apt/apk）用於合併 `settings.json`；Windows 的 `setup.ps1` 改用 PowerShell 原生 JSON，不需 jq。兩者裝出的上報 hook 都是 `node session-end.mjs`。
 
@@ -109,17 +113,23 @@ npx ccusage-tracker@latest setup
   config.json          # server URL、team key、成員名字
   session-end.mjs      # 共用上報腳本（Stop 與 SessionEnd 都跑這個，靠 --mode 區分）
   session-start.mjs    # SessionStart hook script（記錄 model）
-  codex-sync.mjs       # Codex 手動同步／opt-in notify
+  codex-sync.mjs       # Codex 上報腳本（--hook 由 Codex hooks 觸發，無參數為手動同步）
   sessions/            # 各 session 的 model 暫存（SessionEnd 讀後清除）
   last-flush.txt       # Stop hook 上次上報時間戳（5min throttle 用）
   buffer.jsonl         # POST 失敗時的本機暫存（自動建立/清除）
   codex-buffer.jsonl   # Codex 獨立待送快照
   codex-last-error.txt # Codex 最近錯誤（無原始內容）
   codex-last-upload.txt # Codex 確認送達時間
+  codex-last-flush.txt # Codex hook 上次觸發時間戳（5min throttle 用）
 
 ~/.claude/
   settings.json        # 被加入了 SessionStart + SessionEnd + Stop hooks
   settings.json.backup # 原始 settings.json 備份（只有 settings 真有變動時才產生）
+
+$CODEX_HOME/           # 預設 ~/.codex
+  hooks.json           # 被 append 了 tracker 的 Stop 與 SessionEnd hook
+  hooks.json.backup    # 原始 hooks.json 備份（只有真有變動時才產生）
+  config.toml          # tracker 只讀不寫；信任狀態由 Codex 自己記在這裡
 ```
 
 ### 更新 Hook 腳本
@@ -132,7 +142,7 @@ npx ccusage-tracker@latest update
 
 `@latest` 執行 npm 最新**已發佈 CLI**，不會單憑這個標籤刷新 server 下發的 hooks。`update` 才會從設定中的原 server 下載腳本；新 hook 功能也需要 server 先部署對應版本。
 
-更新保留 `config.json` 原始位元組、兩個來源的 buffer、sessions 與第三方 hooks。完整下載並驗證後才安裝，變更檔案先備份，重跑不會累加 tracker hooks。缺少／無效設定會要求先 setup 並回傳非零；下載或安裝失敗也會回傳非零。舊 server 的 Codex 路由回覆 404／410 時，保留 Claude 路徑並明確提示不支援 Codex，其他下載錯誤不當成相容降級。
+`update` 與 `setup` 跑同一套流程：偵測工具、更新腳本、接上兩邊的 hooks、確認 collector。更新保留 `config.json` 原始位元組、兩個來源的 buffer、sessions 與第三方 hooks；`settings.json` 與 `hooks.json` 屬於同一筆交易，任一步失敗兩邊都回到原狀。既有的第三方 Codex hook 群組位元組不變、順序不動，tracker 只 append 到陣列尾端或就地替換自己那一份 —— Codex 的信任 key 以群組索引組成，重排會讓使用者其他 hook 全部變成「已修改」。`$CODEX_HOME/config.toml` 一律不修改。缺少／無效設定會要求先 setup 並回傳非零；下載或安裝失敗也會回傳非零。舊 server 的 Codex 路由回覆 404／410 時，保留 Claude 路徑、不寫 `hooks.json`（hook 指向不存在的腳本比沒有 hook 更糟），並明確提示不支援 Codex，其他下載錯誤不當成相容降級。
 
 若習慣全域安裝，CLI 套件更新與 hook 更新是兩個步驟：
 
@@ -147,32 +157,49 @@ tracker update
 
 沿用已登入 ChatGPT 訂閱／OAuth 的 Codex CLI。本工具讀取既有本機 usage 紀錄，不需要 OpenAI API key，也不會登入或改寫 Codex 認證。
 
-先安裝已驗證版本的 collector，並讓 `ccusage` 在終端機及 Codex 的 PATH 中可執行：
-
 ```bash
-npm install -g ccusage@20.0.20
-ccusage --version
-
 # 首次使用：填寫 tracker 連線設定；已有設定者改跑 update
 npx ccusage-tracker@latest setup
-npx ccusage-tracker@latest sync codex
+
+# 接著在 Codex 內執行一次，信任 tracker 的 hooks
+/hooks
+
 npx ccusage-tracker@latest status
 npx ccusage-tracker@latest report --period today --json
 ```
 
-既有使用者只需 `npx ccusage-tracker@latest update`，再執行 `sync codex`。即使沒有安裝或啟動 Claude Code 也能同步；setup／update 仍會建立可供日後使用的 Claude hooks。
+`setup`／`update` 會偵測 Codex、把 tracker 的 Stop 與 SessionEnd hook 接上，並在缺 collector 時自動安裝已驗證的 `ccusage@20.0.20`。既有使用者只需 `npx ccusage-tracker@latest update`，再依輸出在 Codex 內信任一次。
 
-### 選擇每輪完成自動同步
+### 在 Codex 內信任一次（必要步驟）
 
-setup／update 不改寫 Codex 設定。若要自動同步，在 `$CODEX_HOME/config.toml`（預設 `~/.codex/config.toml`）的**頂層、任何 `[table]` 之前**手動加入：
+Codex 會**靜默略過**尚未信任的新 hook —— 裝好了卻沒在跑，是這個功能最容易發生的失效。安裝或更新後，在 Codex 內執行 `/hooks` 並信任 ccusage-tracker 的項目，Codex 會把信任紀錄寫進自己的 `config.toml`。
 
-```toml
-notify = ["node", "/Users/your-name/.config/ccusage-tracker/codex-sync.mjs", "--notify"]
+`npx ccusage-tracker@latest status` 的 `Codex hooks:` 一行會顯示目前狀態：
+
+| 輸出 | 意思 |
+|---|---|
+| `installed, trust recorded` | hooks 已安裝且找得到對應的信任紀錄 |
+| `installed, awaiting trust (open /hooks in Codex)` | hooks 已安裝但還沒信任，Codex 現在不會執行它 |
+| `installed, disabled in Codex` | 使用者在 Codex 內把它停用了 |
+| `not installed` | 還沒接上，跑 `update` |
+
+tracker 只讀 `config.toml` 判斷有沒有信任紀錄，不驗證雜湊值（演算法是 Codex 內部實作），所以措辭是 trust recorded 而不是 trusted，也永遠不會替使用者寫入 `hooks.state`。
+
+Codex hook 的 command 在每次 update 之間逐位元相同，腳本內容更新不需要重新信任；只有 hook 設定本身改變（例如從舊格式升級）才需要再信任一次。
+
+### 手動補送與除錯
+
+`sync codex` 保留為手動補送與除錯入口，正常運作不依賴它：
+
+```bash
+npx ccusage-tracker@latest sync codex
 ```
 
-把路徑換成自己的完整絕對路徑；TOML 陣列內的空白路徑是一個參數，不要使用 `~`。Windows 可使用 `"C:/Users/Your Name/.config/ccusage-tracker/codex-sync.mjs"`。若 Node 不在 Codex 的 PATH，第一項也改成 Node 的絕對路徑。
+它會等待結果並回傳真實的成功／失敗 exit code，且不受 5 分鐘節流限制 —— 想立刻確認最後用量時用它。
 
-若已有 `notify`，保留它：繼續手動 `sync codex`，或由既有通知程式額外呼叫此腳本，不能加入第二個同名設定。重新啟動 Codex CLI 後生效。[官方 notify 文件](https://developers.openai.com/codex/config-advanced/#notifications) 定義完成事件為 `agent-turn-complete`，payload 透過單一 JSON argv 傳入。tracker 判斷事件後只啟動背景同步，不轉交 payload 內容；`status` 的 Codex 成功時間才代表送達。
+### 舊的 notify 設定（deprecated）
+
+先前版本要求手動在 `$CODEX_HOME/config.toml` 加入 `notify = [... "--notify"]`。hooks 已接管自動上報，該路徑僅為相容保留。若你設定過，請自行從 `config.toml` 移除 tracker 那一項以免重複觸發；`setup`／`update` 偵測到時會提示，但**不會替你編輯 TOML**。即使沒移除也不會算錯：同日快照冪等、鎖互斥，而且兩條觸發路徑共用同一個 5 分鐘節流，只是多跑一次。
 
 ### 計數與相容範圍
 
@@ -188,13 +215,13 @@ Codex 原始 input 1000、cached input 400、output 200、reasoning 50，經 20.
 
 同步當地時區的**當日**用量，不回補從未上報的歷史日期。collector 依 `CODEX_HOME` 讀取本機 logs；沒有可讀 usage 就顯示 no data，不送假零。請保留 Codex 原始 compact JSONL；實測此原生發佈包會略過部分重新排版、含空白的 JSONL。跨日仍需在有用量的當天觸發同步。server 的 Today 篩選沿用 UTC，與本機日期不同時可改看 month 或指定日期的 daily API。
 
-Codex 使用獨立鎖與 `codex-buffer.jsonl`；同日舊快照先被新快照取代，再重送。buffer 保留到送達，不影響 Claude 的 buffer／5 分鐘 Stop throttle。Codex notify 沒有額外的 5 分鐘節流，同來源同步中會略過重疊執行；需要確認最後用量時再手動同步。`sync codex` 回傳非零表示 collector、設定或送出失敗；用 `status` 查看 `codex-last-error.txt`、待送筆數與成功時間。Codex 不提供 session 行為分析。
+Codex 使用獨立鎖與 `codex-buffer.jsonl`；同日舊快照先被新快照取代，再重送。buffer 保留到送達，不影響 Claude 的 buffer／5 分鐘 Stop throttle。Codex 的 hook 與相容 notify 觸發共用自己的 5 分鐘節流（`codex-last-flush.txt`），同來源同步中會略過重疊執行；手動 `sync codex` 不受節流限制，需要確認最後用量時用它。`sync codex` 回傳非零表示 collector、設定或送出失敗；用 `status` 查看 `codex-last-error.txt`、待送筆數與成功時間。Codex 不提供 session 行為分析。
 
 若過期鎖回收中途被終止，可能留下 `codex-worker.lock.reclaim` 或 `worker.lock.reclaim`。只有在 recovery 錯誤持續、且已停止對應 workers 後，才移除該來源的 `.reclaim` 標記並重試。
 
 ## 卸載
 
-若手動設定了 Codex `notify`，先移除或調整該設定，再卸載 tracker；卸載腳本不修改 Codex TOML。
+卸載前請自行移除 `$CODEX_HOME/hooks.json` 內的 tracker 群組，以及（若設定過）`config.toml` 的 tracker `notify`；卸載腳本不修改 Codex 的 hooks.json 或 TOML。注意 Codex 的信任 key 以群組索引組成，移除中間的群組會讓其後的 hook 需要重新信任。
 
 一行指令：
 
@@ -262,7 +289,7 @@ npx ccusage-tracker@latest status
 | `status` | （無） | 顯示 config 路徑、成員名字、server 可達性與版本、`buffer.jsonl` 待送筆數、`ccusage` 是否安裝 |
 | `setup` | （無） | 互動式設定 server 連線並注入 hook（見上方「成員安裝」） |
 | `update` | （無） | 保留既有設定、零提示更新 server 下發腳本與 tracker hooks |
-| `sync` | `codex` | 立即同步 Codex 當日快照，回傳真實成功／失敗 |
+| `sync` | `codex` | 手動補送／除錯：立即同步 Codex 當日快照，回傳真實成功／失敗（正常運作不需要它） |
 
 ## 管理員
 

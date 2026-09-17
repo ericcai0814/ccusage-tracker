@@ -4,7 +4,7 @@ CLI for [ccusage-tracker](https://github.com/ericcai0814/ccusage-tracker), a sel
 
 Reports usage from local subscription/OAuth logs. No model API key is needed, and reporting does not upload prompts, responses, or tool results. The tracker team key is a separate server access credential.
 
-**Unreleased:** `update`, `sync codex`, and the Codex script on this branch have not been published or deployed. The commands below require the corresponding CLI release and server deployment. For a local checkout, build with `pnpm --filter ccusage-tracker build` and use `node packages/cli/dist/index.js <command>`.
+**Unreleased:** `update`, the Codex hook wiring, and the Codex script on this branch have not been published or deployed. The commands below require the corresponding CLI release and server deployment. For a local checkout, build with `pnpm --filter ccusage-tracker build` and use `node packages/cli/dist/index.js <command>`.
 
 ## Quick start
 
@@ -14,7 +14,9 @@ npx ccusage-tracker@latest setup
 
 You'll be asked for your name, the team's server URL, and a team key (ask your admin).
 
-Setup downloads scripts and installs Claude hooks. It does not install a global collector or change Codex configuration. Codex can run independently without Claude Code installed.
+Setup detects which supported tools exist on this machine and wires automatic reporting for each of them: Claude Code hooks in `~/.claude/settings.json`, Codex hooks in `$CODEX_HOME/hooks.json`. It installs the verified collector when missing, and never modifies `$CODEX_HOME/config.toml`.
+
+Codex needs one extra, platform-mandated step: **open Codex and run `/hooks` once to trust the ccusage-tracker hooks.** Codex silently skips hooks it has not been told to trust. Codex can run independently without Claude Code installed.
 
 ## Updating an existing installation
 
@@ -22,9 +24,13 @@ Setup downloads scripts and installs Claude hooks. It does not install a global 
 npx ccusage-tracker@latest update
 ```
 
-`update` asks no questions and reuses the existing configuration. It preserves the exact config bytes, buffered usage, session data, and unrelated settings/hooks. All required scripts are downloaded and syntax-checked before installation; changed files are backed up. Repeated updates do not duplicate tracker hooks. Missing/invalid configuration, download failures, or installation failures return a nonzero exit status; run `setup` if configuration is missing.
+`update` asks no questions and reuses the existing configuration, running the same detection, hook installation and collector step as `setup`. It preserves the exact config bytes, buffered usage, session data, and unrelated settings/hooks in both files. All required scripts are downloaded and syntax-checked before installation; `settings.json` and `hooks.json` are written in one transaction, so a failure in either leaves both untouched. Changed files are backed up. Repeated updates do not duplicate tracker hooks and leave both files byte-identical.
 
-`@latest` runs the latest **published CLI**. It does not refresh server-downloaded hooks by itself: `update` downloads those scripts, and new hook features require the corresponding server deployment. A server returning 404/410 for the optional Codex script keeps the Claude installation working and prints a compatibility message. Other failures abort the update.
+Third-party Codex hook groups keep their exact bytes and their position: the tracker group is only appended at the end of the event array, or replaced in place at its own index. Codex trust keys are built from group indexes, so reordering would invalidate the trust of every hook after the moved one.
+
+Missing/invalid configuration, download failures, or installation failures return a nonzero exit status; run `setup` if configuration is missing. When neither Claude Code nor Codex is detected, `update` returns nonzero and tells you to install one first (`setup` still saves the configuration and exits 0).
+
+`@latest` runs the latest **published CLI**. It does not refresh server-downloaded hooks by itself: `update` downloads those scripts, and new hook features require the corresponding server deployment. A server returning 404/410 for the optional Codex script keeps the Claude installation working, leaves `$CODEX_HOME/hooks.json` untouched (a hook pointing at a missing script is worse than no hook), and prints a compatibility message. Other failures abort the update.
 
 For a global installation, update the CLI package and hooks separately:
 
@@ -40,7 +46,7 @@ There is no universal `npx update` command.
 ```
 ccusage-tracker setup    Install hooks and configure server connection
 ccusage-tracker update   Refresh scripts/hooks using existing configuration
-ccusage-tracker sync codex  Synchronize today's Codex usage
+ccusage-tracker sync codex  Report Codex usage now (manual fallback / debugging)
 ccusage-tracker report   View team token usage report
 ccusage-tracker status   Check configuration and each source's upload status
 ```
@@ -55,36 +61,62 @@ After installation, the binary is also available as `tracker` (if installed glob
 - **Stop** — primary reporting path: POSTs token usage + session metrics after each assistant turn, throttled to once per 5 minutes
 - **SessionEnd** — backup path: same payload at session exit, in case Stop missed the last window
 
-Hook scripts come from your configured tracker server. Setup/update migrate old tracker commands and quote paths containing spaces. Existing shell/PowerShell installers remain Claude-only; they do not install Codex reporting or configure notify.
+For Codex it appends two groups to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`), each a single `node "<path>/codex-sync.mjs" --hook` command with a 45 second timeout and no `matcher` key:
+
+- **Stop** — reports after each turn, throttled to once per 5 minutes
+- **SessionEnd** — backup path at session exit
+
+The hook process only reads `hook_event_name` from the event on stdin and hands the work to a detached background worker; it never blocks Codex and never forwards payload content. The command string is byte-identical across updates, so refreshing the scripts does not require re-trusting the hooks.
+
+Hook scripts come from your configured tracker server. Setup/update migrate old tracker commands and quote paths containing spaces. Existing shell/PowerShell installers remain Claude-only; they do not install Codex reporting.
+
+### Collector
+
+Setup and update run the same collector step. When `ccusage` is missing, the CLI prints and runs `npm install -g ccusage@20.0.20`. When a different major version is installed, it warns that Claude reporting works but Codex requires 20.0.20, and does not replace it. Set `CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL=1` to skip the automatic install and just print the command. A failed install never changes the exit status of setup or update — `status` reports what is missing.
 
 ## Codex usage
 
-Keep your existing ChatGPT subscription/OAuth login. Install the verified collector, with `ccusage` available on both your terminal's and Codex's PATH:
+Keep your existing ChatGPT subscription/OAuth login. Make sure `ccusage` is on both your terminal's and Codex's PATH — setup installs it for you when it is missing.
 
 ```bash
-npm install -g ccusage@20.0.20
-ccusage --version
-
 # First installation; existing users run update instead.
 npx ccusage-tracker@latest setup
-npx ccusage-tracker@latest sync codex
+
+# Then, inside Codex, trust the hooks once:
+/hooks
+
 npx ccusage-tracker@latest status
 npx ccusage-tracker@latest report --period today --json
 ```
 
-Manual sync waits for the result and returns nonzero on failure. Status shows the Codex script/collector, pending buffer, last error, and last successful upload. No readable usage means “no data,” without a fabricated zero snapshot.
+### Trust the hooks once
 
-### Optional automatic reporting
+Codex **silently skips** hooks it has not been told to trust, so "installed but never runs" is the most likely way this fails. After setup or update, run `/hooks` inside Codex and trust the ccusage-tracker entries. Codex records that in its own `config.toml`.
 
-Setup/update never overwrite an existing Codex `notify`. To opt in, add this **at the top level, before any `[table]`**, in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`):
+`status` prints one `Codex hooks:` line:
 
-```toml
-notify = ["node", "/Users/your-name/.config/ccusage-tracker/codex-sync.mjs", "--notify"]
+| Output | Meaning |
+|---|---|
+| `installed, trust recorded` | Hooks are installed and a matching trust record exists |
+| `installed, awaiting trust (open /hooks in Codex)` | Installed, but Codex will not run them yet |
+| `installed, disabled in Codex` | You disabled them inside Codex |
+| `not installed` | Not wired yet — run `update` |
+
+The CLI only reads `config.toml` to see whether a trust record exists. It never validates the hash (Codex's algorithm is internal, hence "trust recorded" rather than "trusted") and never writes `hooks.state` on your behalf.
+
+### Manual fallback
+
+`sync codex` remains available for manual reporting and debugging; normal operation does not depend on it. It waits for the result, returns nonzero on failure, and ignores the five-minute throttle, so it is the way to confirm the final usage right now.
+
+```bash
+npx ccusage-tracker@latest sync codex
 ```
 
-Use your actual absolute script path, not `~`. Spaces are safe inside an array element. On Windows, a path such as `"C:/Users/Your Name/.config/ccusage-tracker/codex-sync.mjs"` works; use an absolute Node path too if Node is absent from Codex's PATH. Restart Codex CLI after editing.
+Status shows the Codex script/collector, hook trust state, pending buffer, last error, and last successful upload. No readable usage means “no data,” without a fabricated zero snapshot.
 
-If you already have `notify`, keep it and use manual sync or have your existing notification program call this script. Do not add a second `notify` key. Codex supplies the event as one JSON argument; the script accepts `agent-turn-complete`, discards message content, and starts a background worker without the payload. See the [official notify documentation](https://developers.openai.com/codex/config-advanced/#notifications). Remove this notify entry before uninstalling tracker; the uninstall script does not edit Codex TOML.
+### The old notify entry (deprecated)
+
+Earlier versions asked you to add `notify = [... "--notify"]` to `$CODEX_HOME/config.toml` by hand. Hooks now handle automatic reporting and that path is kept only for compatibility. If you configured it, remove the tracker entry yourself to avoid triggering twice — setup/update warn when they see it but **never edit the TOML**. Leaving it in place cannot corrupt the data: same-day snapshots are idempotent, the lock is exclusive, and both trigger paths share the same five-minute throttle. Remove the tracker group from `hooks.json` (and the notify entry, if any) before uninstalling tracker; the uninstall script edits neither file.
 
 ### Accounting and limits
 
@@ -92,7 +124,7 @@ If you already have `notify`, keep it and use manual sync or have your existing 
 - Claude retains `daily`; Codex uses `codex-daily`. Each is an idempotent member/date snapshot, so repeats update rather than duplicate usage. Reports add the two sources once. Costs are API-equivalent estimates, not subscription invoices.
 - Verified published collectors are Claude `18.0.9`/`18.0.10` and Claude/Codex `20.0.20`; these are evidence, not an exact patch whitelist. The legacy family (major <=19) retains `daily --json --since`; major 20 requires explicit `claude daily` or `codex daily`, with day/timezone flags and schema validation on every result. Unknown majors (such as 99), unsupported commands, and invalid schemas fail visibly without falling back to unified daily. `20.0.21` is a synthetic compatibility fixture, not a tested published release; untested versions are not guaranteed. The separate `@ccusage/codex 19.0.0`/`ccusage-codex` package is not used.
 - Sync collects the current local day only, with no historical backfill. Keep original compact Codex JSONL: the tested native collector can skip reformatted logs. The server's Today filter uses UTC; use `--period month` or the daily API when local and UTC dates differ.
-- Codex has its own lock, buffer, and error/success markers in `~/.config/ccusage-tracker/`. Failed snapshots remain until delivered; newer same-day snapshots replace stale ones before retry. Claude keeps its separate buffer and five-minute Stop throttle. Codex notify has no additional throttle and skips overlapping syncs; manual sync can confirm the final usage.
+- Codex has its own lock, buffer, and error/success markers in `~/.config/ccusage-tracker/`. Failed snapshots remain until delivered; newer same-day snapshots replace stale ones before retry. Claude keeps its separate buffer and five-minute Stop throttle. Codex hook and legacy notify triggers share their own five-minute throttle recorded in `codex-last-flush.txt` and skip overlapping syncs; manual sync ignores the throttle and can confirm the final usage.
 - An interrupted stale-lock recovery can leave `codex-worker.lock.reclaim` or `worker.lock.reclaim`. If the reported recovery error persists, stop the corresponding workers before removing only that marker and retrying.
 - Codex session behavior analytics are outside this feature.
 
