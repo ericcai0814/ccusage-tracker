@@ -1,5 +1,40 @@
 # Changelog
 
+## [Unreleased]
+
+本節功能尚未發布到 npm 或部署到 server；版本號維持不變。
+
+### Added
+
+- `tracker sync codex`：可在未安裝或啟動 Claude Code 時同步 Codex 當日用量；另提供手動 opt-in 的 Codex `notify`，每輪完成後背景同步，不修改既有 Codex 設定。
+- Codex 腳本下載路由、獨立 buffer／鎖／成功與錯誤狀態；失敗可重試，非法格式與未知 collector major 會明確停止上報，不送假零。
+- `tracker update`：零提示沿用設定，完整下載與驗證後才更新腳本，備份變更檔案並保留 config 原始位元組、buffer、sessions 與第三方 hooks。舊 server 缺少 Codex 路由時保留 Claude 功能並提示相容限制。
+
+### Changed
+
+- Codex 使用實測的 `ccusage@20.0.20 codex daily`：`{daily, totals}`、`costUSD`、`models` 物件；input 已排除 cache read，reasoning 已含於 output，不重複計數。沿用訂閱／OAuth 的本機紀錄，不需要模型 API key，不上傳對話內容。
+- Claude 保留 legacy（major <=19）的 `daily --json --since` 路徑，major 20 使用明確來源的 `claude daily`，避免新版預設聚合把 Codex 重複算入。Claude `daily`／Codex `codex-daily` 分別 upsert，報表加總兩者。
+- Tracker 維持 Node >=18；collector 有各自的環境要求。20.0.20 原生包實測平台為 macOS arm64。未採用要求 Node >=22 的獨立 `@ccusage/codex@19.0.0`。
+
+### Fixed
+
+- 移除 reporter 精確 patch 白名單，依 legacy／major-20 指令系列及嚴格 schema 驗證判定可上報資料；保留未知 major 拒絕與來源隔離。真實 18.0.9 回歸及合成 20.0.21 相容／非法輸出測試涵蓋 Claude 與 Codex，不宣稱未測發佈包相容。
+- 同日舊 buffer 不再覆寫新快照；兩個來源的 buffer 與同步互不覆蓋。
+- Worker 使用原子鎖與互斥的過期鎖回收，避免並行同步刪掉另一個 worker 的鎖。
+- `status` 隱藏 Team Key 內容，並顯示 Codex collector、待送筆數、錯誤與成功時間。
+
+### Upgrade
+
+對應 CLI 發布、server 部署後，既有成員執行：
+
+```bash
+npx ccusage-tracker@latest update
+```
+
+`@latest` 只選擇最新已發布 CLI，不會自行刷新 server 下發腳本；`update` 才會下載。首次安裝仍用 `npx ccusage-tracker@latest setup`。全域 CLI 更新是另一個步驟：`npm install -g ccusage-tracker@latest`，再跑 `tracker update`。
+
+採用 Codex 時先安裝 `npm install -g ccusage@20.0.20`，再跑 `npx ccusage-tracker@latest sync codex`，以 `status`／`report` 驗證。完整 notify 設定見 README。同步只處理本機當日，不回補未上報歷史；成本為估算，非訂閱帳單。
+
 ## [0.3.7] - 2026-08-19
 
 治本收尾。0.3.5 / 0.3.6 都在調整 timeout 與觀測性，但沒有動到結構：只要上報還在 hook 的時間預算裡，`ccusage` 的耗時成長遲早會再次追上。

@@ -1,7 +1,8 @@
 import { createInterface, type Interface as ReadlineInterface } from "node:readline";
 import { spawnSync } from "node:child_process";
-import { writeConfig, type TrackerConfig } from "../config";
+import { isTrackerConfig, writeConfig, type TrackerConfig } from "../config";
 import { installHook } from "../hooks";
+import { CODEX_COMPATIBILITY_MESSAGE, downloadScripts, fetchHookScript, type TrackerScripts } from "../scripts";
 
 // piped stdin 下，readline 的 'line' event 會在下一個 rl.question 註冊監聽器前就觸發，
 // 導致行被吞掉、後續 prompt 永遠等不到 callback。
@@ -47,20 +48,10 @@ function defaultCheckCcusage(): boolean {
   }
 }
 
-async function defaultFetchHookScript(serverUrl: string, scriptName: string): Promise<string | null> {
-  try {
-    const res = await fetch(`${serverUrl}/scripts/${scriptName}`, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
-  }
-}
-
 export interface SetupDeps {
   prompt: (question: string) => Promise<string>;
   writeConfig: (config: TrackerConfig) => void;
-  installHook: (scripts: { sessionEnd: string; sessionStart: string }) => {
+  installHook: (scripts: TrackerScripts) => {
     sessionEndChanged: boolean;
     sessionStartChanged: boolean;
     stopChanged: boolean;
@@ -78,7 +69,7 @@ const defaultDeps: SetupDeps = {
   prompt: defaultPrompt,
   writeConfig,
   installHook,
-  fetchHookScript: defaultFetchHookScript,
+  fetchHookScript,
   checkServer: defaultCheckServer,
   checkCcusage: defaultCheckCcusage,
   log: (msg) => console.log(msg),
@@ -126,32 +117,30 @@ async function runSetup(deps: SetupDeps): Promise<void> {
     team_key: teamKey,
     member_name: name,
   };
+  if (!isTrackerConfig(config)) {
+    deps.warn("Invalid configuration. Server URL must use http or https without embedded credentials.");
+    deps.exit(1);
+    return;
+  }
   deps.writeConfig(config);
   deps.log("\nConfig saved.");
 
-  // Install hooks（從 server 下載最新的 .mjs 上報腳本，與 setup.sh/setup.ps1 一致：
-  // SessionEnd 上報用量、SessionStart 記錄 model）
-  const [sessionEnd, sessionStart] = await Promise.all([
-    deps.fetchHookScript(config.server_url, "session-end.mjs"),
-    deps.fetchHookScript(config.server_url, "session-start.mjs"),
-  ]);
-  if (sessionEnd && sessionStart) {
-    try {
-      const { sessionEndChanged, sessionStartChanged, stopChanged, backedUp } = deps.installHook({
-        sessionEnd,
-        sessionStart,
-      });
-      const anyChanged = sessionEndChanged || sessionStartChanged || stopChanged;
-      if (anyChanged) {
-        deps.log("SessionStart + SessionEnd + Stop hooks installed/updated." + (backedUp ? " (settings.json backed up)" : ""));
-      } else {
-        deps.log("SessionStart + SessionEnd + Stop hooks already up to date.");
-      }
-    } catch (err) {
-      deps.warn("Warning: Could not install hooks automatically. " + (err as Error).message);
+  // Shell installers remain Claude-only; the CLI also downloads optional Codex support.
+  try {
+    const scripts = await downloadScripts(config.server_url, deps.fetchHookScript);
+    const { sessionEndChanged, sessionStartChanged, stopChanged, backedUp } = deps.installHook(scripts);
+    const anyChanged = sessionEndChanged || sessionStartChanged || stopChanged;
+    if (anyChanged) {
+      deps.log("SessionStart + SessionEnd + Stop hooks installed/updated." + (backedUp ? " (changed files backed up)" : ""));
+    } else {
+      deps.log("SessionStart + SessionEnd + Stop hooks already up to date.");
     }
-  } else {
-    deps.warn("Warning: Could not download hook scripts from " + config.server_url);
+    if (scripts.codexSync === undefined) deps.warn(CODEX_COMPATIBILITY_MESSAGE);
+    else deps.log("Codex support installed. Run `tracker sync codex` to report usage. Codex notify is manual opt-in; existing config.toml is unchanged.");
+  } catch (err) {
+    deps.warn("Could not install tracker scripts. " + (err as Error).message + " Run `tracker update` after resolving the problem.");
+    deps.exit(1);
+    return;
   }
 
   // Verify server
@@ -167,7 +156,7 @@ async function runSetup(deps: SetupDeps): Promise<void> {
   if (hasCcusage) {
     deps.log("ccusage is installed.");
   } else {
-    deps.warn("Warning: ccusage not found. Install with: npx ccusage@latest");
+    deps.warn("Warning: ccusage not found. Install the verified Claude/Codex collector with: npm install -g ccusage@20.0.20");
   }
 
   deps.log("\nSetup complete!");

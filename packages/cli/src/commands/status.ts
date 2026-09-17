@@ -22,7 +22,11 @@ export async function statusCommand(): Promise<void> {
   if (config) {
     console.log(`  Member: ${config.member_name}`);
     console.log(`  Server: ${config.server_url}`);
-    console.log(`  Team Key: ${config.team_key.slice(0, 15)}...`);
+    console.log("  Team Key: configured");
+  } else {
+    console.log("Configuration is invalid. Run `tracker setup` to repair it.");
+    process.exitCode = 1;
+    return;
   }
 
   // Hook
@@ -97,7 +101,22 @@ export async function statusCommand(): Promise<void> {
   // --target node，Bun global 不存在會拋 ReferenceError 被 catch 吞掉，於是一律誤報
   // 「沒裝」—— 對照 session-end.mjs 同樣以 node 執行、同樣用 node:child_process。
   const probe = probeCcusage();
-  console.log(probe ? `ccusage: installed (${probe})` : "ccusage: not found (install with: npx ccusage@latest)");
+  console.log(probe ? `ccusage: installed (${probe})` : "ccusage: not found (install with: npm install -g ccusage@20.0.20)");
+  const codexScript = join(configDir, "codex-sync.mjs");
+  console.log(`\nCodex script: ${existsSync(codexScript) ? "installed" : "not installed (run tracker update with a Codex-capable server)"}`);
+  console.log(`Codex Node runtime: ${process.versions.node}`);
+  const hasCodexCollector = probe !== null && /^(?:ccusage\s+)?20\.0\.20$/.test(probe);
+  console.log(hasCodexCollector
+    ? "Codex collector: installed (ccusage 20.0.20)"
+    : `Codex collector: unavailable (${probe ? `unsupported version: ${probe}` : "ccusage missing"}; install with: npm install -g ccusage@20.0.20)`);
+  const codexBufferPath = join(configDir, "codex-buffer.jsonl");
+  const codexLines = existsSync(codexBufferPath) ? readFileSync(codexBufferPath, "utf8").trim().split("\n").filter(Boolean).length : 0;
+  console.log(`Codex buffer: ${codexLines} pending entr${codexLines === 1 ? "y" : "ies"}`);
+  const codexErrorPath = join(configDir, "codex-last-error.txt");
+  console.log(`Codex upload error: ${existsSync(codexErrorPath) ? readFileSync(codexErrorPath, "utf8").trim() : "none recorded"}`);
+  const codexUploadPath = join(configDir, "codex-last-upload.txt");
+  const codexUpload = existsSync(codexUploadPath) ? Number(readFileSync(codexUploadPath, "utf8").trim()) : NaN;
+  console.log(`Codex last successful upload: ${Number.isFinite(codexUpload) && codexUpload > 0 && !Number.isNaN(new Date(codexUpload).getTime()) ? new Date(codexUpload).toISOString() : "none recorded (run tracker sync codex)"}`);
 }
 
 // 只有「上報確實送達」才會更新 last-upload.txt。缺這一行的話，背景 worker

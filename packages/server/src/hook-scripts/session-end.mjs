@@ -6,7 +6,7 @@
 // worker 脫離 Claude Code 的 hook timeout，慢慢跑完 ccusage 與上報。
 // 這麼做是因為 ccusage 每次都全量掃描歷史用量檔，耗時隨累積資料單調成長 ——
 // 只要上報還綁在 hook 的時間預算裡，timeout 就是一條會被追上的線，不是安全邊界。
-import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, appendFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -97,6 +97,15 @@ async function flushBuffer(serverUrl, teamKey) {
   try {
     lines = readFileSync(BUFFER_FILE, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean);
   } catch { return; }
+  // 舊版可累積同 identity 多筆快照；任何一天都只重送最後一份，避免失敗重試降版。
+  const latest = new Map();
+  for (const line of lines) {
+    try {
+      const row = JSON.parse(line);
+      latest.set(JSON.stringify([row.member_name, row.date, row.session_id]), line);
+    } catch { /* 無效 buffer 不送出 */ }
+  }
+  lines = [...latest.values()];
   if (lines.length === 0) return;
 
   // 重送舊資料是次要目的，不能吃掉當日快照的時間預算，也不能自己跨過 DEADLINE_MS ——
@@ -273,6 +282,29 @@ function markSuccess() {
 
 function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
+function tokenCount(value) { return Number.isSafeInteger(value) && value >= 0; }
+
+function claudeRow(value, date) {
+  return value && value.date === date &&
+    ['inputTokens', 'outputTokens', 'cacheCreationTokens', 'cacheReadTokens'].every((k) => tokenCount(value[k])) &&
+    Number.isFinite(value.totalCost) && value.totalCost >= 0 &&
+    Array.isArray(value.modelsUsed) && value.modelsUsed.every((m) => typeof m === 'string' && m.length > 0);
+}
+
+// 新快照先取代同 identity 的待送資料；不能先送新數字，再重送舊數字把它覆蓋。
+function replaceBufferedSnapshot(body) {
+  const current = JSON.parse(body);
+  const lines = existsSync(BUFFER_FILE) ? readFileSync(BUFFER_FILE, 'utf8').split('\n').filter(Boolean) : [];
+  const remaining = lines.filter((line) => {
+    try {
+      const old = JSON.parse(line);
+      return old.member_name !== current.member_name || old.date !== current.date || old.session_id !== current.session_id;
+    } catch { return true; }
+  });
+  if (remaining.length) writeFileSync(BUFFER_FILE, remaining.join('\n') + '\n');
+  else if (existsSync(BUFFER_FILE)) unlinkSync(BUFFER_FILE);
+}
+
 async function postCurrentUsage(cfg) {
   const now = new Date();
   const yyyymmdd = '' + now.getFullYear() + pad2(now.getMonth() + 1) + pad2(now.getDate());
@@ -284,7 +316,25 @@ async function postCurrentUsage(cfg) {
   // yyyymmdd 由上面的 Date 組出、固定 8 位數字，無外部輸入，無注入風險。
   // timeout: spawnSync 是 sync 阻塞 event loop，外層 deadline 救不了，必須在這裡硬上限。
   // 這段只在 worker 裡跑，所以上限可以給到 120s 而不影響 session 結束的體感。
-  const r = spawnSync('ccusage daily --json --since ' + yyyymmdd,
+  const versionResult = spawnSync('ccusage --version',
+    { encoding: 'utf8', shell: true, timeout: 10000, killSignal: 'SIGKILL' });
+  const version = versionResult.stdout?.trim().replace(/^ccusage /, '');
+  const major = Number(version?.match(/^(\d+)\.\d+\.\d+$/)?.[1]);
+  const legacy = major <= 19;
+  // 18.0.9/18.0.10、20.0.20 是驗證證據，不是 patch 白名單。
+  // legacy daily 是 Claude-only；20 必須選 claude，並通過下方 schema 驗證。
+  if (versionResult.status !== 0 || (!legacy && major !== 20)) {
+    markError('ccusage 指令系列不支援或未安裝；已驗證版本為 18.0.9、18.0.10、20.0.20');
+    return;
+  }
+  // 保留舊 hook 的 flags，避免向 legacy collector 傳入新版限定參數。
+  let command = 'ccusage daily --json --since ' + yyyymmdd;
+  if (!legacy) {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (!/^[A-Za-z0-9_+./-]+$/.test(timezone)) { markError('系統時區無法辨識'); return; }
+    command = 'ccusage claude daily --json --since ' + yyyymmdd + ' --until ' + yyyymmdd + ' --timezone ' + timezone;
+  }
+  const r = spawnSync(command,
     { encoding: 'utf8', shell: true, timeout: CCUSAGE_TIMEOUT_MS, killSignal: 'SIGKILL' });
   if (!r || r.status !== 0 || !r.stdout) {
     markError(r && r.signal
@@ -292,28 +342,38 @@ async function postCurrentUsage(cfg) {
       : 'ccusage 執行失敗，當日用量未上報');
     return;
   }
-  let totals;
-  try { totals = JSON.parse(r.stdout).totals; } catch { markError('ccusage 輸出無法解析為 JSON，當日用量未上報'); return; }
-  if (!totals) { markError('ccusage 輸出缺少 totals 欄位，當日用量未上報'); return; }
+  let data;
+  try { data = JSON.parse(r.stdout); } catch { markError('ccusage 輸出無法解析為 JSON，當日用量未上報'); return; }
+  if (legacy && Array.isArray(data) && data.length === 0) { clearError(); return; }
+  if (!data || !Array.isArray(data.daily) || !data.totals || 'type' in data || 'data' in data || 'summary' in data) {
+    markError('ccusage 輸出格式不支援，當日用量未上報'); return;
+  }
+  if (data.daily.length === 0) { clearError(); return; }
+  if (data.daily.length !== 1 || !claudeRow(data.daily[0], dashDate)) {
+    markError('ccusage 當日日期或數值無效，當日用量未上報'); return;
+  }
+  const totals = data.daily[0];
   clearError();
 
   const body = JSON.stringify({
     member_name: cfg.member_name,
     date: dashDate,
     session_id: 'daily',
-    input_tokens: totals.inputTokens || 0,
-    output_tokens: totals.outputTokens || 0,
-    cache_creation_tokens: totals.cacheCreationTokens || 0,
-    cache_read_tokens: totals.cacheReadTokens || 0,
-    total_cost_usd: totals.totalCost || 0,
-    models: [],
+    input_tokens: totals.inputTokens,
+    output_tokens: totals.outputTokens,
+    cache_creation_tokens: totals.cacheCreationTokens,
+    cache_read_tokens: totals.cacheReadTokens,
+    total_cost_usd: totals.totalCost,
+    models: [...new Set(totals.modelsUsed)],
   });
 
+  try { replaceBufferedSnapshot(body); } catch { markError('buffer 無法更新，當日用量未上報'); return; }
   const ok = await postJson(cfg.server_url + '/api/ingest', cfg.team_key, body, 10000);
   if (ok) {
     markSuccess();
     return;
   }
+  markError('上報失敗，當日用量已保留待重送');
   try {
     const buffered = JSON.stringify(Object.assign(JSON.parse(body), { _buffered_at: new Date().toISOString() }));
     appendFileSync(BUFFER_FILE, buffered + '\n');
@@ -324,27 +384,42 @@ async function postCurrentUsage(cfg) {
 // ccusage（使用者感覺得到的 CPU），而且 flushBuffer 結尾的整檔回寫會互相覆蓋。
 // 上報本身是 upsert，重複送不會錯，所以搶不到鎖就直接放棄，不排隊。
 function acquireLock() {
+  const recovery = LOCK_FILE + '.reclaim';
+  const freshOwner = () => {
+    if (!existsSync(LOCK_FILE)) return false;
+    const parts = readFileSync(LOCK_FILE, 'utf8').trim().split(' ');
+    const pid = parseInt(parts[0], 10);
+    const at = parseInt(parts[1], 10) || statSync(LOCK_FILE).mtimeMs;
+    const fresh = Date.now() - at < LOCK_TTL_MS;
+    // 剛建立、尚未寫完的鎖也視為有主，不能在這個空窗刪掉它。
+    let alive = !Number.isSafeInteger(pid) || pid <= 0;
+    if (!alive) { try { process.kill(pid, 0); alive = true; } catch (e) { alive = e.code !== 'ESRCH'; } }
+    return fresh && alive;
+  };
+  let recovering = false;
   try {
-    if (existsSync(LOCK_FILE)) {
-      const parts = readFileSync(LOCK_FILE, 'utf8').trim().split(' ');
-      const pid = parseInt(parts[0], 10);
-      const at = parseInt(parts[1], 10);
-      const fresh = !isNaN(at) && Date.now() - at < LOCK_TTL_MS;
-      // 時效與存活缺一不可：只看時效會在 worker 被 kill 後空等，
-      // 只看 PID 會因為 PID 被系統回收而誤判成「還在跑」。
-      let alive = false;
-      try { process.kill(pid, 0); alive = true; } catch { /* 不存在或無權限，當作已結束 */ }
-      if (fresh && alive) return false;
-    }
-    writeFileSync(LOCK_FILE, process.pid + ' ' + Date.now());
+    if (freshOwner()) return false;
+    // 新鎖與過期鎖都須經過同一 guard；否則新取得者會在回收檢查後遭誤刪。
+    writeFileSync(recovery, process.pid + ' ' + Date.now(), { flag: 'wx' });
+    recovering = true;
+    // 僅一個程序回收過期鎖，並在刪除之前重新檢查；其他程序可能已取得新鎖。
+    if (freshOwner()) return false;
+    if (existsSync(LOCK_FILE)) unlinkSync(LOCK_FILE);
+    writeFileSync(LOCK_FILE, process.pid + ' ' + Date.now(), { flag: 'wx' });
     return true;
-  } catch {
-    return true; // 鎖檔讀寫不了就照跑：寧可偶爾重複，也不要整條上報鏈默默停掉
+  } catch (e) {
+    if (!recovering && e.code === 'EEXIST') markError('鎖回收進行中；若持續失敗，確認無 worker 後移除 worker.lock.reclaim');
+    else if (e.code !== 'EEXIST') markError('無法回收上報鎖，請檢查 tracker 目錄權限');
+    return false;
+  } finally {
+    if (recovering) { try { unlinkSync(recovery); } catch { /* 狀態檔可供人工處理 */ } }
   }
 }
 
 function releaseLock() {
-  try { if (existsSync(LOCK_FILE)) unlinkSync(LOCK_FILE); } catch { /* 靜默 */ }
+  try {
+    if (readFileSync(LOCK_FILE, 'utf8').startsWith(process.pid + ' ')) unlinkSync(LOCK_FILE);
+  } catch { /* 靜默 */ }
 }
 
 // worker：脫離 hook timeout，實際做上報
