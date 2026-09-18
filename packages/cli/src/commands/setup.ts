@@ -128,9 +128,10 @@ async function runSetup(deps: SetupDeps): Promise<void> {
 
   // Shell installers remain Claude-only; the CLI wires every detected tool.
   // 未偵測到任何工具不算失敗：config 已寫好，裝了工具再跑 update 即可。
+  let detected: { claudeDetected: boolean; codexDetected: boolean };
   try {
     const scripts = await downloadScripts(config.server_url, deps.fetchHookScript);
-    wireTools(scripts, {
+    detected = wireTools(scripts, {
       detectClaude: deps.detectClaude,
       detectCodex: deps.detectCodex,
       installHook: deps.installHook,
@@ -145,12 +146,15 @@ async function runSetup(deps: SetupDeps): Promise<void> {
   }
 
   // 收集器：失敗只警告，不改 exit code —— hook 已就位，缺 collector 由 status 顯示。
-  ensureCollector({
-    probe: deps.probeCollector,
-    install: deps.installCollector,
-    log: deps.log,
-    warn: deps.warn,
-  });
+  // 沒有任何工具就跳過：這一步可能執行一次全域 npm 安裝，裝一個當下無用的套件不合理。
+  if (detected.claudeDetected || detected.codexDetected) {
+    ensureCollector({
+      probe: deps.probeCollector,
+      install: deps.installCollector,
+      log: deps.log,
+      warn: deps.warn,
+    });
+  }
 
   // Verify server
   const serverOk = await deps.checkServer(config.server_url);

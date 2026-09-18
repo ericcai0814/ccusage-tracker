@@ -426,6 +426,18 @@ describe("Node CLI Codex hook wiring", () => {
     expect(existsSync(join(home, "codex", "hooks.json"))).toBe(false);
   });
 
+  it("兩個工具都沒偵測到：不探測也不安裝收集器", async () => {
+    configure();
+    const calls = join(home, "ccusage-calls.log");
+    writeFileSync(join(home, "bin", "ccusage"), `#!/bin/sh\necho called >> ${JSON.stringify(calls)}\necho 'ccusage 20.0.20'\n`, { mode: 0o755 });
+
+    const result = await cli(["update"]);
+
+    expect(result.code).not.toBe(0);
+    expect(existsSync(calls)).toBe(false);
+    expect(result.output).not.toContain("Collector:");
+  });
+
   it("hooks.json 非法：整筆交易不寫任何檔，回非零並要求修復", async () => {
     configure();
     const old = existingInstall();

@@ -18,6 +18,7 @@ interface MockState {
   writtenConfig: unknown;
   targets: InstallTargets | null;
   installedCollector: string[];
+  probes: number;
 }
 
 interface MockOptions {
@@ -40,6 +41,7 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
     writtenConfig: null,
     targets: null,
     installedCollector: [],
+    probes: 0,
     prompt: async () => prompts[promptIndex++] ?? "",
     writeConfig: (config) => { deps.writtenConfig = config; },
     installHook: (scripts: TrackerScripts, targets: InstallTargets): InstallResult => {
@@ -63,7 +65,10 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
     checkServer: async () => true,
     detectClaude: () => options.claude ?? true,
     detectCodex: () => options.codex ?? true,
-    probeCollector: () => collector[Math.min(probeIndex++, collector.length - 1)],
+    probeCollector: () => {
+      deps.probes += 1;
+      return collector[Math.min(probeIndex++, collector.length - 1)];
+    },
     installCollector: (command) => { deps.installedCollector.push(command); return true; },
     readCodexConfig: () => options.configToml ?? null,
     log: (msg) => deps.logs.push(msg),
@@ -228,6 +233,18 @@ describe("setup 的收集器步驟", () => {
 
     expect(deps.installedCollector).toEqual([]);
     expect(output(deps)).toContain("20.0.20");
+    expect(deps.logs.some((l) => l.includes("Setup complete"))).toBe(true);
+    expect(deps.exitCode).toBeNull();
+  });
+
+  it("兩個工具都沒偵測到：不探測也不安裝收集器", async () => {
+    // 沒有 Claude 也沒有 Codex 時，全域安裝的 ccusage 當下沒有任何用途。
+    const deps = createMockDeps(answers, { claude: false, codex: false, collector: [null] });
+    await setupCommand(deps);
+
+    expect(deps.probes).toBe(0);
+    expect(deps.installedCollector).toEqual([]);
+    expect(output(deps)).not.toContain("Collector:");
     expect(deps.logs.some((l) => l.includes("Setup complete"))).toBe(true);
     expect(deps.exitCode).toBeNull();
   });
