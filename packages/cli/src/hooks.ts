@@ -263,6 +263,8 @@ export const NO_TOOL_MESSAGE =
 export const CODEX_TRUST_MESSAGE =
   "Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.";
 
+export const CODEX_DISABLED_MESSAGE = "Codex: hooks installed but disabled in Codex";
+
 export interface WiringDeps {
   detectClaude: () => boolean;
   detectCodex: () => boolean;
@@ -300,7 +302,9 @@ export function wireTools(
   else if (result.claudeChanged) deps.log("Claude Code: hooks installed/updated (SessionStart, SessionEnd, Stop)");
   else deps.log("Claude Code: hooks already up to date");
 
-  if (scripts.codexSync === undefined) deps.warn(CODEX_COMPATIBILITY_MESSAGE);
+  // 相容訊息只對真的有 Codex 的人有意義：純 Claude 使用者同時看到長段「不支援
+  // Codex」與「Codex: not detected」只是矛盾的噪音。
+  if (codexDetected && scripts.codexSync === undefined) deps.warn(CODEX_COMPATIBILITY_MESSAGE);
 
   const configToml = codexDetected ? deps.readCodexConfig() ?? "" : "";
   if (!codexDetected) deps.log("Codex: not detected");
@@ -311,7 +315,9 @@ export function wireTools(
     const trust = readCodexTrustState(configToml, getCodexHooksPath(), result.codexIndexes);
     const states = Object.values(trust);
     const recorded = states.length > 0 && states.every((state) => state === "recorded");
-    deps.log(!result.codexChanged && recorded ? "Codex: hooks already up to date (trust recorded)" : CODEX_TRUST_MESSAGE);
+    // 使用者信任後主動停用，不是還沒信任：再叫他去跑 /hooks 是錯的指引（status 判得對，這裡對齊）。
+    if (states.includes("disabled")) deps.log(CODEX_DISABLED_MESSAGE);
+    else deps.log(!result.codexChanged && recorded ? "Codex: hooks already up to date (trust recorded)" : CODEX_TRUST_MESSAGE);
   }
 
   if (hasTrackerNotify(configToml)) {

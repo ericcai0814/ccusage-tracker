@@ -202,6 +202,19 @@ describe("hasTrackerNotify", () => {
     expect(hasTrackerNotify(toml)).toBe(true);
   });
 
+  it("notify 之前有跨行的頂層陣列：掃描不中斷，仍認得出 tracker 的 notify", () => {
+    // 續行以 `[` 開頭（巢狀陣列）不代表進入 table；只有整行是 [name] 才是 table 標頭。
+    const toml = 'pairs = [\n [1, 2],\n [3, 4],\n]\nnotify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs", "--notify"]\n';
+
+    expect(hasTrackerNotify(toml)).toBe(true);
+  });
+
+  it("進入第一個 table 之後的 notify 仍然不算數", () => {
+    const toml = '[tui]\ntheme = "dark"\nnotify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs"]\n';
+
+    expect(hasTrackerNotify(toml)).toBe(false);
+  });
+
   it("第三方 notify 或 table 內的同名鍵 → false（hooks 與 notify 可共存）", () => {
     expect(hasTrackerNotify('notify = ["say", "done"]\n')).toBe(false);
     expect(hasTrackerNotify('[some.table]\nnotify = ["/x/ccusage-tracker/codex-sync.mjs"]\n')).toBe(false);

@@ -187,6 +187,27 @@ describe("setup 逐工具接線", () => {
     expect(output(deps)).not.toContain("Codex: hooks installed (Stop, SessionEnd).");
   });
 
+  it("server 對 codex-sync.mjs 回 404 且未偵測到 Codex：只印 not detected，不印相容訊息", async () => {
+    const deps = createMockDeps(answers, { codex: false, codexScript: false });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain("Codex: not detected");
+    expect(output(deps)).not.toContain("does not provide Codex support");
+  });
+
+  it("hooks.state 有 enabled = false：結果行說已停用，不再要求去信任", async () => {
+    // 使用者信任後主動關掉，不是還沒信任 —— status.ts 判得對，這裡要一致。
+    const hooksPath = getCodexHooksPath();
+    const deps = createMockDeps(answers, {
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\nenabled = false\n` +
+        `[hooks.state."${hooksPath}:session_end:0:0"]\nenabled = false\n`,
+    });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain("Codex: hooks installed but disabled in Codex");
+    expect(output(deps)).not.toContain("/hooks");
+  });
+
   it("config.toml 仍留著 tracker 的 notify：提示自行移除，但不編輯 TOML", async () => {
     const deps = createMockDeps(answers, {
       configToml: 'notify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs", "--notify"]\n',

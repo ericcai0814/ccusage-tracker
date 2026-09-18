@@ -228,6 +228,9 @@ describe("Node CLI update", () => {
   it("only treats Codex 404/410 as compatibility and preserves its prior script", async () => {
     configure();
     existingInstall();
+    // 相容訊息只在偵測到 Codex 時才印，所以這個 fixture 必須有 $CODEX_HOME；
+    // 「404 但沒有 Codex」的相反情況在 setup.test.ts。
+    mkdirSync(join(home, "codex"));
     for (const status of [500, 403, 404, 410]) {
       replies["/scripts/codex-sync.mjs"] = { status, body: "missing" };
       const result = await cli(["update"]);
