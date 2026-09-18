@@ -10,6 +10,7 @@
 - typecheck、CLI build、server build 全綠；`spectra validate fix-symlink-config-and-review-lows` 通過；`git diff --check` 無 whitespace error。
 - Node built CLI 對 loopback server 的 smoke：暫存 HOME 內 `settings.json` 與 `hooks.json` 皆為 symlink 指向 `$HOME/dotfiles` 的真實檔案，setup 成功、兩個 symlink 保留、真實檔案含 tracker hook、backup 在真實檔案旁；update 兩次後兩個真實檔案 sha256 皆不變。
 - 未讀寫真實的 `~/.claude`、`~/.codex`、`~/.config/ccusage-tracker`、`~/dotfiles`；全程未執行真實 `npm install -g`。
+- **Codex stop-review 閘實際執行但未能產出審查**：閘門回 `status: 1`、`rawOutput: ""`、`touchedFiles: []`。同一時間的最小探測 `codex exec "Reply with exactly: PING_OK"` 回 `ERROR: You've hit your usage limit ... try again at 5:00 PM`，確認是該帳號額度用盡，與本次 diff 無關。因此本變更**沒有經過獨立的 Codex 審查**，不冒稱已審 —— 與前一個 change 屬同一類限制。
 
 ## 環境與隔離
 
