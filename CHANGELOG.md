@@ -27,6 +27,13 @@
 
 ### Fixed
 
+- `setup`／`update` 遇到 symlink 的 `~/.claude/settings.json` 或 `$CODEX_HOME/hooks.json` 不再整筆拒寫：解析到真實檔案後寫穿，symlink 本身保留，`.backup` 放在真實檔案旁。斷鏈或指向目錄等非一般檔案仍拒絕整筆交易，訊息指出 symlink 的目標。dotfiles 使用者因此可以直接安裝與更新。
+- 收集器步驟只在至少偵測到一個工具時執行：兩個工具都沒偵測到時不再執行一次當下無用的全域 `npm install -g`，也不探測 `ccusage`。
+- 自動安裝收集器後重新探測到的版本會再驗一次主版本：PATH 上另一個 `ccusage` 先命中時回報 `unsupported_major` 並印出安裝指令，不再宣稱安裝完成、等到 `sync codex` 才失敗。
+- Codex 結果行區分「已停用」與「未信任」：`config.toml` 的 tracker `hooks.state` 含 `enabled = false` 時印 `Codex: hooks installed but disabled in Codex`，不再要求使用者去跑 `/hooks`（與 `status` 一致）。
+- server 對 Codex 腳本回 404／410 的相容訊息只在偵測到 Codex 時印，純 Claude 使用者不再同時看到「不支援 Codex」與「Codex: not detected」。
+- `config.toml` 的 `notify` 掃描只在整行是 table 標頭（`[name]`）時中斷：`notify` 之前有跨行頂層陣列時不再漏印移除提示。
+- 觸發式上報的節流不再把未來的時間戳當成「剛跑過」：時鐘往前跳後校回或 `~/.config` 跨機同步留下未來時間時，Codex hook 與 Claude Stop hook 都照常啟動 worker 並覆寫時間戳。
 - 移除 reporter 精確 patch 白名單，依 legacy／major-20 指令系列及嚴格 schema 驗證判定可上報資料；保留未知 major 拒絕與來源隔離。真實 18.0.9 回歸及合成 20.0.21 相容／非法輸出測試涵蓋 Claude 與 Codex，不宣稱未測發佈包相容。
 - 同日舊 buffer 不再覆寫新快照；兩個來源的 buffer 與同步互不覆蓋。
 - Worker 使用原子鎖與互斥的過期鎖回收，避免並行同步刪掉另一個 worker 的鎖。

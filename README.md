@@ -99,10 +99,12 @@ npx ccusage-tracker@latest setup
 | 3a | 下載上報 scripts | `~/.config/ccusage-tracker/session-end.mjs`、`session-start.mjs`、支援時的 `codex-sync.mjs` |
 | 3b | 注入 Claude 的 SessionStart + SessionEnd + Stop hook | 修改 `~/.claude/settings.json`（先備份；命令字串會自動 migrate 0.1.1 舊格式） |
 | 3c | 注入 Codex 的 Stop + SessionEnd hook | append 到 `$CODEX_HOME/hooks.json`（先備份；不修改 `config.toml`）。之後要在 Codex 內跑一次 `/hooks` 信任 |
-| 4 | 確認 collector | 缺 `ccusage` 時自動執行 `npm install -g ccusage@20.0.20` 並印出該指令；設 `CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL=1` 可跳過 |
+| 4 | 確認 collector | 只在偵測到工具時執行；缺 `ccusage` 時自動執行 `npm install -g ccusage@20.0.20` 並印出該指令。這是一次全域 npm 安裝，會從 registry 下載該套件並執行它的安裝期（lifecycle）腳本；不希望自動安裝的話，先設 `CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL=1`，CLI 就只印指令 |
 | 5 | 驗證 server 連線 | `GET /api/health` |
 
-兩個工具都沒偵測到時，`setup` 仍會寫入設定並以 exit 0 結束，提示裝好工具後再跑 `update`；`update` 在同樣情況回傳非零。
+兩個工具都沒偵測到時，`setup` 仍會寫入設定並以 exit 0 結束，提示裝好工具後再跑 `update`；`update` 在同樣情況回傳非零。兩者在這種情況都不執行步驟 4 的收集器安裝。
+
+`settings.json` 或 `hooks.json` 是 symlink（dotfiles 使用者常見）時，內容寫穿到 symlink 指到的真實檔案，symlink 本身保留，`.backup` 也放在真實檔案旁。斷鏈的 symlink 或指向目錄等非一般檔案一律拒絕並回滾整筆交易，訊息會指出 symlink 的目標。
 
 > macOS/Linux 的 `setup.sh` 另會自動安裝 `jq`（brew/apt/apk）用於合併 `settings.json`；Windows 的 `setup.ps1` 改用 PowerShell 原生 JSON，不需 jq。兩者裝出的上報 hook 都是 `node session-end.mjs`。
 
@@ -168,7 +170,7 @@ npx ccusage-tracker@latest status
 npx ccusage-tracker@latest report --period today --json
 ```
 
-`setup`／`update` 會偵測 Codex、把 tracker 的 Stop 與 SessionEnd hook 接上，並在缺 collector 時自動安裝已驗證的 `ccusage@20.0.20`。既有使用者只需 `npx ccusage-tracker@latest update`，再依輸出在 Codex 內信任一次。
+`setup`／`update` 會偵測 Codex、把 tracker 的 Stop 與 SessionEnd hook 接上，並在缺 collector 時自動安裝已驗證的 `ccusage@20.0.20`（一次全域 npm 安裝，會執行該套件的安裝期腳本；設 `CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL=1` 可跳過，改為自行安裝）。既有使用者只需 `npx ccusage-tracker@latest update`，再依輸出在 Codex 內信任一次。
 
 ### 在 Codex 內信任一次（必要步驟）
 
