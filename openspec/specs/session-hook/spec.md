@@ -8,146 +8,225 @@ TBD - created by archiving change 'ccusage-tracker-mvp'. Update Purpose after ar
 
 ### Requirement: Report usage on session end
 
-The SessionEnd hook script SHALL execute when a Claude Code session ends, collect token usage data via `ccusage`, and POST it to the configured server.
+The SessionEnd Node hook SHALL collect Claude token usage through a supported ccusage reader and POST the local-calendar-day snapshot to the configured server.
 
 #### Scenario: Successful session end report
 
 - **WHEN** a Claude Code session ends and the hook is triggered
-- **THEN** the hook SHALL read the config file at `~/.config/ccusage-tracker/config.json`, invoke `ccusage session --json --since today`, extract token data, and POST to the server's `/api/ingest` endpoint
+- **THEN** the worker SHALL read server_url, team_key and member_name from the tracker config, collect Claude-only daily data and POST it to /api/ingest with session_id daily
 
 #### Scenario: Config file missing
 
-- **WHEN** the hook is triggered but `~/.config/ccusage-tracker/config.json` does not exist
+- **WHEN** the hook is triggered but the tracker config does not exist
 - **THEN** the hook SHALL exit with code 0 without performing any action
 
 #### Scenario: ccusage not installed
 
-- **WHEN** the hook is triggered but the `ccusage` command is not found
-- **THEN** the hook SHALL exit with code 0 without performing any action
+- **WHEN** the hook is triggered with valid tracker config but the ccusage command is not found
+- **THEN** the hook SHALL exit with code 0 and the worker SHALL record a content-free collection error for status
 
 
 <!-- @trace
-source: ccusage-tracker-mvp
-updated: 2026-03-31
+source: add-codex-usage-and-update
+updated: 2026-09-17
 code:
-  - packages/server/src/routes/report.ts
-  - packages/server/src/app.ts
-  - Dockerfile
-  - packages/server/src/routes/ingest.ts
-  - .dockerignore
-  - packages/server/src/routes/dashboard.tsx
-  - packages/server/src/queries.ts
-  - packages/server/src/middleware/team-auth.ts
-  - packages/server/src/scripts.ts
+  - packages/cli/src/config.ts
+  - packages/server/src/hook-scripts/codex-sync.mjs
   - README.md
+  - packages/cli/src/commands/setup.ts
+  - packages/cli/src/scripts.ts
+  - packages/server/src/hook-scripts/session-end.mjs
+  - packages/cli/src/commands/status.ts
+  - packages/cli/src/hooks.ts
+  - CHANGELOG.md
+  - packages/cli/src/commands/sync.ts
+  - packages/cli/README.md
+  - packages/server/src/app.ts
+  - packages/cli/src/commands/update.ts
+  - packages/server/src/scripts.ts
+  - packages/server/src/hook-scripts/codex-sync.d.mts
+  - packages/cli/src/index.ts
 tests:
-  - packages/server/src/routes/report.test.ts
-  - packages/server/src/routes/ingest.test.ts
-  - packages/server/src/routes/dashboard.test.ts
-  - packages/server/src/queries.test.ts
+  - packages/server/src/claude-usage.test.ts
+  - packages/server/src/routes/source-aggregation.test.ts
+  - packages/server/src/codex-usage.test.ts
+  - packages/cli/src/commands/update.test.ts
 -->
 
 ---
 ### Requirement: Non-blocking execution
 
-The hook SHALL NOT block Claude Code from exiting, regardless of success or failure.
+The hook SHALL NOT block Claude Code from exiting, regardless of collection or upload success.
 
 #### Scenario: Server unreachable
 
-- **WHEN** the hook attempts to POST but the server is unreachable
-- **THEN** the hook SHALL fail silently (background curl) and exit with code 0
+- **WHEN** the worker attempts to POST but the server is unreachable
+- **THEN** it SHALL buffer the usage snapshot for retry without affecting Claude Code
 
 #### Scenario: Background POST
 
-- **WHEN** the hook sends the POST request
-- **THEN** the hook SHALL execute the curl command in the background (`&`) and exit immediately
+- **WHEN** the hook receives a reporting event
+- **THEN** it SHALL detach a Node worker with disconnected stdio and exit without waiting for collection or POST
 
 
 <!-- @trace
-source: ccusage-tracker-mvp
-updated: 2026-03-31
+source: add-codex-usage-and-update
+updated: 2026-09-17
 code:
-  - packages/server/src/routes/report.ts
-  - packages/server/src/app.ts
-  - Dockerfile
-  - packages/server/src/routes/ingest.ts
-  - .dockerignore
-  - packages/server/src/routes/dashboard.tsx
-  - packages/server/src/queries.ts
-  - packages/server/src/middleware/team-auth.ts
-  - packages/server/src/scripts.ts
+  - packages/cli/src/config.ts
+  - packages/server/src/hook-scripts/codex-sync.mjs
   - README.md
+  - packages/cli/src/commands/setup.ts
+  - packages/cli/src/scripts.ts
+  - packages/server/src/hook-scripts/session-end.mjs
+  - packages/cli/src/commands/status.ts
+  - packages/cli/src/hooks.ts
+  - CHANGELOG.md
+  - packages/cli/src/commands/sync.ts
+  - packages/cli/README.md
+  - packages/server/src/app.ts
+  - packages/cli/src/commands/update.ts
+  - packages/server/src/scripts.ts
+  - packages/server/src/hook-scripts/codex-sync.d.mts
+  - packages/cli/src/index.ts
 tests:
-  - packages/server/src/routes/report.test.ts
-  - packages/server/src/routes/ingest.test.ts
-  - packages/server/src/routes/dashboard.test.ts
-  - packages/server/src/queries.test.ts
+  - packages/server/src/claude-usage.test.ts
+  - packages/server/src/routes/source-aggregation.test.ts
+  - packages/server/src/codex-usage.test.ts
+  - packages/cli/src/commands/update.test.ts
 -->
 
 ---
 ### Requirement: Read hook payload
 
-The hook SHALL read the JSON payload from stdin provided by Claude Code's SessionEnd event.
+The Claude hook SHALL read JSON from stdin to obtain the transcript path and session identity used for model lookup and session metrics. Daily token snapshots SHALL use the stable daily identity.
 
 #### Scenario: Extract session_id from payload
 
-- **WHEN** the hook receives a JSON payload on stdin containing `session_id`
-- **THEN** the hook SHALL extract the `session_id` and include it in the POST body
+- **WHEN** the hook receives a JSON payload on stdin containing session_id
+- **THEN** it SHALL use the identity for session model lookup while keeping session_id daily in the usage snapshot
 
 #### Scenario: Malformed or empty payload
 
 - **WHEN** the hook receives malformed JSON or empty stdin
-- **THEN** the hook SHALL proceed with an empty `session_id` and still attempt to report usage
+- **THEN** it SHALL still attempt the daily usage snapshot without session transcript metrics
 
 
 <!-- @trace
-source: ccusage-tracker-mvp
-updated: 2026-03-31
+source: add-codex-usage-and-update
+updated: 2026-09-17
 code:
-  - packages/server/src/routes/report.ts
-  - packages/server/src/app.ts
-  - Dockerfile
-  - packages/server/src/routes/ingest.ts
-  - .dockerignore
-  - packages/server/src/routes/dashboard.tsx
-  - packages/server/src/queries.ts
-  - packages/server/src/middleware/team-auth.ts
-  - packages/server/src/scripts.ts
+  - packages/cli/src/config.ts
+  - packages/server/src/hook-scripts/codex-sync.mjs
   - README.md
+  - packages/cli/src/commands/setup.ts
+  - packages/cli/src/scripts.ts
+  - packages/server/src/hook-scripts/session-end.mjs
+  - packages/cli/src/commands/status.ts
+  - packages/cli/src/hooks.ts
+  - CHANGELOG.md
+  - packages/cli/src/commands/sync.ts
+  - packages/cli/README.md
+  - packages/server/src/app.ts
+  - packages/cli/src/commands/update.ts
+  - packages/server/src/scripts.ts
+  - packages/server/src/hook-scripts/codex-sync.d.mts
+  - packages/cli/src/index.ts
 tests:
-  - packages/server/src/routes/report.test.ts
-  - packages/server/src/routes/ingest.test.ts
-  - packages/server/src/routes/dashboard.test.ts
-  - packages/server/src/queries.test.ts
+  - packages/server/src/claude-usage.test.ts
+  - packages/server/src/routes/source-aggregation.test.ts
+  - packages/server/src/codex-usage.test.ts
+  - packages/cli/src/commands/update.test.ts
 -->
 
 ---
 ### Requirement: Privacy protection
 
-The hook SHALL only transmit token counts and metadata. It SHALL NOT transmit conversation content.
+Usage hooks SHALL transmit token counts and metadata without raw conversation content.
 
 #### Scenario: Data transmitted
 
-- **WHEN** the hook constructs the POST body
-- **THEN** the body SHALL contain only: `date`, `session_id`, `input_tokens`, `output_tokens`, `cache_creation_tokens`, `cache_read_tokens`, `total_cost_usd`, and `models`
+- **WHEN** the hook constructs a usage POST body
+- **THEN** it SHALL contain only member_name, date, session_id, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, total_cost_usd and models
+- **AND** Claude session metrics SHALL contain aggregate behavioral metadata rather than raw prompts, responses or tool results
+
 
 <!-- @trace
-source: ccusage-tracker-mvp
-updated: 2026-03-31
+source: add-codex-usage-and-update
+updated: 2026-09-17
 code:
-  - packages/server/src/routes/report.ts
-  - packages/server/src/app.ts
-  - Dockerfile
-  - packages/server/src/routes/ingest.ts
-  - .dockerignore
-  - packages/server/src/routes/dashboard.tsx
-  - packages/server/src/queries.ts
-  - packages/server/src/middleware/team-auth.ts
-  - packages/server/src/scripts.ts
+  - packages/cli/src/config.ts
+  - packages/server/src/hook-scripts/codex-sync.mjs
   - README.md
+  - packages/cli/src/commands/setup.ts
+  - packages/cli/src/scripts.ts
+  - packages/server/src/hook-scripts/session-end.mjs
+  - packages/cli/src/commands/status.ts
+  - packages/cli/src/hooks.ts
+  - CHANGELOG.md
+  - packages/cli/src/commands/sync.ts
+  - packages/cli/README.md
+  - packages/server/src/app.ts
+  - packages/cli/src/commands/update.ts
+  - packages/server/src/scripts.ts
+  - packages/server/src/hook-scripts/codex-sync.d.mts
+  - packages/cli/src/index.ts
 tests:
-  - packages/server/src/routes/report.test.ts
-  - packages/server/src/routes/ingest.test.ts
-  - packages/server/src/routes/dashboard.test.ts
-  - packages/server/src/queries.test.ts
+  - packages/server/src/claude-usage.test.ts
+  - packages/server/src/routes/source-aggregation.test.ts
+  - packages/server/src/codex-usage.test.ts
+  - packages/cli/src/commands/update.test.ts
+-->
+
+---
+### Requirement: Source-safe Claude daily snapshots
+
+The Node Claude hook SHALL preserve the legacy daily identity, background execution, Stop throttle, timeout, model and session metrics. It SHALL retain the original Claude-only daily --json --since command for the legacy family (major <=19), select claude daily explicitly for major 20, and validate the known Claude-only schema on every result. Verified patch versions SHALL be evidence rather than an exact runtime whitelist. It SHALL reject unknown major families and SHALL NOT count a unified multi-agent aggregate as Claude usage. It SHALL reject invalid schema or numbers visibly instead of posting zeros, and SHALL prevent stale buffered daily snapshots from overwriting newer successful snapshots.
+
+#### Scenario: Adjacent collector compatibility
+
+- **WHEN** published ccusage 18.0.9 returns valid Claude daily data, or a synthetic schema-compatible 20.0.21 collector returns it through claude daily
+- **THEN** the hook SHALL upload the snapshot without rejecting its patch number, preserving the original legacy flags or explicit unified-source command respectively
+- **AND** malformed or unified output from either path SHALL still be rejected
+
+#### Scenario: Source schema drift
+
+- **WHEN** the installed ccusage emits an unknown or unified multi-agent output
+- **THEN** the hook SHALL record an error and SHALL NOT upload it as Claude daily
+
+#### Scenario: Buffered daily recovery
+
+- **WHEN** a newer Claude daily snapshot succeeds while an older same-day daily snapshot remains buffered
+- **THEN** replay SHALL NOT replace the newer snapshot with the older one
+
+#### Scenario: Legacy behavior
+
+- **WHEN** a supported Claude collector is used without a Codex collector
+- **THEN** existing Claude background hooks and session metrics SHALL continue working independently
+
+<!-- @trace
+source: add-codex-usage-and-update
+updated: 2026-09-17
+code:
+  - packages/cli/src/config.ts
+  - packages/server/src/hook-scripts/codex-sync.mjs
+  - README.md
+  - packages/cli/src/commands/setup.ts
+  - packages/cli/src/scripts.ts
+  - packages/server/src/hook-scripts/session-end.mjs
+  - packages/cli/src/commands/status.ts
+  - packages/cli/src/hooks.ts
+  - CHANGELOG.md
+  - packages/cli/src/commands/sync.ts
+  - packages/cli/README.md
+  - packages/server/src/app.ts
+  - packages/cli/src/commands/update.ts
+  - packages/server/src/scripts.ts
+  - packages/server/src/hook-scripts/codex-sync.d.mts
+  - packages/cli/src/index.ts
+tests:
+  - packages/server/src/claude-usage.test.ts
+  - packages/server/src/routes/source-aggregation.test.ts
+  - packages/server/src/codex-usage.test.ts
+  - packages/cli/src/commands/update.test.ts
 -->

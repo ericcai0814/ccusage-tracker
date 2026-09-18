@@ -21,9 +21,24 @@ export function readConfig(): TrackerConfig | null {
   if (!existsSync(path)) return null;
 
   try {
-    return JSON.parse(readFileSync(path, "utf-8")) as TrackerConfig;
+    const value: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    return isTrackerConfig(value) ? value : null;
   } catch {
     return null;
+  }
+}
+
+export function isTrackerConfig(value: unknown): value is TrackerConfig {
+  if (!value || typeof value !== "object") return false;
+  const config = value as Record<string, unknown>;
+  if (![config.server_url, config.team_key, config.member_name].every(
+    (field) => typeof field === "string" && field.trim().length > 0
+  )) return false;
+  try {
+    const url = new URL(config.server_url as string);
+    return (url.protocol === "https:" || url.protocol === "http:") && !url.username && !url.password;
+  } catch {
+    return false;
   }
 }
 

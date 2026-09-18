@@ -5,6 +5,11 @@
 // Dockerfile 是 COPY src + bun run，無打包步驟，這些檔案會隨 src 一起進映像檔。
 import sessionEndMjs from "./hook-scripts/session-end.mjs" with { type: "text" };
 import sessionStartMjs from "./hook-scripts/session-start.mjs" with { type: "text" };
+import codexSyncMjs from "./hook-scripts/codex-sync.mjs" with { type: "text" };
+
+export function generateCodexSyncMjsScript(): string {
+  return codexSyncMjs;
+}
 
 export function generateSetupScript(serverUrl: string, _teamKey: string): string {
   return `#!/usr/bin/env bash
