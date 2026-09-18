@@ -40,7 +40,20 @@ globalThis.fetch = async (url, options) => { fs.appendFileSync(process.env.HOME 
     child.on("close", resolve);
   });
   const requests = () => existsSync(join(home, "requests.jsonl")) ? readFileSync(join(home, "requests.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
-  return { home, dir, set, run, runAsync, requests, cleanup: () => rmSync(home, { recursive: true, force: true }) };
+  // Stop hook：worker 是 detached 的，NODE_OPTIONS 讓它也套用同一個 fetch mock。
+  const runStop = () => spawnSync(node, ["--import", join(home, "mock.mjs"), join(import.meta.dir, "hook-scripts/session-end.mjs"), "--mode=stop"], {
+    cwd: home, encoding: "utf8", timeout: 10000, input: "{}",
+    env: { HOME: home, CODEX_HOME: join(home, "codex"), CLAUDE_CONFIG_DIR: join(home, "claude"), PATH: bin, TZ: "Asia/Taipei",
+      NODE_OPTIONS: '--import "' + join(home, "mock.mjs") + '"' },
+  });
+  // detached worker 要先把 node 開起來，立刻斷言等於每次都通過，測不到真正的回歸。
+  const settle = async (deadlineMs = 4000) => {
+    const deadline = Date.now() + deadlineMs;
+    while ((!existsSync(join(dir, "last-upload.txt")) || existsSync(join(dir, "worker.lock"))) && Date.now() < deadline) {
+      await Bun.sleep(30);
+    }
+  };
+  return { home, dir, set, run, runAsync, runStop, settle, requests, cleanup: () => rmSync(home, { recursive: true, force: true }) };
 }
 
 describe("Claude reporter runtime source and replay safety", () => {
@@ -182,6 +195,23 @@ describe("Claude reporter runtime source and replay safety", () => {
       expect(f.requests()).toEqual([{ member_name: "test", date: today, session_id: "daily", input_tokens: 100,
         output_tokens: 20, cache_creation_tokens: 30, cache_read_tokens: 40, total_cost_usd: 0.001, models: ["claude-sonnet-4-20250514"] }]);
       expect(JSON.parse(readFileSync(join(f.home, "args.jsonl"), "utf8")).slice(0, 2)).toEqual(["claude", "daily"]);
+    } finally { f.cleanup(); }
+  });
+
+  it("Stop 節流：時間戳落在未來不算節流中，照常啟動 worker 並覆寫成現在時間", async () => {
+    // Codex 端 codex-sync.mjs 的 throttled 是同一個寫法，兩邊一起修。
+    const f = fixture();
+    try {
+      const future = String(Date.now() + 60 * 60 * 1000);
+      writeFileSync(join(f.dir, "last-flush.txt"), future);
+
+      expect(f.runStop().status).toBe(0);
+
+      await f.settle();
+      expect(f.requests()).toHaveLength(1);
+      const written = Number(readFileSync(join(f.dir, "last-flush.txt"), "utf8"));
+      expect(written).not.toBe(Number(future));
+      expect(Date.now() - written).toBeLessThan(60000);
     } finally { f.cleanup(); }
   });
 

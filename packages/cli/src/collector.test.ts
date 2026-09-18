@@ -75,6 +75,20 @@ describe("ensureCollector", () => {
     expect(ensureCollector(d).status).toBe("install_failed");
   });
 
+  it("安裝回報成功但重新探測到非 20 主版本 → unsupported_major，警告含 20.0.20", () => {
+    // PATH 上另一個 prefix／專案內的舊 ccusage 先命中時會踩到：npm 裝好了，
+    // 但跑起來的還是舊的。裝完的版本要再驗一次，否則 setup 宣告完成、
+    // 實際 sync codex 才以「Unsupported ccusage command family」失敗。
+    const d = deps([null, "18.0.9"]);
+
+    expect(ensureCollector(d)).toEqual({ status: "unsupported_major", version: "18.0.9" });
+    expect(d.installed).toEqual([COLLECTOR_INSTALL_COMMAND]);
+    expect(d.probes).toBe(2);
+    const warning = d.warns.join("\n");
+    expect(warning).toContain("20.0.20");
+    expect(warning).toContain("Codex");
+  });
+
   it("已安裝但主版本不是 20 → unsupported_major，只警告不替換", () => {
     const d = deps(["18.0.9"]);
 

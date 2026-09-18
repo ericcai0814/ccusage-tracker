@@ -468,7 +468,10 @@ async function main() {
     if (existsSync(LAST_FLUSH_FILE)) {
       try {
         const last = parseInt(readFileSync(LAST_FLUSH_FILE, 'utf8'), 10);
-        if (!isNaN(last) && Date.now() - last < THROTTLE_MS) return;
+        // 與 codex-sync.mjs 的 throttled 同一條規則：未來的時間戳不算節流中，
+        // 否則時鐘跳動後每次 Stop 都被靜默擋掉，直到牆鐘追上。
+        const age = Date.now() - last;
+        if (!isNaN(last) && age >= 0 && age < THROTTLE_MS) return;
       } catch { /* 讀不到當沒紀錄，繼續跑 */ }
     }
     try { writeFileSync(LAST_FLUSH_FILE, String(Date.now())); } catch { /* 靜默 */ }

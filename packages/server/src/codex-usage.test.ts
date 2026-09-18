@@ -361,6 +361,25 @@ describe("Codex hook 進入點", () => {
     } finally { f.cleanup(); }
   });
 
+  it("時間戳落在未來不算節流中：照常啟動 worker 並覆寫成現在時間", async () => {
+    // 系統時鐘往前跳後校回、或 ~/.config 在兩台不同步的機器間同步，都會留下未來時間。
+    // `now - last` 為負恆小於 THROTTLE_MS，舊寫法會無限期擋掉上報且無任何輸出。
+    const f = fixture();
+    try {
+      const future = String(Date.now() + 60 * 60 * 1000);
+      writeFileSync(join(f.dir, "codex-last-flush.txt"), future);
+
+      const r = f.run(["--hook"], f.workerEnv, stopPayload);
+
+      expect(r.status).toBe(0);
+      await f.settle();
+      expect(f.requests()).toHaveLength(1);
+      const written = Number(readFileSync(join(f.dir, "codex-last-flush.txt"), "utf8"));
+      expect(written).not.toBe(Number(future));
+      expect(Date.now() - written).toBeLessThan(60000);
+    } finally { f.cleanup(); }
+  });
+
   it("notify 相容路徑套用同一個 throttle（hook 與 notify 同時設定時不會重複上報）", async () => {
     const f = fixture();
     try {

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, renameSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, lstatSync, readlinkSync, realpathSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -263,6 +263,8 @@ export const NO_TOOL_MESSAGE =
 export const CODEX_TRUST_MESSAGE =
   "Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.";
 
+export const CODEX_DISABLED_MESSAGE = "Codex: hooks installed but disabled in Codex";
+
 export interface WiringDeps {
   detectClaude: () => boolean;
   detectCodex: () => boolean;
@@ -300,7 +302,9 @@ export function wireTools(
   else if (result.claudeChanged) deps.log("Claude Code: hooks installed/updated (SessionStart, SessionEnd, Stop)");
   else deps.log("Claude Code: hooks already up to date");
 
-  if (scripts.codexSync === undefined) deps.warn(CODEX_COMPATIBILITY_MESSAGE);
+  // 相容訊息只對真的有 Codex 的人有意義：純 Claude 使用者同時看到長段「不支援
+  // Codex」與「Codex: not detected」只是矛盾的噪音。
+  if (codexDetected && scripts.codexSync === undefined) deps.warn(CODEX_COMPATIBILITY_MESSAGE);
 
   const configToml = codexDetected ? deps.readCodexConfig() ?? "" : "";
   if (!codexDetected) deps.log("Codex: not detected");
@@ -311,7 +315,9 @@ export function wireTools(
     const trust = readCodexTrustState(configToml, getCodexHooksPath(), result.codexIndexes);
     const states = Object.values(trust);
     const recorded = states.length > 0 && states.every((state) => state === "recorded");
-    deps.log(!result.codexChanged && recorded ? "Codex: hooks already up to date (trust recorded)" : CODEX_TRUST_MESSAGE);
+    // 使用者信任後主動停用，不是還沒信任：再叫他去跑 /hooks 是錯的指引（status 判得對，這裡對齊）。
+    if (states.includes("disabled")) deps.log(CODEX_DISABLED_MESSAGE);
+    else deps.log(!result.codexChanged && recorded ? "Codex: hooks already up to date (trust recorded)" : CODEX_TRUST_MESSAGE);
   }
 
   if (hasTrackerNotify(configToml)) {
@@ -331,35 +337,70 @@ interface StagedFile {
   installed: boolean;
 }
 
+function nonRegularFileError(path: string, linkTarget?: string): Error {
+  return new Error(
+    `Refusing to replace non-regular file: ${path}` +
+      (linkTarget === undefined ? "" : ` (symlink target: ${linkTarget})`)
+  );
+}
+
+// dotfiles 使用者的設定檔常是 symlink。寫穿：解析到真實檔案後，暫存、backup 與
+// rename 全部套在真實路徑上，symlink 本身不動（unlink 它等於毀掉使用者的 dotfiles
+// 管理）。斷鏈或解析後不是一般檔案（目錄、socket…）一律拒絕整筆交易，訊息帶出
+// link 目標，使用者才知道擋在哪、寫去哪。
+function resolveWriteTarget(path: string): string {
+  let link;
+  try {
+    link = lstatSync(path);
+  } catch {
+    return path; // 路徑還不存在：照常新建一般檔案
+  }
+  if (!link.isSymbolicLink()) {
+    if (!link.isFile()) throw nonRegularFileError(path);
+    return path;
+  }
+  let real: string;
+  try {
+    real = realpathSync(path);
+  } catch {
+    // 斷鏈：realpath 解不出來，只能報 link 自己記的目標
+    throw nonRegularFileError(path, readlinkSync(path));
+  }
+  if (!statSync(real).isFile()) throw nonRegularFileError(path, real);
+  return real;
+}
+
 // Stage every replacement and backup first, then rename them into place. Keep
 // rollback copies until the entire installation succeeds (including settings).
-function installFiles(files: { path: string; content: string }[]): boolean {
+// Exported for tests: installHook 自己走 homedir()（bun 啟動時就快取），交易層
+// 的檔案系統行為只能用測試給定的路徑直接驗。
+export function installFiles(files: { path: string; content: string }[]): boolean {
   const staged: StagedFile[] = [];
   let backedUp = false;
   let committed = false;
   function stage(path: string, content: Buffer): void {
-    mkdirSync(dirname(path), { recursive: true });
-    const current = existsSync(path) ? lstatSync(path) : null;
-    if (current && !current.isFile()) throw new Error(`Refusing to replace non-regular file: ${path}`);
-    const entry: StagedFile = { path, staged: `${path}.${randomUUID()}.tmp`, installed: false };
+    const target = resolveWriteTarget(path);
+    mkdirSync(dirname(target), { recursive: true });
+    const current = existsSync(target) ? lstatSync(target) : null;
+    const entry: StagedFile = { path: target, staged: `${target}.${randomUUID()}.tmp`, installed: false };
     staged.push(entry);
     writeFileSync(entry.staged, content, { flag: "wx", mode: current?.mode ?? 0o600 });
     if (current) {
-      entry.rollback = `${path}.${randomUUID()}.rollback`;
-      writeFileSync(entry.rollback, readFileSync(path), { flag: "wx", mode: current.mode });
+      entry.rollback = `${target}.${randomUUID()}.rollback`;
+      writeFileSync(entry.rollback, readFileSync(target), { flag: "wx", mode: current.mode });
     }
   }
   try {
     for (const file of files) {
       const next = Buffer.from(file.content);
-      if (existsSync(file.path)) {
-        if (!lstatSync(file.path).isFile()) throw new Error(`Refusing to replace non-regular file: ${file.path}`);
-        const previous = readFileSync(file.path);
+      const target = resolveWriteTarget(file.path);
+      if (existsSync(target)) {
+        const previous = readFileSync(target);
         if (previous.equals(next)) continue;
-        stage(file.path + ".backup", previous);
+        stage(target + ".backup", previous);
         backedUp = true;
       }
-      stage(file.path, next);
+      stage(target, next);
     }
     for (const entry of staged) {
       renameSync(entry.staged, entry.path);

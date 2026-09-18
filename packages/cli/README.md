@@ -70,9 +70,11 @@ The hook process only reads `hook_event_name` from the event on stdin and hands 
 
 Hook scripts come from your configured tracker server. Setup/update migrate old tracker commands and quote paths containing spaces. Existing shell/PowerShell installers remain Claude-only; they do not install Codex reporting.
 
+When `settings.json` or `hooks.json` is a symbolic link (dotfiles setups), the CLI writes through to the real file and leaves the link in place; the `.backup` is written next to the real file. A link that dangles or resolves to anything other than a regular file is refused, and the whole transaction is rolled back.
+
 ### Collector
 
-Setup and update run the same collector step. When `ccusage` is missing, the CLI prints and runs `npm install -g ccusage@20.0.20`. When a different major version is installed, it warns that Claude reporting works but Codex requires 20.0.20, and does not replace it. Set `CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL=1` to skip the automatic install and just print the command. A failed install never changes the exit status of setup or update — `status` reports what is missing.
+Setup and update run the same collector step, and only when at least one supported tool is detected. When `ccusage` is missing, the CLI prints and runs `npm install -g ccusage@20.0.20`. That is a global npm install: it downloads the package from the registry and runs its install-time (lifecycle) scripts. If you would rather install the collector yourself, set `CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL=1` before running setup or update — the CLI then only prints the command. When a different major version is installed, it warns that Claude reporting works but Codex requires 20.0.20, and does not replace it; the same check applies to the version probed right after an automatic install, since another `ccusage` earlier on PATH may win. A failed install never changes the exit status of setup or update — `status` reports what is missing.
 
 ## Codex usage
 

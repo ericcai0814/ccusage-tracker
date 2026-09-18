@@ -1,7 +1,18 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   applyTrackerHooks,
   buildHookCommand,
@@ -9,12 +20,14 @@ import {
   getHookCommand,
   getStartHookCommand,
   getStopHookCommand,
+  installFiles,
 } from "./hooks";
 import { getCodexHookCommand } from "./codex-hooks";
 
 // 注意：installHook 會寫入真實 ~/.claude/settings.json 與 ~/.config（bun 的 os.homedir()
-// 在 process 啟動時就快取 $HOME，無法在測試內安全覆寫）。因此這裡只測試抽出的純合併
-// 邏輯 applyTrackerHooks，完全不碰檔案系統。
+// 在 process 啟動時就快取 $HOME，無法在測試內安全覆寫）。因此合併邏輯只測純函式
+// applyTrackerHooks；需要碰檔案系統的交易層改測 installFiles，路徑全部由測試給定的
+// 暫存目錄決定，不經過 homedir()。
 
 const startCmd = getStartHookCommand();
 const endCmd = getHookCommand();
@@ -300,5 +313,108 @@ describe("tracker hook 辨識涵蓋 codex-sync.mjs", () => {
 
     const commands = result.updated.hooks!.SessionEnd!.flatMap((m) => m.hooks.map((h) => h.command));
     expect(commands).toEqual([getHookCommand()]);
+  });
+});
+
+// dotfiles 使用者的 ~/.claude/settings.json 與 $CODEX_HOME/hooks.json 常是 symlink。
+// 交易要寫穿到真實檔案並保留 symlink，但不放寬對目錄、斷鏈這類非一般檔案的拒絕。
+describe("installFiles 對 symlink 設定檔寫穿真實檔案", () => {
+  let scratches: string[] = [];
+  // macOS 的 /var 本身是 symlink（→ /private/var），暫存目錄先正規化，
+  // 否則「訊息含 symlink 目標」的斷言會被 /private 前綴弄假。
+  const scratch = (prefix: string): string => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+    scratches = [...scratches, dir];
+    return dir;
+  };
+  const leftovers = (dir: string): string[] =>
+    readdirSync(dir).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"));
+  const refusal = (files: { path: string; content: string }[]): string => {
+    try {
+      installFiles(files);
+      return "";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  };
+
+  afterEach(() => {
+    for (const dir of scratches) rmSync(dir, { recursive: true, force: true });
+    scratches = [];
+  });
+
+  it("symlink → 一般檔案：內容進真實檔案、symlink 保留、backup 在真實檔案旁", () => {
+    const home = scratch("tracker home ");
+    const dotfiles = scratch("tracker dotfiles ");
+    const real = join(dotfiles, "settings.json");
+    const link = join(home, ".claude", "settings.json");
+    const script = join(home, ".config", "ccusage-tracker", "session-end.mjs");
+    const previous = '{"model":"opus"}\n';
+    const next = '{"model":"opus","hooks":{"Stop":[]}}\n';
+    writeFileSync(real, previous);
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(real, link);
+
+    const backedUp = installFiles([
+      { path: script, content: "// session-end\n" },
+      { path: link, content: next },
+    ]);
+
+    expect(backedUp).toBe(true);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readFileSync(real, "utf8")).toBe(next);
+    expect(readFileSync(link, "utf8")).toBe(next);
+    expect(readFileSync(`${real}.backup`, "utf8")).toBe(previous);
+    expect(existsSync(`${link}.backup`)).toBe(false);
+    expect(readFileSync(script, "utf8")).toBe("// session-end\n");
+    expect(leftovers(dotfiles)).toEqual([]);
+    expect(leftovers(dirname(link))).toEqual([]);
+    expect(leftovers(dirname(script))).toEqual([]);
+  });
+
+  it("symlink → 目錄：整筆交易拒絕，訊息帶出 link 目標，其他檔案不落地", () => {
+    const home = scratch("tracker home ");
+    const target = scratch("tracker target ");
+    const link = join(home, "codex", "hooks.json");
+    const script = join(home, ".config", "ccusage-tracker", "codex-sync.mjs");
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(target, link);
+
+    const message = refusal([
+      { path: script, content: "// codex-sync\n" },
+      { path: link, content: "{}\n" },
+    ]);
+
+    expect(message).toContain("Refusing to replace non-regular file");
+    expect(message).toContain(link);
+    expect(message).toContain(target);
+    expect(existsSync(script)).toBe(false);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readdirSync(target)).toEqual([]);
+    expect(leftovers(dirname(script))).toEqual([]);
+    expect(leftovers(dirname(link))).toEqual([]);
+  });
+
+  it("斷鏈 symlink：整筆交易拒絕，訊息帶出 link 目標，其他檔案不落地", () => {
+    const home = scratch("tracker home ");
+    const missing = join(scratch("tracker target "), "hooks.json");
+    const link = join(home, "codex", "hooks.json");
+    const script = join(home, ".config", "ccusage-tracker", "codex-sync.mjs");
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(missing, link);
+
+    const message = refusal([
+      { path: script, content: "// codex-sync\n" },
+      { path: link, content: "{}\n" },
+    ]);
+
+    expect(message).toContain("Refusing to replace non-regular file");
+    expect(message).toContain(link);
+    expect(message).toContain(missing);
+    expect(existsSync(script)).toBe(false);
+    expect(existsSync(missing)).toBe(false);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(leftovers(dirname(script))).toEqual([]);
+    expect(leftovers(dirname(link))).toEqual([]);
   });
 });

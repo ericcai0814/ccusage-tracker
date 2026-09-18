@@ -188,7 +188,9 @@ export function hasTrackerNotify(configToml: string): boolean {
   let depth = 0;
   for (const line of lines) {
     const trimmed = line.trim();
-    if (collected === null && trimmed.startsWith("[")) return false; // 進入第一個 table，頂層已結束
+    // 只有整行是 table 標頭才代表頂層結束；跨行陣列的續行（例如 `[1, 2],`）也以
+    // `[` 開頭，但仍在頂層，不能提早中斷掃描。
+    if (collected === null && /^\[[^\]]*\]$/.test(trimmed)) return false;
     if (collected === null && !/^notify\s*=/.test(trimmed)) continue;
     collected = (collected ?? "") + trimmed;
     depth += (trimmed.match(/\[/g)?.length ?? 0) - (trimmed.match(/\]/g)?.length ?? 0);

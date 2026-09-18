@@ -1,11 +1,16 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setupCommand, type SetupDeps } from "./setup";
-import type { InstallResult, InstallTargets } from "../hooks";
+import { applyTrackerHooks, installFiles, type InstallResult, type InstallTargets } from "../hooks";
+import { applyCodexHooks, getCodexHooksPath } from "../codex-hooks";
 import type { TrackerScripts } from "../scripts";
 
 // 檔案系統層的斷言（hooks.json 真的長出 tracker 群組、config.toml 位元組不變）
 // 在 update.test.ts 的 Node CLI harness：bun 在 process 啟動時快取 os.homedir()，
-// 這裡改不了 $HOME，所以本檔只驗注入的依賴與輸出契約。
+// 這裡改不了 $HOME，所以本檔主要驗注入的依賴與輸出契約。唯一的例外在檔尾的
+// symlink 案：它把 installHook 換成真實交易，但路徑全部由測試指定，不經過 homedir()。
 interface MockState {
   logs: string[];
   warns: string[];
@@ -13,6 +18,7 @@ interface MockState {
   writtenConfig: unknown;
   targets: InstallTargets | null;
   installedCollector: string[];
+  probes: number;
 }
 
 interface MockOptions {
@@ -35,6 +41,7 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
     writtenConfig: null,
     targets: null,
     installedCollector: [],
+    probes: 0,
     prompt: async () => prompts[promptIndex++] ?? "",
     writeConfig: (config) => { deps.writtenConfig = config; },
     installHook: (scripts: TrackerScripts, targets: InstallTargets): InstallResult => {
@@ -58,7 +65,10 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
     checkServer: async () => true,
     detectClaude: () => options.claude ?? true,
     detectCodex: () => options.codex ?? true,
-    probeCollector: () => collector[Math.min(probeIndex++, collector.length - 1)],
+    probeCollector: () => {
+      deps.probes += 1;
+      return collector[Math.min(probeIndex++, collector.length - 1)];
+    },
     installCollector: (command) => { deps.installedCollector.push(command); return true; },
     readCodexConfig: () => options.configToml ?? null,
     log: (msg) => deps.logs.push(msg),
@@ -177,6 +187,27 @@ describe("setup 逐工具接線", () => {
     expect(output(deps)).not.toContain("Codex: hooks installed (Stop, SessionEnd).");
   });
 
+  it("server 對 codex-sync.mjs 回 404 且未偵測到 Codex：只印 not detected，不印相容訊息", async () => {
+    const deps = createMockDeps(answers, { codex: false, codexScript: false });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain("Codex: not detected");
+    expect(output(deps)).not.toContain("does not provide Codex support");
+  });
+
+  it("hooks.state 有 enabled = false：結果行說已停用，不再要求去信任", async () => {
+    // 使用者信任後主動關掉，不是還沒信任 —— status.ts 判得對，這裡要一致。
+    const hooksPath = getCodexHooksPath();
+    const deps = createMockDeps(answers, {
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\nenabled = false\n` +
+        `[hooks.state."${hooksPath}:session_end:0:0"]\nenabled = false\n`,
+    });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain("Codex: hooks installed but disabled in Codex");
+    expect(output(deps)).not.toContain("/hooks");
+  });
+
   it("config.toml 仍留著 tracker 的 notify：提示自行移除，但不編輯 TOML", async () => {
     const deps = createMockDeps(answers, {
       configToml: 'notify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs", "--notify"]\n',
@@ -227,6 +258,18 @@ describe("setup 的收集器步驟", () => {
     expect(deps.exitCode).toBeNull();
   });
 
+  it("兩個工具都沒偵測到：不探測也不安裝收集器", async () => {
+    // 沒有 Claude 也沒有 Codex 時，全域安裝的 ccusage 當下沒有任何用途。
+    const deps = createMockDeps(answers, { claude: false, codex: false, collector: [null] });
+    await setupCommand(deps);
+
+    expect(deps.probes).toBe(0);
+    expect(deps.installedCollector).toEqual([]);
+    expect(output(deps)).not.toContain("Collector:");
+    expect(deps.logs.some((l) => l.includes("Setup complete"))).toBe(true);
+    expect(deps.exitCode).toBeNull();
+  });
+
   it("安裝失敗不改 exit code，只留下可照抄的指令", async () => {
     const deps = createMockDeps(answers, { collector: [null, null] });
     await setupCommand(deps);
@@ -234,5 +277,62 @@ describe("setup 的收集器步驟", () => {
     expect(deps.warns.some((w) => w.includes("npm install -g ccusage@20.0.20"))).toBe(true);
     expect(deps.exitCode).toBeNull();
     expect(deps.logs.some((l) => l.includes("Setup complete"))).toBe(true);
+  });
+});
+
+// setup 的完整檔案系統路徑在 update.test.ts 的 Node CLI harness（子程序才有真的 HOME）。
+// 這裡把注入的 installHook 換成真實的合併 + 交易，只把 homedir() 推導的路徑換成暫存
+// 目錄，驗 dotfiles 使用者的 setup 會走完而不是被 symlink 防護中止。
+describe("setup 對 symlink 設定檔", () => {
+  let scratches: string[] = [];
+  const scratch = (): string => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "tracker setup home ")));
+    scratches = [...scratches, dir];
+    return dir;
+  };
+
+  afterEach(() => {
+    for (const dir of scratches) rmSync(dir, { recursive: true, force: true });
+    scratches = [];
+  });
+
+  it("settings.json 與 hooks.json 皆為 symlink：setup 完成、symlink 保留、真實檔案含 tracker hook", async () => {
+    const home = scratch();
+    const dotfiles = join(home, "dotfiles");
+    mkdirSync(dotfiles, { recursive: true });
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    mkdirSync(join(home, "codex"), { recursive: true });
+    const realSettings = join(dotfiles, "settings.json");
+    const realHooks = join(dotfiles, "hooks.json");
+    const settingsRaw = '{"model":"opus"}\n';
+    writeFileSync(realSettings, settingsRaw);
+    writeFileSync(realHooks, "{}\n");
+    const settingsLink = join(home, ".claude", "settings.json");
+    const hooksLink = join(home, "codex", "hooks.json");
+    symlinkSync(realSettings, settingsLink);
+    symlinkSync(realHooks, hooksLink);
+
+    const deps = createMockDeps(answers);
+    const recordTargets = deps.installHook;
+    deps.installHook = (scripts: TrackerScripts, targets: InstallTargets): InstallResult => {
+      const claude = applyTrackerHooks(JSON.parse(readFileSync(settingsLink, "utf8")));
+      const codex = applyCodexHooks(JSON.parse(readFileSync(hooksLink, "utf8")));
+      installFiles([
+        { path: settingsLink, content: JSON.stringify(claude.updated, null, 2) + "\n" },
+        { path: hooksLink, content: JSON.stringify(codex.updated, null, 2) + "\n" },
+      ]);
+      return recordTargets(scripts, targets);
+    };
+
+    await setupCommand(deps);
+
+    expect(deps.exitCode).toBeNull();
+    expect(deps.logs.some((line) => line.includes("Setup complete"))).toBe(true);
+    expect(lstatSync(settingsLink).isSymbolicLink()).toBe(true);
+    expect(lstatSync(hooksLink).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(realSettings, "utf8")).hooks.Stop[0].hooks[0].command).toContain("session-end.mjs");
+    expect(JSON.parse(readFileSync(realHooks, "utf8")).hooks.Stop[0].hooks[0].command).toContain("codex-sync.mjs");
+    expect(readFileSync(`${realSettings}.backup`, "utf8")).toBe(settingsRaw);
+    expect(existsSync(`${settingsLink}.backup`)).toBe(false);
   });
 });

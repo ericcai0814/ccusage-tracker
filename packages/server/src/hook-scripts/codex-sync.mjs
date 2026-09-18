@@ -217,7 +217,10 @@ function readStdin(timeoutMs, limitBytes) {
 function throttled() {
   try {
     const last = parseInt(readFileSync(FLUSH, 'utf8'), 10);
-    if (Number.isFinite(last) && Date.now() - last < THROTTLE_MS) return true;
+    // age 為負代表時間戳在未來（時鐘往前跳後校回，或 ~/.config 在兩台不同步的
+    // 機器間同步）。不把它當成「剛剛才跑過」，否則牆鐘追上前每次觸發都被靜默擋掉。
+    const age = Date.now() - last;
+    if (Number.isFinite(last) && age >= 0 && age < THROTTLE_MS) return true;
   } catch { /* 沒有紀錄或讀不到，視為可以跑 */ }
   return false;
 }

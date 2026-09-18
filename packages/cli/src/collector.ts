@@ -58,8 +58,15 @@ function majorVersion(version: string): string | null {
   return match ? match[1] : null;
 }
 
-// setup 與 update 共用的收集器步驟。安裝失敗只警告 —— hook 已經裝好了，
-// 缺收集器是 status 顯示得出來的狀態，不該讓整個安裝回報失敗。
+// Claude 仍能上報，只有 Codex 需要 20.x —— 所以是警告加指令，不是替換使用者的安裝。
+function unsupportedMajor(deps: CollectorDeps, version: string): CollectorResult {
+  deps.warn(`Collector: ccusage ${displayVersion(version)} reports usage for Claude, but Codex requires ${COLLECTOR_VERSION}. Install it yourself with: ${COLLECTOR_INSTALL_COMMAND}`);
+  return { status: "unsupported_major", version };
+}
+
+// setup 與 update 共用的收集器步驟（只在至少偵測到一個工具時被呼叫）。安裝失敗
+// 只警告 —— hook 已經裝好了，缺收集器是 status 顯示得出來的狀態，不該讓整個安裝
+// 回報失敗。
 export function ensureCollector(deps: CollectorDeps): CollectorResult {
   const version = deps.probe();
 
@@ -68,8 +75,7 @@ export function ensureCollector(deps: CollectorDeps): CollectorResult {
       deps.log(`Collector: ccusage ${displayVersion(version)} (Claude and Codex ready)`);
       return { status: "ok", version };
     }
-    deps.warn(`Collector: ccusage ${displayVersion(version)} reports usage for Claude, but Codex requires ${COLLECTOR_VERSION}. Install it yourself with: ${COLLECTOR_INSTALL_COMMAND}`);
-    return { status: "unsupported_major", version };
+    return unsupportedMajor(deps, version);
   }
 
   if (process.env[SKIP_ENV] === "1") {
@@ -86,6 +92,9 @@ export function ensureCollector(deps: CollectorDeps): CollectorResult {
     deps.warn(`Collector: automatic install did not succeed. Install it yourself with: ${COLLECTOR_INSTALL_COMMAND}`);
     return { status: "install_failed" };
   }
+  // 裝完跑起來的未必是剛裝的那一個：PATH 上另一個 prefix 或專案內的舊 ccusage
+  // 會先命中。所以安裝後的版本套用同一道主版本判斷，不能因為「是我們裝的」就放行。
+  if (majorVersion(reprobed) !== "20") return unsupportedMajor(deps, reprobed);
   deps.log(`Collector: ccusage ${displayVersion(reprobed)} installed.`);
   return { status: "installed", version: reprobed };
 }
