@@ -1,8 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-09-19
 
-本節功能尚未發布到 npm 或部署到 server；版本號維持不變。
+CLI 0.2.0。server 需部署此版本，`/api/health` 回 `version: 0.4.0`；舊 CLI 0.1.7 對新 server 仍可正常上報。
 
 ### Added
 

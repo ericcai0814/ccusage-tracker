@@ -15,8 +15,6 @@
 > 團隊 Claude Code／Codex token 用量追蹤工具，基於 [ccusage](https://github.com/ryoppippi/ccusage) 建立多人彙整層。
 > 沿用訂閱／OAuth 的本機用量紀錄，不需要模型 API key，不上傳對話內容。
 
-**未發佈：** 本分支新增的 `update`、Codex hooks 接線與 Codex 腳本尚未發布到 npm 或部署到 server。以下新指令須等對應 CLI 發布、server 部署後才可使用；本機可先 build，再以 `node packages/cli/dist/index.js <command>` 執行。
-
 `#claude-code` · `#ccusage` · `#token-usage` · `#self-hosted` · `#hono` · `#bun` · `#sqlite` · `#typescript` · `#zeabur`
 
 ## 它解決什麼問題
@@ -155,7 +153,7 @@ tracker update
 
 沒有通用的 `npx update` 指令；請使用上面的完整套件指令。
 
-## Codex 用量同步（未發佈）
+## Codex 用量同步
 
 沿用已登入 ChatGPT 訂閱／OAuth 的 Codex CLI。本工具讀取既有本機 usage 紀錄，不需要 OpenAI API key，也不會登入或改寫 Codex 認證。
 

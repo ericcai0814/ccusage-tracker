@@ -4,8 +4,6 @@ CLI for [ccusage-tracker](https://github.com/ericcai0814/ccusage-tracker), a sel
 
 Reports usage from local subscription/OAuth logs. No model API key is needed, and reporting does not upload prompts, responses, or tool results. The tracker team key is a separate server access credential.
 
-**Unreleased:** `update`, the Codex hook wiring, and the Codex script on this branch have not been published or deployed. The commands below require the corresponding CLI release and server deployment. For a local checkout, build with `pnpm --filter ccusage-tracker build` and use `node packages/cli/dist/index.js <command>`.
-
 ## Quick start
 
 ```bash

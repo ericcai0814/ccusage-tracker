@@ -11,7 +11,7 @@ describe("Server", () => {
     expect(res.status).toBe(200);
 
     const body = await res.json();
-    expect(body).toEqual({ ok: true, version: "0.1.0" });
+    expect(body).toEqual({ ok: true, version: "0.4.0" });
 
     db.close();
   });
