@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -256,6 +256,52 @@ describe("Node CLI update", () => {
       expect(readFileSync(join(configDir, name), "utf8")).toBe("// previous " + name);
     }
     expect(readdirSync(configDir).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
+  });
+
+  it("設定檔是 dotfiles 的 symlink：寫穿真實檔案、symlink 保留、backup 在真實檔案旁", async () => {
+    configure();
+    const dotfiles = join(home, "dotfiles");
+    mkdirSync(join(dotfiles, "claude"), { recursive: true });
+    mkdirSync(join(dotfiles, "codex"), { recursive: true });
+    const realSettings = join(dotfiles, "claude", "settings.json");
+    const realHooks = join(dotfiles, "codex", "hooks.json");
+    const settingsRaw = JSON.stringify({ model: "opus" }, null, 4) + "\n";
+    const hooksRaw = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "echo codex-third-party" }] }] } }, null, 4) + "\n";
+    writeFileSync(realSettings, settingsRaw);
+    writeFileSync(realHooks, hooksRaw);
+    mkdirSync(join(home, ".claude"));
+    mkdirSync(join(home, "codex"));
+    symlinkSync(realSettings, join(home, ".claude", "settings.json"));
+    symlinkSync(realHooks, join(home, "codex", "hooks.json"));
+
+    const first = await cli(["update"]);
+
+    expect(first.code).toBe(0);
+    // symlink 本身不動：unlink 它等於毀掉使用者的 dotfiles 管理
+    expect(lstatSync(join(home, ".claude", "settings.json")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(home, "codex", "hooks.json")).isSymbolicLink()).toBe(true);
+    const settings = JSON.parse(readFileSync(realSettings, "utf8"));
+    expect(settings.model).toBe("opus");
+    expect(settings.hooks.Stop[0].hooks[0].command).toContain("session-end.mjs");
+    expect(settings.hooks.SessionStart[0].hooks[0].command).toContain("session-start.mjs");
+    const hooks = JSON.parse(readFileSync(realHooks, "utf8"));
+    expect(hooks.hooks.Stop[0].hooks[0].command).toBe("echo codex-third-party");
+    expect(hooks.hooks.Stop[1].hooks[0].command).toMatch(/^node ".*codex-sync\.mjs" --hook$/);
+    // backup 跟著真實檔案走，symlink 那側不產生 .backup
+    expect(readFileSync(`${realSettings}.backup`, "utf8")).toBe(settingsRaw);
+    expect(readFileSync(`${realHooks}.backup`, "utf8")).toBe(hooksRaw);
+    expect(existsSync(join(home, ".claude", "settings.json.backup"))).toBe(false);
+    expect(existsSync(join(home, "codex", "hooks.json.backup"))).toBe(false);
+
+    const installedSettings = readFileSync(realSettings, "utf8");
+    const installedHooks = readFileSync(realHooks, "utf8");
+    const second = await cli(["update"]);
+
+    expect(second.code).toBe(0);
+    expect(readFileSync(realSettings, "utf8")).toBe(installedSettings);
+    expect(readFileSync(realHooks, "utf8")).toBe(installedHooks);
+    expect(readdirSync(join(dotfiles, "claude")).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
+    expect(readdirSync(join(dotfiles, "codex")).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
   });
 
   it("rejects malformed Claude settings without mutating scripts", async () => {

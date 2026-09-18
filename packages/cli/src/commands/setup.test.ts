@@ -1,11 +1,16 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setupCommand, type SetupDeps } from "./setup";
-import type { InstallResult, InstallTargets } from "../hooks";
+import { applyTrackerHooks, installFiles, type InstallResult, type InstallTargets } from "../hooks";
+import { applyCodexHooks, getCodexHooksPath } from "../codex-hooks";
 import type { TrackerScripts } from "../scripts";
 
 // 檔案系統層的斷言（hooks.json 真的長出 tracker 群組、config.toml 位元組不變）
 // 在 update.test.ts 的 Node CLI harness：bun 在 process 啟動時快取 os.homedir()，
-// 這裡改不了 $HOME，所以本檔只驗注入的依賴與輸出契約。
+// 這裡改不了 $HOME，所以本檔主要驗注入的依賴與輸出契約。唯一的例外在檔尾的
+// symlink 案：它把 installHook 換成真實交易，但路徑全部由測試指定，不經過 homedir()。
 interface MockState {
   logs: string[];
   warns: string[];
@@ -234,5 +239,62 @@ describe("setup 的收集器步驟", () => {
     expect(deps.warns.some((w) => w.includes("npm install -g ccusage@20.0.20"))).toBe(true);
     expect(deps.exitCode).toBeNull();
     expect(deps.logs.some((l) => l.includes("Setup complete"))).toBe(true);
+  });
+});
+
+// setup 的完整檔案系統路徑在 update.test.ts 的 Node CLI harness（子程序才有真的 HOME）。
+// 這裡把注入的 installHook 換成真實的合併 + 交易，只把 homedir() 推導的路徑換成暫存
+// 目錄，驗 dotfiles 使用者的 setup 會走完而不是被 symlink 防護中止。
+describe("setup 對 symlink 設定檔", () => {
+  let scratches: string[] = [];
+  const scratch = (): string => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "tracker setup home ")));
+    scratches = [...scratches, dir];
+    return dir;
+  };
+
+  afterEach(() => {
+    for (const dir of scratches) rmSync(dir, { recursive: true, force: true });
+    scratches = [];
+  });
+
+  it("settings.json 與 hooks.json 皆為 symlink：setup 完成、symlink 保留、真實檔案含 tracker hook", async () => {
+    const home = scratch();
+    const dotfiles = join(home, "dotfiles");
+    mkdirSync(dotfiles, { recursive: true });
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    mkdirSync(join(home, "codex"), { recursive: true });
+    const realSettings = join(dotfiles, "settings.json");
+    const realHooks = join(dotfiles, "hooks.json");
+    const settingsRaw = '{"model":"opus"}\n';
+    writeFileSync(realSettings, settingsRaw);
+    writeFileSync(realHooks, "{}\n");
+    const settingsLink = join(home, ".claude", "settings.json");
+    const hooksLink = join(home, "codex", "hooks.json");
+    symlinkSync(realSettings, settingsLink);
+    symlinkSync(realHooks, hooksLink);
+
+    const deps = createMockDeps(answers);
+    const recordTargets = deps.installHook;
+    deps.installHook = (scripts: TrackerScripts, targets: InstallTargets): InstallResult => {
+      const claude = applyTrackerHooks(JSON.parse(readFileSync(settingsLink, "utf8")));
+      const codex = applyCodexHooks(JSON.parse(readFileSync(hooksLink, "utf8")));
+      installFiles([
+        { path: settingsLink, content: JSON.stringify(claude.updated, null, 2) + "\n" },
+        { path: hooksLink, content: JSON.stringify(codex.updated, null, 2) + "\n" },
+      ]);
+      return recordTargets(scripts, targets);
+    };
+
+    await setupCommand(deps);
+
+    expect(deps.exitCode).toBeNull();
+    expect(deps.logs.some((line) => line.includes("Setup complete"))).toBe(true);
+    expect(lstatSync(settingsLink).isSymbolicLink()).toBe(true);
+    expect(lstatSync(hooksLink).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(realSettings, "utf8")).hooks.Stop[0].hooks[0].command).toContain("session-end.mjs");
+    expect(JSON.parse(readFileSync(realHooks, "utf8")).hooks.Stop[0].hooks[0].command).toContain("codex-sync.mjs");
+    expect(readFileSync(`${realSettings}.backup`, "utf8")).toBe(settingsRaw);
+    expect(existsSync(`${settingsLink}.backup`)).toBe(false);
   });
 });
