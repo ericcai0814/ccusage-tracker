@@ -42,3 +42,13 @@
 - [x] 7.2 實作 packages/cli/src/codex-hooks.ts：`$`、反引號、`%` 不分引號內外一律拒絕（POSIX 雙引號內仍會展開，`%` 是 cmd.exe 展開）；腳本路徑與直譯器 token 的反斜線只在 Windows 磁碟機 `^[A-Za-z]:\` 或 UNC `^\\` 形狀下才算分隔，其餘一律第三方。驗證：7.1 全綠。
 - [x] 7.3 修正 packages/cli/src/commands/setup.test.ts 的 SessionEnd 作廢測試：起始狀態改為兩事件皆 recorded、只設 `codexSessionEndChanged: true`，斷言只有 SessionEnd 降為 awaiting 且輸出不含 already up to date。驗證：以 mutation（拿掉整個作廢邏輯）確認該案例與 Stop 方向的案例都會轉紅。
 - [x] 7.4 重跑 pnpm test、typecheck、build 與 smoke；更新 verification.md 與 REPORT.md。
+
+## 8. 審查閘 round 5 補修
+
+- [x] 8.1 依規格 scenario「The command the CLI writes is always recognized」先寫失敗測試：家目錄含 `%`／`$`／反引號時，以同一條 canonical 命令連跑三次 `applyCodexHooks`，Stop 群組數必須維持 1 且第二次起 `anyChanged` 為 false。驗證：先紅（實測 1→2→3 無上限成長）。
+- [x] 8.2 實作 packages/cli/src/codex-hooks.ts 的 `isTrackerHookCommand` canonical 位元組相等豁免，並把 canonical 命令一路帶進 `isCodexTrackerHook`／`upsertCodexGroups`／`findCodexTrackerIndexes`／`applyCodexHooks`；packages/cli/src/hooks.ts 的 `isCcusageTrackerHook` 傳入三條 canonical 命令。驗證：8.1 全綠，round 4 的 10 條反例仍全部是第三方。
+- [x] 8.3 `%` 的拒絕範圍收斂為成對的 `%NAME%`（cmd.exe 變數展開），單獨的 `%` 視為普通路徑字元。驗證：`node C:/%TARGET%/…` 仍被拒、`node "/Users/a%b/…"` 可辨識。
+- [x] 8.4 重跑 pnpm test、typecheck、build 與 smoke；更新 verification.md 與 REPORT.md。
+- [x] 8.5 依 Codex round 5 finding (c1) 補測並實作：未加引號的直譯器或路徑 token 含 brace／glob（`{ } * ? [ ]`）一律第三方，引號內不受影響。驗證：`/opt/{real,foreign}/node "…"`、`/opt/*/node "…"`、`node /home/*/…` 皆原樣保留。
+- [x] 8.6 依 Codex round 5 finding (c2) 補測並實作：整條命令任何位置出現 `!` 一律第三方（cmd.exe delayed expansion），canonical 含 `!` 時由第一層接住。驗證：`node C:/!TARGET!/…`（引號內外）皆保留；家目錄 `/home/a!b` 重複安裝仍為 noop。
+- [x] 8.7 依 Codex round 5 finding (b) 修正反斜線規則：腳本路徑尾綴在 Windows 路徑（磁碟機／UNC）下兩種分隔都算，其餘只認正斜線；未加引號含反斜線的 token 一律第三方。驗證：`/home/a\b/.config/ccusage-tracker/codex-sync.mjs` 被辨識、`/tmp/ccusage-tracker\codex-sync.mjs` 被拒、Windows 與 UNC 路徑仍被辨識。

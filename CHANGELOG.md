@@ -14,7 +14,10 @@
 - `config.toml` 的頂層掃描改為追蹤字串狀態與陣列深度，只在深度 0 且不在字串內時辨識 table 標頭。原本 `[[servers]]` 與 `[tui] # 註解` 沒被當成 table（提示多印），無尾逗號的陣列續行 `[3, 4]` 與多行字串裡的 `[tui]` 反而被當成 table（提示漏印）。
 - tracker hook 的辨識再收緊：引號外出現 shell 語法（`&`、`|`、`;`、`<`、`>`、反引號、`$`、括號、單引號、換行）一律視為第三方。原本只以空白切 token，`--mode=stop&&false` 這種黏在參數後、中間沒有空白的複合命令仍會被整條當成 tracker，更新時把後半段命令刪掉。
 - 舊版安裝器寫出的 hook 命令恢復可就地升級：辨識支援受限的直譯器前綴（`node`／`bash`／`sh`／`powershell`／`pwsh`，且必須與腳本副檔名相符），以及未加引號、家目錄含空白的腳本路徑。辨識收緊後這些舊 hook 會升級不了，變成新舊兩條並存重複觸發。腳本路徑必須是單一 token（裸的或雙引號）：把多個以空白分隔的 token 重組成路徑等於猜「空白是路徑的一部分還是參數分隔」，而 `node /opt/lint.js config/ccusage-tracker/session-end.mjs` 這種第三方命令與含空白的路徑在字串層面無法區分，猜錯會把第三方 hook 整條刪掉。代價是家目錄含空白、且由未加引號的舊安裝器裝的 hook 不會被升級，而是多 append 一條（重複觸發由節流與鎖吸收）。
-- tracker hook 辨識再補上 shell 重新解讀字元的防護：任何位置的 `$` 與反引號（POSIX 雙引號內照樣展開，`node "/tmp/$(cmd)/ccusage-tracker/codex-sync.mjs"` 指向的是別的檔案）、`%`（cmd.exe 變數展開），以及路徑中非 Windows 磁碟機／UNC 形狀的反斜線（POSIX 會當成跳脫，`/tmp/ccusage-tracker\codex-sync.mjs` 實際執行 `/tmp/ccusage-trackercodex-sync.mjs`）一律視為第三方。Windows 磁碟機與 UNC 路徑仍正常辨識。
+- tracker hook 辨識再補上 shell 重新解讀字元的防護：任何位置的 `$` 與反引號（POSIX 雙引號內照樣展開，`node "/tmp/$(cmd)/ccusage-tracker/codex-sync.mjs"` 指向的是別的檔案）、`%`（cmd.exe 變數展開），以及路徑中非 Windows 磁碟機／UNC 形狀的反斜線（POSIX 會當成跳脫，`/tmp/ccusage-tracker\codex-sync.mjs` 實際執行 `/tmp/ccusage-trackercodex-sync.mjs`）一律視為第三方。Windows 磁碟機與 UNC 路徑仍正常辨識；`%` 只擋成對的 `%NAME%`，單獨的 `%` 是普通路徑字元。
+- 未加引號的 token 含 brace／glob（`{ } * ? [ ]`）或任何位置出現 `!` 一律視為第三方：`/opt/{real,foreign}/node "<tracker>"` 會被 shell 展開成兩個路徑，真正執行的是後者；`!` 是 cmd.exe delayed expansion。引號內的同樣字元不受影響。
+- 反斜線只在 Windows 路徑（磁碟機／UNC）算分隔符，其餘路徑的尾綴只以正斜線比對：`/home/a\b/.config/ccusage-tracker/codex-sync.mjs` 是合法家目錄下的 tracker 腳本要被認得，`/tmp/ccusage-tracker\codex-sync.mjs` 在 POSIX 是單一檔名則不是。
+- 與本機此刻會寫出的命令位元組相等者一律視為 tracker hook：家目錄含 `$`、反引號或 `%VAR%` 時，形狀規則會拒絕 tracker 自己寫出的命令，導致每次 `setup`／`update` 都再 append 一條、無上限成長。位元組相等代表那本來就是自己寫的，替換為 no-op。
 - `config.toml` 掃描修正多行基本字串（`"""`）的反斜線跳脫：`\"""` 不再被當成字串結束，否則字串後真正的頂層 `notify` 會被漏報、字串內的假 `notify` 會被誤報。多行 literal 字串（`'''`）維持不吃跳脫。
 - 部分更新不再誤報未變動 hook 的信任狀態：改為依 `Stop`／`SessionEnd` 各自的變動與否作廢信任。原本只要任一條有變動就把兩條的信任紀錄一併降級，於是「只補裝 SessionEnd」時會要求重新信任已信任且未變動的 `Stop`。
 

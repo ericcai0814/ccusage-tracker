@@ -14,6 +14,7 @@ import {
   isOnPath,
   isTrackerHookCommand,
   readCodexTrustState,
+  type TrackerScriptPattern,
   type CodexGroupIndexes,
   type CodexHooksFile,
   type CodexTrustState,
@@ -76,13 +77,21 @@ export function getStartHookCommand(): string {
 // 腳本路徑可同時辨識新版（.mjs）與舊版 shell 安裝器（.sh／.ps1）留下的 hook。
 // codex-sync.mjs 也算 tracker hook：它屬於 Codex 的 hooks.json，被手動塞進
 // Claude settings.json 時要一併收掉，否則會重複觸發。
-const CLAUDE_TRACKER_SCRIPT =
-  /[/\\]ccusage-tracker(?:[/\\](?:session-end|session-start|codex-sync)\.(?:mjs|sh|ps1)|\.(?:sh|ps1))$/;
+const CLAUDE_TRACKER_SCRIPT: TrackerScriptPattern = {
+  posix: /\/ccusage-tracker(?:\/(?:session-end|session-start|codex-sync)\.(?:mjs|sh|ps1)|\.(?:sh|ps1))$/,
+  windows: /[/\\]ccusage-tracker(?:[/\\](?:session-end|session-start|codex-sync)\.(?:mjs|sh|ps1)|\.(?:sh|ps1))$/,
+};
 
 // 比對整條命令的形狀而非「含有腳本路徑」：後者會把 `sha256sum "<script>"` 這種
 // 只是引用腳本的第三方 hook 整條換掉（Codex 補審 med）。見 isTrackerHookCommand。
+// 三條 canonical 命令一併傳入：家目錄含 shell 特殊字元時，形狀規則會拒絕我們自己
+// 寫出的命令，那會讓每次 update 都再 append 一條、無上限成長。
 function isCcusageTrackerHook(command?: string): boolean {
-  return isTrackerHookCommand(command, CLAUDE_TRACKER_SCRIPT);
+  return isTrackerHookCommand(command, CLAUDE_TRACKER_SCRIPT, [
+    getStartHookCommand(),
+    getHookCommand(),
+    getStopHookCommand(),
+  ]);
 }
 
 // Claude 視為存在：~/.claude 目錄存在，或 claude 在 PATH。

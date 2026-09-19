@@ -68,10 +68,15 @@ const TRACKER_ARGUMENT = /\s+(?:--hook|--notify|--mode=[^\s"]+)$/;
 // `--mode=stop&&false` 黏在一起，token 白名單看不出來，整條會被當成 tracker。
 const SHELL_SYNTAX = /[&|;<>()'\n\r]/;
 
-// 這三種字元不分引號內外都要拒絕：POSIX 的雙引號內 `$` 與反引號照樣展開
-// （`"/tmp/$(printf x)/ccusage-tracker/codex-sync.mjs"` 指向的是別的檔案），
-// `%` 是 cmd.exe 的變數展開。canonical 命令永遠不含這三種字元。
-const EXPANDS_ANYWHERE = /[$`%]/;
+// 這些展開不分引號內外都要拒絕：POSIX 的雙引號內 `$` 與反引號照樣展開
+// （`"/tmp/$(printf x)/ccusage-tracker/codex-sync.mjs"` 指向的是別的檔案）。
+// `%` 只有成對的 `%NAME%` 才是 cmd.exe 的變數展開，單獨一個 % 在路徑裡是普通字元。
+// `!` 是 cmd.exe 啟用 delayed expansion 時的展開，引號內外都會生效。
+const EXPANDS_ANYWHERE = /[$`!]|%[A-Za-z_][A-Za-z0-9_]*%/;
+
+// 未加引號的 token 會被 shell 做 brace／glob 展開：`/opt/{real,foreign}/node` 實際
+// 展開成兩個路徑，真正執行的腳本就變成第二個；加了引號則不展開，是普通字元。
+const UNQUOTED_EXPANSION = /[{}*?[\]]/;
 
 function containsShellSyntax(command: string): boolean {
   if (EXPANDS_ANYWHERE.test(command)) return true;
@@ -86,12 +91,23 @@ function containsShellSyntax(command: string): boolean {
   return quoted; // 未閉合的引號：形狀不明，一律當第三方
 }
 
-// 反斜線在 POSIX shell 是跳脫字元、在 Windows 是路徑分隔，同一個字串兩種讀法指向
-// 不同檔案：`/tmp/ccusage-tracker\codex-sync.mjs` 在 POSIX 執行的其實是
-// `/tmp/ccusage-trackercodex-sync.mjs`。只有明確是 Windows 路徑（磁碟機或 UNC）
-// 才把反斜線當分隔，其餘含反斜線的路徑一律視為第三方。
-function hasAmbiguousBackslash(path: string): boolean {
-  return path.includes("\\") && !/^(?:[A-Za-z]:\\|\\\\)/.test(path);
+// 反斜線只有在 Windows 路徑（磁碟機或 UNC 開頭）才是分隔符。POSIX 路徑裡的反斜線
+// 是普通字元：`/home/a\b/.config/ccusage-tracker/codex-sync.mjs` 是合法家目錄下的
+// tracker 腳本，但 `/tmp/ccusage-tracker\codex-sync.mjs` 在 POSIX 是單一檔名，
+// 不是 `ccusage-tracker` 目錄下的腳本 —— 靠「只用正斜線比對尾綴」就能分開這兩者。
+function isWindowsPath(path: string): boolean {
+  return /^(?:[A-Za-z]:[/\\]|\\\\)/.test(path);
+}
+
+// 未加引號時 POSIX shell 會吃掉反斜線（`\c` 變成 `c`），字面文字不是真正執行的路徑。
+function hasAmbiguousBackslash(token: string): boolean {
+  return token.includes("\\") && !isWindowsPath(token);
+}
+
+// 腳本路徑的尾綴樣式：Windows 路徑兩種分隔都算，POSIX 只認正斜線。
+export interface TrackerScriptPattern {
+  posix: RegExp;
+  windows: RegExp;
 }
 
 // 舊版安裝器實際寫出的命令（git 史料）：db7435a 的 `bash $HOOK_SCRIPT`、
@@ -109,9 +125,15 @@ const INTERPRETERS: { matches: RegExp; extension: string }[] = [
 const POWERSHELL_SWITCH = /^-(?:NoProfile|NoLogo|NonInteractive|Sta|Mta)$/i;
 const POWERSHELL_OPTION = /^-(?:ExecutionPolicy|WindowStyle|InputFormat|OutputFormat)$/i;
 
-function peelToken(text: string): { token: string; rest: string } | null {
+function peelToken(text: string): { token: string; quoted: boolean; rest: string } | null {
   const match = /^(?:"([^"]*)"|([^\s"]+))(?:\s+|$)/.exec(text);
-  return match === null ? null : { token: match[1] ?? match[2], rest: text.slice(match[0].length) };
+  if (match === null) return null;
+  return { token: match[1] ?? match[2], quoted: match[1] !== undefined, rest: text.slice(match[0].length) };
+}
+
+// 加了引號的 token 由 shell 原樣傳遞，裡面的 glob 字元是普通字元。
+function expandsUnquoted(peeled: { token: string; quoted: boolean }): boolean {
+  return !peeled.quoted && UNQUOTED_EXPANSION.test(peeled.token);
 }
 
 function basenameOf(path: string): string {
@@ -158,8 +180,14 @@ function peelPowerShellFile(text: string): string | null {
 
 
 // script 是腳本路徑本身（已去引號）必須符合的尾綴樣式；Claude 端與 Codex 端各給一組。
-export function isTrackerHookCommand(command: unknown, script: RegExp): boolean {
-  if (typeof command !== "string" || containsShellSyntax(command)) return false;
+// canonical 是本機此刻會寫出的命令；與其位元組相等者一律視為 tracker hook。
+// 沒有這個豁免的話，家目錄含 `$`、反引號或 `%VAR%` 的人會因為形狀規則拒絕
+// tracker 自己寫出的命令，於是每次 update 都再 append 一條、無上限成長。
+// 位元組相等代表那本來就是我們寫的，換成自己是 no-op，不可能誤刪第三方 hook。
+export function isTrackerHookCommand(command: unknown, script: TrackerScriptPattern, canonical: readonly string[] = []): boolean {
+  if (typeof command !== "string") return false;
+  if (canonical.includes(command)) return true;
+  if (containsShellSyntax(command)) return false;
   let rest = command.trim();
   const first = peelToken(rest);
   if (first === null) return false;
@@ -167,7 +195,7 @@ export function isTrackerHookCommand(command: unknown, script: RegExp): boolean 
   // 可選的直譯器前綴；沒有前綴時（腳本自己可執行）不限定副檔名
   let requiredExtension: string | null = null;
   const interpreter = INTERPRETERS.find((candidate) => candidate.matches.test(basenameOf(first.token)));
-  if (interpreter !== undefined && isExecutablePath(first.token) && !hasAmbiguousBackslash(first.token)) {
+  if (interpreter !== undefined && isExecutablePath(first.token) && !hasAmbiguousBackslash(first.token) && !expandsUnquoted(first)) {
     requiredExtension = interpreter.extension;
     rest = first.rest;
     if (interpreter.extension === "ps1") {
@@ -188,17 +216,24 @@ export function isTrackerHookCommand(command: unknown, script: RegExp): boolean 
   // 刪掉。因此不猜：未加引號又含空白的舊路徑視為第三方，寧可多 append 一條
   // （重複觸發由節流與鎖吸收），也不刪別人的 hook。
   const scriptPath = peelToken(rest.trim());
-  if (scriptPath === null || scriptPath.rest !== "") return false;
+  if (scriptPath === null || scriptPath.rest !== "" || expandsUnquoted(scriptPath)) return false;
   const path = scriptPath.token;
-  if (!isAbsolutePathToken(path) || hasAmbiguousBackslash(path) || !script.test(path)) return false;
+  if (!isAbsolutePathToken(path)) return false;
+  const windows = isWindowsPath(path);
+  // 未加引號的 POSIX 路徑含反斜線：shell 會吃掉它，字面文字不是真正執行的檔案
+  if (!windows && !scriptPath.quoted && path.includes("\\")) return false;
+  if (!(windows ? script.windows : script.posix).test(path)) return false;
   return requiredExtension === null || extensionOf(path) === requiredExtension;
 }
 
-const CODEX_TRACKER_SCRIPT = /[/\\]ccusage-tracker[/\\]codex-sync\.mjs$/;
+export const CODEX_TRACKER_SCRIPT: TrackerScriptPattern = {
+  posix: /\/ccusage-tracker\/codex-sync\.mjs$/,
+  windows: /[/\\]ccusage-tracker[/\\]codex-sync\.mjs$/,
+};
 
 // 認得舊的 --notify 寫法與未加旗標的寫法，才能就地升級而不是又 append 一份。
-export function isCodexTrackerHook(command?: unknown): boolean {
-  return isTrackerHookCommand(command, CODEX_TRACKER_SCRIPT);
+export function isCodexTrackerHook(command?: unknown, canonical = getCodexHookCommand()): boolean {
+  return isTrackerHookCommand(command, CODEX_TRACKER_SCRIPT, [canonical]);
 }
 
 export function isOnPath(name: string): boolean {
@@ -239,14 +274,14 @@ function readGroups(file: CodexHooksFile, event: string): CodexHookGroup[] {
 // 讓使用者其他 hook 的信任全部失效。
 function upsertCodexGroups(groups: CodexHookGroup[], command: string): { groups: CodexHookGroup[]; changed: boolean } {
   const entry: CodexHookEntry = { type: "command", command, timeout: CODEX_HOOK_TIMEOUT_SEC };
-  const index = groups.findIndex((group) => group.hooks.some((hook) => isCodexTrackerHook(hook.command)));
+  const index = groups.findIndex((group) => group.hooks.some((hook) => isCodexTrackerHook(hook.command, command)));
   if (index === -1) return { groups: [...groups, { hooks: [entry] }], changed: true };
 
   const current = groups[index];
-  const onlyTracker = current.hooks.every((hook) => isCodexTrackerHook(hook.command));
+  const onlyTracker = current.hooks.every((hook) => isCodexTrackerHook(hook.command, command));
   const replacement: CodexHookGroup = onlyTracker
     ? { hooks: [entry] }
-    : { ...current, hooks: current.hooks.map((hook) => (isCodexTrackerHook(hook.command) ? entry : hook)) };
+    : { ...current, hooks: current.hooks.map((hook) => (isCodexTrackerHook(hook.command, command) ? entry : hook)) };
   if (JSON.stringify(current) === JSON.stringify(replacement)) return { groups, changed: false };
   return { groups: groups.map((group, at) => (at === index ? replacement : group)), changed: true };
 }
@@ -274,18 +309,18 @@ export function applyCodexHooks(
     stopChanged: stop.changed,
     sessionEndChanged: sessionEnd.changed,
     anyChanged,
-    indexes: findCodexTrackerIndexes(updated),
+    indexes: findCodexTrackerIndexes(updated, command),
   };
 }
 
 // hooks.json 中 tracker hook 的群組索引與群組內索引，信任 key 需要兩者；找不到回 undefined。
-export function findCodexTrackerIndexes(file: CodexHooksFile): CodexGroupIndexes {
+export function findCodexTrackerIndexes(file: CodexHooksFile, canonical = getCodexHookCommand()): CodexGroupIndexes {
   const find = (event: string): CodexHookLocation | undefined => {
     const groups = file.hooks?.[event];
     if (!Array.isArray(groups)) return undefined;
     for (const [group, entry] of groups.entries()) {
       if (!Array.isArray(entry?.hooks)) continue;
-      const hook = entry.hooks.findIndex((candidate) => isCodexTrackerHook(candidate?.command));
+      const hook = entry.hooks.findIndex((candidate) => isCodexTrackerHook(candidate?.command, canonical));
       if (hook !== -1) return { group, hook };
     }
     return undefined;

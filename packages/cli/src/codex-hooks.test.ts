@@ -5,8 +5,10 @@ import { join } from "node:path";
 import {
   applyCodexHooks,
   detectCodex,
+  CODEX_TRACKER_SCRIPT,
   findCodexTrackerIndexes,
   formatCodexTrustLine,
+  isTrackerHookCommand,
   getCodexHome,
   getCodexHookCommand,
   getCodexHooksPath,
@@ -252,6 +254,134 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
 
       expect(result.updated.hooks!.Stop).toEqual([{ hooks: [{ type: "command", command, timeout: 45 }] }]);
     }
+  });
+});
+
+// 審查閘 round 5：形狀規則若拒絕 tracker 自己寫出的 canonical 命令，每次 update 都會
+// 再 append 一條，無上限成長 —— 比「多一條」嚴重得多。canonical 命令一律以位元組相等
+// 辨識：那本來就是我們寫的，換成自己是 no-op，不可能誤刪第三方。
+describe("canonical 命令的冪等性不變量", () => {
+  const exotic = 'node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook';
+
+  it("家目錄含 shell 特殊字元時，重複安裝仍是 noop", () => {
+    for (const canonical of [
+      exotic,
+      'node "/Users/a$b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a`b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/home/100%/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/home/a\\b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/home/a!b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      String.raw`node "C:\Users\a%b\.config\ccusage-tracker\codex-sync.mjs" --hook`,
+    ]) {
+      const first = applyCodexHooks({}, canonical);
+      const second = applyCodexHooks(first.updated, canonical);
+      const third = applyCodexHooks(second.updated, canonical);
+
+      expect([canonical, second.anyChanged, third.updated.hooks!.Stop!.length]).toEqual([canonical, false, 1]);
+      expect(second.updated).toBe(first.updated);
+    }
+  });
+
+  it("只有位元組相等才享有這個豁免：同一路徑的其他形狀仍被拒", () => {
+    const script = CODEX_TRACKER_SCRIPT;
+    // 用含 `$` 的路徑：形狀規則一定拒絕它，所以能看出豁免確實只靠位元組相等
+    const expanding = 'node "/Users/a$b/.config/ccusage-tracker/codex-sync.mjs" --hook';
+
+    expect(isTrackerHookCommand(expanding, script, [expanding])).toBe(true);
+    expect(isTrackerHookCommand(expanding, script, [])).toBe(false);
+    // 換了參數就不是位元組相等，形狀規則照樣把它擋下來
+    expect(isTrackerHookCommand(expanding.replace("--hook", "--notify"), script, [expanding])).toBe(false);
+    // 豁免名單裡的是別條命令時也不放行
+    expect(isTrackerHookCommand(expanding, script, ["node \"/other/ccusage-tracker/codex-sync.mjs\" --hook"])).toBe(false);
+  });
+
+  it("findCodexTrackerIndexes 對 canonical 命令同樣認得", () => {
+    const file = applyCodexHooks({}, exotic).updated;
+
+    expect(findCodexTrackerIndexes(file, exotic)).toEqual({
+      stop: { group: 0, hook: 0 },
+      sessionEnd: { group: 0, hook: 0 },
+    });
+  });
+});
+
+// `%` 只有成對的 %NAME% 才是 cmd.exe 的變數展開；單獨一個 % 在路徑裡是普通字元，
+// 拒絕它只會讓這類家目錄的舊 hook 白白升級不了。
+describe("% 只在成對的 %VAR% 形狀下才算展開", () => {
+  const script = CODEX_TRACKER_SCRIPT;
+
+  it("成對的 %VAR% 視為第三方", () => {
+    expect(isTrackerHookCommand("node C:/%TARGET%/ccusage-tracker/codex-sync.mjs", script)).toBe(false);
+    expect(isTrackerHookCommand('node "C:/%TARGET%/ccusage-tracker/codex-sync.mjs"', script)).toBe(false);
+  });
+
+  it("單獨的 % 仍可辨識", () => {
+    expect(isTrackerHookCommand('node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook', script)).toBe(true);
+  });
+});
+
+// 審查閘 round 5 第二層：未加引號的 token 會被 shell 做 brace／glob 展開，
+// `/opt/{real,foreign}/node "<tracker>"` 實際展開成兩個路徑，真正執行的腳本是後者；
+// `!` 則是啟用 delayed expansion 的 cmd.exe 的展開。canonical 含這些字元時由第一層接住。
+describe("未加引號的展開語法一律視為第三方", () => {
+  const T = "/home/u/.config/ccusage-tracker/codex-sync.mjs";
+  const bypasses = [
+    `/opt/{real,foreign}/node "${T}" --hook`,
+    `/opt/*/node "${T}" --hook`,
+    `/opt/?/node "${T}" --hook`,
+    `/opt/[ab]/node "${T}" --hook`,
+    `node /home/{u,other}/.config/ccusage-tracker/codex-sync.mjs --hook`,
+    `node /home/*/.config/ccusage-tracker/codex-sync.mjs --hook`,
+    "node C:/!TARGET!/ccusage-tracker/codex-sync.mjs --hook",
+    'node "C:/!TARGET!/ccusage-tracker/codex-sync.mjs" --hook',
+  ];
+
+  it("brace、glob 與 delayed expansion 都保留不動", () => {
+    for (const thirdPartyCommand of bypasses) {
+      const group = { hooks: [{ type: "command", command: thirdPartyCommand }], note: "keep" };
+
+      const result = applyCodexHooks({ hooks: { Stop: [group] } }, command);
+
+      expect([thirdPartyCommand, result.updated.hooks!.Stop!.length]).toEqual([thirdPartyCommand, 2]);
+      expect(JSON.stringify(result.updated.hooks!.Stop![0])).toBe(JSON.stringify(group));
+    }
+  });
+
+  it("Codex 確認已擋住的形狀維持被擋（正向確認）", () => {
+    const script = CODEX_TRACKER_SCRIPT;
+
+    expect(isTrackerHookCommand("node ~/ccusage-tracker/codex-sync.mjs --hook", script)).toBe(false);
+    expect(isTrackerHookCommand("node /home/u\\*/ccusage-tracker/codex-sync.mjs --hook", script)).toBe(false);
+  });
+
+  // Codex round 5 finding (b)：合法的 POSIX 家目錄不該被誤拒，否則舊 hook 升級不了。
+  it("合法特殊字元家目錄的路徑仍被辨識", () => {
+    for (const path of [
+      "/home/100%/.config/ccusage-tracker/codex-sync.mjs",
+      "/home/a\\b/.config/ccusage-tracker/codex-sync.mjs",
+      "/home/a b/.config/ccusage-tracker/codex-sync.mjs",
+    ]) {
+      expect([path, isTrackerHookCommand(`node "${path}" --hook`, CODEX_TRACKER_SCRIPT)]).toEqual([path, true]);
+    }
+  });
+
+  it("POSIX 路徑的反斜線不算分隔符：單一檔名不等於目錄下的腳本", () => {
+    // /tmp/ccusage-tracker\codex-sync.mjs 在 POSIX 是 /tmp 下的單一檔案，
+    // 不是 /tmp/ccusage-tracker/ 目錄裡的 codex-sync.mjs
+    expect(isTrackerHookCommand('node "/tmp/ccusage-tracker\\codex-sync.mjs" --hook', CODEX_TRACKER_SCRIPT)).toBe(false);
+    expect(isTrackerHookCommand("node /tmp/ccusage-tracker\\codex-sync.mjs --hook", CODEX_TRACKER_SCRIPT)).toBe(false);
+    // 未加引號的 POSIX 路徑含反斜線：shell 會吃掉它，字面文字不是真正執行的檔案
+    expect(isTrackerHookCommand("node /home/a\\b/.config/ccusage-tracker/codex-sync.mjs --hook", CODEX_TRACKER_SCRIPT)).toBe(false);
+    // Windows 磁碟機與 UNC 路徑的反斜線照樣是分隔符
+    expect(isTrackerHookCommand(String.raw`node "C:\Users\x\.config\ccusage-tracker\codex-sync.mjs" --hook`, CODEX_TRACKER_SCRIPT)).toBe(true);
+    expect(isTrackerHookCommand(String.raw`node "\\srv\team\.config\ccusage-tracker\codex-sync.mjs" --hook`, CODEX_TRACKER_SCRIPT)).toBe(true);
+  });
+
+  it("加了引號的路徑不受 glob 影響：shell 不會展開引號內的字元", () => {
+    const script = CODEX_TRACKER_SCRIPT;
+
+    expect(isTrackerHookCommand('node "/home/a[1]/.config/ccusage-tracker/codex-sync.mjs" --hook', script)).toBe(true);
+    expect(isTrackerHookCommand('node "/home/a*b/.config/ccusage-tracker/codex-sync.mjs" --hook', script)).toBe(true);
   });
 });
 
