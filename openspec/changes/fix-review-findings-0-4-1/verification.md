@@ -4,8 +4,8 @@
 
 ## 結論
 
-- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完；審查閘 round 3 指出該修正的護欄仍不足，已把路徑重組整個移除；複審 round 4 再以實際執行的反例指出 shell 重新解讀字元的繞過；round 5 指出嚴格化破壞了特殊字元家目錄的安裝冪等性，辨識因此拆成「精確比對 canonical」與「形狀比對」兩層；round 6 再指出我在第二層對 `%` 的收斂不成立、已改回全面拒絕。全部已修完（見末四節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
-- 完整測試 **CLI 170 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **398 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 57 項 CLI 測試（round 1 新增 29、複審 round 2 再 14、審查閘 round 3 再 1 並改寫 2、複審 round 4 再 3 並改寫 1、round 5 再 10）。
+- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完；審查閘 round 3 指出該修正的護欄仍不足，已把路徑重組整個移除；複審 round 4 再以實際執行的反例指出 shell 重新解讀字元的繞過；round 5 指出嚴格化破壞了特殊字元家目錄的安裝冪等性，辨識因此拆成「精確比對 canonical」與「形狀比對」兩層；round 6 再指出我在第二層對 `%` 的收斂不成立、已改回全面拒絕，並補齊「第一層是承重的」這件事的測試證明。全部已修完（見末五節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
+- 完整測試 **CLI 171 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **399 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 58 項 CLI 測試（round 1 新增 29、複審 round 2 再 14、審查閘 round 3 再 1 並改寫 2、複審 round 4 再 3 並改寫 1、round 5 再 10、round 6–7 再 1 並改寫 3）。
 - `pnpm typecheck`、`pnpm --filter ccusage-tracker build`、`pnpm build` 全綠；`spectra validate fix-review-findings-0-4-1` 通過；`git diff --check` 無 whitespace error。
 - Node-built CLI smoke：暫存 HOME、兩份設定檔皆為 symlink、hooks.json 含引用 tracker 腳本路徑的第三方 `sha256sum` Stop 群組 —— setup 後該群組位元組不變留在索引 0、tracker 在索引 1、輸出含兩行 `Wrote through symlink`、symlink 保留；兩次 update 後 `hooks.json` 與 `settings.json` 的 sha256 皆不變；混合信任的 setup／update 與 status 訊息逐字符合規格；`config.toml` 位元組不變。
 - 未讀寫真實的 `~/.claude`、`~/.codex`、`~/.config/ccusage-tracker`、`~/dotfiles`；全程未執行真實 `npm install -g`。
@@ -24,7 +24,7 @@
 
 | 檢查 | 結果 |
 |---|---|
-| `pnpm test` | CLI 170 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
+| `pnpm test` | CLI 171 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
 | `pnpm typecheck` | CLI 與 server 均 Done |
 | `pnpm --filter ccusage-tracker build` | Node target 通過；46.75 KB |
 | `pnpm build` | Server Bun target 通過；233.48 KB |
@@ -341,6 +341,31 @@ Smoke 另外對三個含特殊字元的暫存家目錄各跑三次 update：
 | `git diff --check` | 無 whitespace error |
 
 Smoke 重跑全綠：第三方 hook 5/5 保留、canonical tracker 只剩一條、舊 `bash .sh` 已被取代、兩次 update 後 sha256 不變、三個特殊字元家目錄各三次 update 後 hook 數皆為 1、`config.toml` 位元組不變、無殘留檔。
+
+### 複審 round 6 的兩項收尾
+
+複審確認 (a)(b) 已修好：第一層是 `Array.includes` 的完整字串相等（不是子字串搜尋、在 `trim()` 前執行、區分大小寫），三個指定反例都擋住且移除規則後測試會轉紅。剩兩項：
+
+| finding | 狀態 | 證據 |
+|---|---|---|
+| [med] `%` 收斂後 `node "C:/%TARGET:~0,1%/…"`（cmd 變數切片語法）會通過第二層 | 複審是對收斂版跑的；**上一輪已改回一律拒絕任何 `%`**（commit `a46e456`）。本輪把切片與替換兩種語法釘進測試 | `packages/cli/src/codex-hooks.test.ts` 的「形狀層一律拒絕 %」新增 `%TARGET:~0,1%`、`%TARGET:old=new%` 兩案；實測皆為第三方 |
+| [test] 家目錄含單一 `%` 的冪等測試證明不了第一層（當時第二層也放行） | 改用第二層**必定**拒絕的家目錄 | 新增「這些 canonical 命令一定通不過第二層」先釘住前提，冪等測試改用 `/tmp/home %TARGET%`、`/tmp/home!x` 等 |
+
+**mutation 驗證第一層是承重的**：把 `isTrackerHookCommand` 的 `canonical.includes(command)` 拿掉後，codex-hooks.test.ts 有 **4 個測試轉紅**（冪等性不變量三個、「家目錄含 % 時 canonical 仍由第一層接住」一個）；還原後 57 pass。修改前這組測試在拿掉第一層時仍會通過 —— 這正是複審 (d) 指出的缺口。
+
+規格同步：`%` 的敘述改為「不得收斂成任何子集合」並列出切片／替換形式；重複出現的 byte-identity 段落去重。smoke 的 `%` 家目錄 fixture 由 `pct%home` 改為 `pct%TARGET%home`（第二層必定拒絕的形狀）。
+
+### round 7 後的執行結果
+
+| 檢查 | 結果 |
+|---|---|
+| `pnpm test` | CLI **171 pass／0 fail**；server 228 pass／1 skip／0 fail |
+| `pnpm typecheck` | CLI 與 server 均 Done |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；46.75 KB |
+| `spectra validate fix-review-findings-0-4-1` | `✓ valid` |
+| `git diff --check` | 無 whitespace error |
+
+Smoke 全綠：第三方 5/5 保留、canonical tracker 只剩一條、舊 `bash .sh` 已被取代、兩次 update 後 sha256 不變、三個家目錄（`%TARGET%`／`!`／`\`）各三次 update 後 hook 數皆為 1。
 
 ## 已知限制與範圍外
 

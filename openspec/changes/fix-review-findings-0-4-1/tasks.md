@@ -53,3 +53,4 @@
 - [x] 8.6 依 Codex round 5 finding (c2) 補測並實作：整條命令任何位置出現 `!` 一律第三方（cmd.exe delayed expansion），canonical 含 `!` 時由第一層接住。驗證：`node C:/!TARGET!/…`（引號內外）皆保留；家目錄 `/home/a!b` 重複安裝仍為 noop。
 - [x] 8.7 依 Codex round 5 finding (b) 修正反斜線規則：腳本路徑尾綴在 Windows 路徑（磁碟機／UNC）下兩種分隔都算，其餘只認正斜線；未加引號含反斜線的 token 一律第三方。驗證：`/home/a\b/.config/ccusage-tracker/codex-sync.mjs` 被辨識、`/tmp/ccusage-tracker\codex-sync.mjs` 被拒、Windows 與 UNC 路徑仍被辨識。
 - [x] 8.8 審查閘 round 6：`%` 收斂成「成對的 `%NAME%`」不成立（cmd 變數名不限於 `[A-Za-z_]\w*`，`%ProgramFiles(x86)%` 為真實變數、`%1` 為批次參數），實測 6 種形狀繞過。改回形狀層一律拒絕任何 `%`；家目錄含 `%` 時的冪等性本來就由第一層保證。驗證：六輪彙總掃描 41 條第三方無一被誤刪、8 種 tracker 形狀全部升級、12 種家目錄全部冪等。
+- [x] 8.9 依複審 round 6 的 [test] 缺口強化第一層的測試證明：冪等測試改用第二層必定拒絕的家目錄（`/tmp/home %TARGET%`、`/tmp/home!x`），並先以獨立測試釘住「這些 canonical 一定通不過第二層」；另把 cmd 變數切片／替換語法（`%TARGET:~0,1%`、`%TARGET:old=new%`）加入形狀層反例。驗證：mutation 拿掉 `canonical.includes(command)` 後 4 個測試轉紅；smoke 的 `%` 家目錄 fixture 改為 `pct%TARGET%home`。
