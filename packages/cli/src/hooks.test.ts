@@ -643,6 +643,7 @@ describe("shell 會改寫字面意義的字元一律視為第三方", () => {
     // cmd.exe 的 %VAR% 展開：TARGET 若展開成 `lint.js x` 就變成另一支腳本
     ["cmd 變數展開", `node C:/%TARGET%/ccusage-tracker/session-end.mjs`],
     ["cmd 變數展開在引號內", `node "C:/%TARGET%/ccusage-tracker/session-end.mjs"`],
+    ["cmd 變數切片語法", `node "C:/%TARGET:~0,1%/ccusage-tracker/session-end.mjs" --mode=stop`],
     // POSIX 雙引號內 $、反引號仍會展開
     ["雙引號內的命令替換", `node "/tmp/$(printf keep)/ccusage-tracker/session-end.mjs" --mode=stop`],
     ["雙引號內的反引號", "node \"/tmp/`printf keep`/ccusage-tracker/session-end.mjs\" --mode=stop"],

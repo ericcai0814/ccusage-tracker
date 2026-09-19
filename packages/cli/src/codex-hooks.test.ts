@@ -218,6 +218,7 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
       'node "/tmp/ccusage-tracker/codex-sync.mjs" --hook\necho keep',           // 引號外換行
       "node /tmp/ccusage-tracker\\codex-sync.mjs --hook",                        // POSIX 會把 \c 當跳脫
       "node C:/%TARGET%/ccusage-tracker/codex-sync.mjs --hook",                 // cmd.exe 變數展開
+      'node "C:/%TARGET:~0,1%/ccusage-tracker/codex-sync.mjs" --hook',          // 變數切片，引號內照樣展開
       "node C:/ccusage-tracker^/codex-sync.mjs --hook",                         // cmd.exe 跳脫字元
       'node "/tmp/$(printf keep)/ccusage-tracker/codex-sync.mjs" --hook',       // 雙引號內仍會展開
       'node "/tmp/`printf keep`/ccusage-tracker/codex-sync.mjs" --hook',        // 同上，反引號
