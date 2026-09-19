@@ -338,7 +338,9 @@ export function wireTools(
     else deps.log(formatCodexTrustLine(effective, { forStatus: false }));
   }
 
-  if (hasTrackerNotify(configToml)) {
+  // hooks 沒接上時（舊 server 回 404／410）不能叫人移除 notify：那可能是使用者
+  // 當下唯一的自動上報入口，照做就等於關掉它。
+  if (result.codexWired && hasTrackerNotify(configToml)) {
     deps.warn("Codex hooks now handle reporting. Remove the ccusage-tracker `notify` entry from $CODEX_HOME/config.toml to avoid triggering it twice; this tool never edits that file.");
   }
 

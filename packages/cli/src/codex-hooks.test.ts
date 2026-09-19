@@ -314,6 +314,30 @@ describe("hasTrackerNotify", () => {
     expect(hasTrackerNotify(toml)).toBe(false);
   });
 
+  // Codex 補審 [low] 與 subagent F4：頂層掃描原本只認 `^\[[^\]]*\]$`，於是
+  // `[[servers]]` 與帶行尾註解的標頭沒被當成 table（提示多印），無尾逗號的
+  // `[3, 4]` 續行與多行字串裡的 `[tui]` 卻被當成 table（提示漏印）。
+  describe("頂層掃描正確處理陣列、字串與註解", () => {
+    const tracker = 'notify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs", "--notify"]\n';
+    const fixtures: [string, string, string][] = [
+      // [名稱, notify 之前的頂層內容, notify 之前的 table 內容]
+      ["[[array]] 標頭", "", '[[servers]]\nurl = "x"\n'],
+      ["帶行尾註解的標頭", "", '[tui] # theme settings\ntheme = "dark"\n'],
+      ["無尾逗號的陣列續行", "pairs = [\n [1, 2],\n [3, 4]\n]\n", '[tui]\npairs = [\n [1, 2],\n [3, 4]\n]\n'],
+      ["多行字串內含 table 標頭", 'banner = """\n[tui]\n"""\n', '[tui]\nbanner = """\nx\n"""\n'],
+    ];
+
+    for (const [name, topLevel, insideTable] of fixtures) {
+      it(`${name}：notify 在頂層 → true`, () => {
+        expect(hasTrackerNotify(topLevel + tracker)).toBe(true);
+      });
+
+      it(`${name}：notify 在 table 內 → false`, () => {
+        expect(hasTrackerNotify(insideTable + tracker)).toBe(false);
+      });
+    }
+  });
+
   it("第三方 notify 或 table 內的同名鍵 → false（hooks 與 notify 可共存）", () => {
     expect(hasTrackerNotify('notify = ["say", "done"]\n')).toBe(false);
     expect(hasTrackerNotify('[some.table]\nnotify = ["/x/ccusage-tracker/codex-sync.mjs"]\n')).toBe(false);

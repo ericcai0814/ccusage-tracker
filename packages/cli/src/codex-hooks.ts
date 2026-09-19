@@ -292,19 +292,64 @@ export function formatCodexTrustLine(
 
 // 唯讀掃描 config.toml 頂層的 notify 陣列。只用來提示使用者自行移除重複觸發的
 // 舊設定 —— 本工具永不編輯 Codex 的 TOML。
+//
+// 「整行以 [ 開頭就算進入 table」會同時錯兩邊：`[[servers]]` 與 `[tui] # 註解`
+// 不被當成 table（提示多印），無尾逗號的陣列續行 `[3, 4]` 與多行字串裡的 `[tui]`
+// 卻被當成 table（提示漏印）。因此改為追蹤字串狀態與陣列深度，只有在深度 0、
+// 不在字串內時，整行是 table 標頭才算頂層結束。
+const TABLE_HEADER = /^\[\[?[^\]]*\]\]?\s*(#.*)?$/;
+const STRING_DELIMITERS = ['"""', "'''", '"', "'"] as const;
+
+interface ScanState {
+  inString: string | null;
+  depth: number;
+}
+
+// 逐字元掃一行，回傳行尾的字串與陣列深度狀態。註解之後的字元全部略過；
+// 單行字串（"…" / '…'）不跨行，行尾一律關閉，壞掉的 TOML 不會污染後續狀態。
+function scanLine(line: string, state: ScanState): ScanState {
+  let inString = state.inString;
+  let depth = state.depth;
+  for (let at = 0; at < line.length; at++) {
+    if (inString !== null) {
+      if (line.startsWith(inString, at)) {
+        at += inString.length - 1;
+        inString = null;
+      } else if (inString === '"' && line[at] === "\\") {
+        at += 1; // 基本字串的逸出字元，下一個字元不算結束符
+      }
+      continue;
+    }
+    if (line[at] === "#") break;
+    const opened = STRING_DELIMITERS.find((delimiter) => line.startsWith(delimiter, at));
+    if (opened !== undefined) {
+      inString = opened;
+      at += opened.length - 1;
+      continue;
+    }
+    if (line[at] === "[") depth += 1;
+    else if (line[at] === "]") depth -= 1;
+  }
+  const spansLines = inString === '"""' || inString === "'''";
+  return { inString: spansLines ? inString : null, depth };
+}
+
 export function hasTrackerNotify(configToml: string): boolean {
-  const lines = configToml.split(/\r?\n/);
+  let state: ScanState = { inString: null, depth: 0 };
   let collected: string | null = null;
-  let depth = 0;
-  for (const line of lines) {
+
+  for (const line of configToml.split(/\r?\n/)) {
     const trimmed = line.trim();
-    // 只有整行是 table 標頭才代表頂層結束；跨行陣列的續行（例如 `[1, 2],`）也以
-    // `[` 開頭，但仍在頂層，不能提早中斷掃描。
-    if (collected === null && /^\[[^\]]*\]$/.test(trimmed)) return false;
-    if (collected === null && !/^notify\s*=/.test(trimmed)) continue;
-    collected = (collected ?? "") + trimmed;
-    depth += (trimmed.match(/\[/g)?.length ?? 0) - (trimmed.match(/\]/g)?.length ?? 0);
-    if (depth <= 0) break;
+    if (collected === null && state.inString === null && state.depth === 0) {
+      if (TABLE_HEADER.test(trimmed)) return false; // 進入第一個 table，頂層結束
+      if (/^notify\s*=/.test(trimmed)) collected = "";
+    }
+    state = scanLine(line, state);
+    if (collected !== null) {
+      // 跨行的 notify 值累積到深度回到 0 才判斷
+      collected += trimmed;
+      if (state.inString === null && state.depth <= 0) break;
+    }
   }
   return collected !== null && /[/\\]ccusage-tracker[/\\]codex-sync\.mjs/.test(collected);
 }

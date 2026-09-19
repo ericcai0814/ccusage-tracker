@@ -12,9 +12,9 @@
 
 ## 3. notify 提示與 TOML 掃描
 
-- [ ] [P] 3.1 依 design「notify 移除提示只在 hooks 真的接上時印」與規格「Codex hook installation」的兩個 notify scenario 先寫失敗測試：server 404、Codex 偵測到、config.toml 含 tracker notify → 輸出含相容訊息、不含移除提示；hooks 已接上且含 tracker notify → 仍印提示。驗證：setup.test.ts／update.test.ts 先紅。
-- [ ] [P] 3.2 依 design「TOML 掃描追蹤陣列與字串狀態」與規格 scenario「Top-level scan handles arrays, strings and comments」先在 packages/cli/src/codex-hooks.test.ts 寫四個 fixture：`[[servers]]`、`[tui] # comment`、跨行陣列含獨立 `[3, 4]` 行、字串值含 `[`；每個 fixture 各有「notify 在頂層 → true」「notify 在 table 內 → false」兩案。驗證：先紅（至少 `[[servers]]` 與 `[3, 4]` 兩案在現行實作會錯）。
-- [ ] 3.3 實作 packages/cli/src/hooks.ts 的提示條件改為 codexWired，與 packages/cli/src/codex-hooks.ts 的 hasTrackerNotify 狀態機（字串狀態、陣列深度、只在深度 0 辨識 table 標頭 `^\[\[?[^\]]*\]\]?\s*(#.*)?$`）。驗證：3.1 與 3.2 全綠。
+- [x] [P] 3.1 依 design「notify 移除提示只在 hooks 真的接上時印」與規格「Codex hook installation」的兩個 notify scenario 先寫失敗測試：server 404、Codex 偵測到、config.toml 含 tracker notify → 輸出含相容訊息、不含移除提示；hooks 已接上且含 tracker notify → 仍印提示。驗證：setup.test.ts／update.test.ts 先紅。
+- [x] [P] 3.2 依 design「TOML 掃描追蹤陣列與字串狀態」與規格 scenario「Top-level scan handles arrays, strings and comments」先在 packages/cli/src/codex-hooks.test.ts 寫四個 fixture：`[[servers]]`、`[tui] # comment`、跨行陣列含獨立 `[3, 4]` 行、字串值含 `[`；每個 fixture 各有「notify 在頂層 → true」「notify 在 table 內 → false」兩案。驗證：先紅（至少 `[[servers]]` 與 `[3, 4]` 兩案在現行實作會錯）。
+- [x] 3.3 實作 packages/cli/src/hooks.ts 的提示條件改為 codexWired，與 packages/cli/src/codex-hooks.ts 的 hasTrackerNotify 狀態機（字串狀態、陣列深度、只在深度 0 辨識 table 標頭 `^\[\[?[^\]]*\]\]?\s*(#.*)?$`）。驗證：3.1 與 3.2 全綠。
 
 ## 4. 跨檔 rollback
 

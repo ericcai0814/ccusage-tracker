@@ -542,6 +542,22 @@ describe("Node CLI Codex hook wiring", () => {
     expect(readFileSync(join(home, "codex", "config.toml"), "utf8")).toBe(toml);
   });
 
+  it("server 回 404 且仍有 tracker notify：不叫人移除 notify（那是當下唯一的上報入口）", async () => {
+    configure();
+    mkdirSync(join(home, "codex"));
+    const toml = `notify = ["node", "${join(home, ".config", "ccusage-tracker", "codex-sync.mjs")}", "--notify"]\n`;
+    writeFileSync(join(home, "codex", "config.toml"), toml);
+    replies["/scripts/codex-sync.mjs"] = { status: 404, body: "missing" };
+
+    const result = await cli(["update"]);
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain("does not provide Codex support");
+    expect(result.output).not.toContain("Remove the ccusage-tracker `notify` entry");
+    expect(readFileSync(join(home, "codex", "config.toml"), "utf8")).toBe(toml);
+    expect(existsSync(join(home, "codex", "hooks.json"))).toBe(false);
+  });
+
   it("status 分辨 Codex hook 的 awaiting trust、trust recorded、disabled 與未偵測", async () => {
     configure();
     expect((await cli(["status"])).output).toContain("Codex: not detected");

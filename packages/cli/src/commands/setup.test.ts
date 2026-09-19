@@ -237,6 +237,21 @@ describe("setup 逐工具接線", () => {
     expect(text).toContain("never edits that file");
   });
 
+  // Codex 補審 [low]：server 回 404／410 時 hooks 根本沒接上，卻同時叫人移除 notify。
+  // 使用者照做會關掉當下唯一的自動上報入口。
+  it("server 回 404 且仍有 tracker notify：印相容訊息，但不叫人移除 notify", async () => {
+    const deps = createMockDeps(answers, {
+      codexScript: false,
+      configToml: 'notify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs", "--notify"]\n',
+    });
+    await setupCommand(deps);
+
+    const text = output(deps);
+    expect(text).toContain("does not provide Codex support");
+    expect(text).toContain("Codex: hooks not installed");
+    expect(text).not.toContain("Remove the ccusage-tracker `notify` entry");
+  });
+
   it("第三方 notify 不觸發提示（hooks 與 notify 可共存）", async () => {
     const deps = createMockDeps(answers, { configToml: 'notify = ["say", "done"]\n' });
     await setupCommand(deps);
