@@ -35,3 +35,10 @@
 - [x] 6.5 依規格 scenario「Trust invalidated only for the hook that changed」先寫失敗測試：Stop 未變動且已信任、只補裝 SessionEnd 時只要求信任 SessionEnd；Stop 有變動時不冒稱已信任。實作 packages/cli/src/hooks.ts 依 codexStopChanged／codexSessionEndChanged 分別作廢信任。驗證：setup.test.ts 兩案先紅後綠。
 - [x] 6.6 補 formatCodexTrustLine「皆 recorded」的安裝端分支（`Codex: hooks already up to date (trust recorded)`），並把四組逐字斷言補齊、另立「皆 disabled」案例。驗證：codex-hooks.test.ts 全綠。
 - [x] 6.7 重跑 pnpm test、pnpm typecheck、CLI build 與 Node-built CLI smoke，更新 verification.md 與 REPORT.md。
+
+## 7. 審查閘 round 4 補修
+
+- [x] 7.1 依規格 scenario「Characters the shell would reinterpret are never recognized」先寫失敗測試（Codex 實測反例原文）：`node /tmp/ccusage-tracker\codex-sync.mjs`、`node C:/%TARGET%/ccusage-tracker/codex-sync.mjs`、`node "/tmp/$(printf keep)/ccusage-tracker/codex-sync.mjs"`、雙引號內反引號、雙引號內 `$HOME`，皆應原樣保留；Windows 磁碟機與 UNC 的反斜線路徑仍應被辨識。驗證：hooks.test.ts 與 codex-hooks.test.ts 該組先紅。
+- [x] 7.2 實作 packages/cli/src/codex-hooks.ts：`$`、反引號、`%` 不分引號內外一律拒絕（POSIX 雙引號內仍會展開，`%` 是 cmd.exe 展開）；腳本路徑與直譯器 token 的反斜線只在 Windows 磁碟機 `^[A-Za-z]:\` 或 UNC `^\\` 形狀下才算分隔，其餘一律第三方。驗證：7.1 全綠。
+- [x] 7.3 修正 packages/cli/src/commands/setup.test.ts 的 SessionEnd 作廢測試：起始狀態改為兩事件皆 recorded、只設 `codexSessionEndChanged: true`，斷言只有 SessionEnd 降為 awaiting 且輸出不含 already up to date。驗證：以 mutation（拿掉整個作廢邏輯）確認該案例與 Stop 方向的案例都會轉紅。
+- [x] 7.4 重跑 pnpm test、typecheck、build 與 smoke；更新 verification.md 與 REPORT.md。

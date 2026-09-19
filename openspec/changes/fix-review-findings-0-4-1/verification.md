@@ -4,8 +4,8 @@
 
 ## 結論
 
-- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完；審查閘 round 3 指出該修正的護欄仍不足，已把路徑重組整個移除（見末節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
-- 完整測試 **CLI 157 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **385 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 44 項 CLI 測試（round 1 新增 29、複審 round 2 再新增 14、審查閘 round 3 再新增 1 並改寫 2）。
+- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完；審查閘 round 3 指出該修正的護欄仍不足，已把路徑重組整個移除；複審 round 4 再以實際執行的反例指出 shell 重新解讀字元的繞過，也已修完（見末兩節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
+- 完整測試 **CLI 160 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **388 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 47 項 CLI 測試（round 1 新增 29、複審 round 2 再新增 14、審查閘 round 3 再新增 1 並改寫 2、複審 round 4 再新增 3 並改寫 1）。
 - `pnpm typecheck`、`pnpm --filter ccusage-tracker build`、`pnpm build` 全綠；`spectra validate fix-review-findings-0-4-1` 通過；`git diff --check` 無 whitespace error。
 - Node-built CLI smoke：暫存 HOME、兩份設定檔皆為 symlink、hooks.json 含引用 tracker 腳本路徑的第三方 `sha256sum` Stop 群組 —— setup 後該群組位元組不變留在索引 0、tracker 在索引 1、輸出含兩行 `Wrote through symlink`、symlink 保留；兩次 update 後 `hooks.json` 與 `settings.json` 的 sha256 皆不變；混合信任的 setup／update 與 status 訊息逐字符合規格；`config.toml` 位元組不變。
 - 未讀寫真實的 `~/.claude`、`~/.codex`、`~/.config/ccusage-tracker`、`~/dotfiles`；全程未執行真實 `npm install -g`。
@@ -24,9 +24,9 @@
 
 | 檢查 | 結果 |
 |---|---|
-| `pnpm test` | CLI 157 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
+| `pnpm test` | CLI 160 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
 | `pnpm typecheck` | CLI 與 server 均 Done |
-| `pnpm --filter ccusage-tracker build` | Node target 通過；45.54 KB |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；45.81 KB |
 | `pnpm build` | Server Bun target 通過；233.48 KB |
 | `spectra validate fix-review-findings-0-4-1` | `✓ fix-review-findings-0-4-1 — valid` |
 | `spectra analyze fix-review-findings-0-4-1 --json` | 無 Critical／Warning；2 項「scenario 缺 examples」Suggestion（沿自提案時） |
@@ -206,6 +206,46 @@ canonical tracker 條數: 1        => 只剩一條 OK
 ```
 
 > smoke 跑的是 `packages/cli/dist/index.js`。改完 code 一定要先 `pnpm --filter ccusage-tracker build` 再跑 smoke —— 本輪第一次跑就是對著舊 build，`/opt/tools/run.sh …` 顯示被誤刪，重建後才是真實結果。
+
+### 審查閘 round 4：shell 會重新解讀的字元
+
+Codex 第三輪複審 NEEDS-FIX（2 med、1 low），以實際執行的 JSON 反例指出仍可繞過。共通形狀是「字串長得像 tracker 路徑，但 shell 實際執行的是別的檔案」—— 辨識認錯就會把第三方 hook 整條刪掉。
+
+| 複審 finding | 修法 | 證據 |
+|---|---|---|
+| [med] 反斜線與 `%VAR%`：`node /tmp/ccusage-tracker\codex-sync.mjs --hook` 被認成 tracker，但 POSIX 實際執行 `/tmp/ccusage-trackercodex-sync.mjs`；`node C:/%TARGET%/ccusage-tracker/codex-sync.mjs` 也被接受 | 腳本路徑與直譯器 token 的反斜線只在 Windows 磁碟機 `^[A-Za-z]:\` 或 UNC `^\\` 形狀下才算分隔（`hasAmbiguousBackslash`）；`%` 不分引號內外一律拒絕 | `packages/cli/src/codex-hooks.ts` 的 `hasAmbiguousBackslash` 與 `EXPANDS_ANYWHERE`；測試 `hooks.test.ts` 的 describe「shell 會改寫字面意義的字元一律視為第三方」、`codex-hooks.test.ts` 的同名案例（Codex 反例原文） |
+| [med] 雙引號內的 shell 展開：`node "/tmp/$(printf keep)/ccusage-tracker/codex-sync.mjs" --hook` 被接受，替換後第三方命令消失 | `$` 與反引號不分引號內外一律拒絕（POSIX 雙引號內照樣展開），canonical 命令永遠不含這些字元 | 同上；`hooks.test.ts` 另含雙引號內反引號與 `$HOME` 兩案 |
+| [low] SessionEnd 作廢測試起始狀態已是 awaiting，拿掉作廢邏輯也會過 | 改為兩事件起初皆 recorded、只設 `codexSessionEndChanged: true`，斷言只有 SessionEnd 降為 awaiting 且輸出不含 already up to date | `packages/cli/src/commands/setup.test.ts` 的「兩條原本都已信任、只補裝 SessionEnd」 |
+
+Codex 實測的 7 條反例原文（含 unclosed／newline／caret 三條原本就已擋住）已逐字釘進 `codex-hooks.test.ts`，實跑全部 `stopGroups=2`（第三方保留）。
+
+**mutation 驗證**：把 `packages/cli/src/hooks.ts` 的作廢邏輯整個拿掉（`stale` 直接回傳原狀態），setup.test.ts 的「只補裝 SessionEnd」與「Stop 有變動」兩案同時轉紅；修正前只有後者會紅。
+
+### 對抗性掃描（round 4 後）
+
+直接跑 `applyTrackerHooks`：
+
+- 被誤刪的第三方：**無**（28 條，含 round 1–3 的全部案例，加上反斜線跳脫、正斜線路徑中混入反斜線、`%VAR%`（引號內外）、雙引號內的 `$()`／反引號／`$HOME`、caret、未閉合引號、引號外換行）
+- 未能升級的 tracker 形狀：**無**（11 種，含 Windows 磁碟機反斜線路徑、UNC 反斜線路徑、帶空白且加引號的磁碟機路徑）
+
+### round 4 後的執行結果
+
+| 檢查 | 結果 |
+|---|---|
+| `pnpm test` | CLI **160 pass／0 fail**；server 228 pass／1 skip／0 fail |
+| `pnpm typecheck` | CLI 與 server 均 Done |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；45.81 KB |
+| `pnpm build` | Server Bun target 通過；233.48 KB |
+| `spectra validate fix-review-findings-0-4-1` | `✓ valid` |
+| `git diff --check` | 無 whitespace error |
+
+Smoke 的 `settings.json` 擴充到五條引用 tracker 路徑的第三方 hook（`node /usr/local/lib/lint.js <tracker>`、`/usr/bin/env node <tracker>`、`/opt/tools/run.sh sub/…`、`node "/tmp/$(printf keep)/ccusage-tracker/session-end.mjs"`、`node /tmp/ccusage-tracker\session-end.mjs`）加一條舊的 `bash <tracker>.sh`：
+
+```
+canonical tracker 條數: 1        => 只剩一條 OK
+第三方 hook 全部保留:            OK (5/5)
+舊的 bash .sh hook 已被取代:      OK
+```
 
 ## 已知限制與範圍外
 

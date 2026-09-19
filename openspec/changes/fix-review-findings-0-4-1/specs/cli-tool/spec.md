@@ -2,7 +2,7 @@
 
 ### Requirement: Tracker hook recognition
 
-The CLI SHALL treat a hook command as a tracker hook only when the whole command matches one of the canonical or known historical shapes: an optional interpreter (`node`, `bash`, `sh`, `powershell` or `pwsh`, bare or as an absolute path, and for PowerShell followed by its own switches and `-File`), then the tracker script path as exactly one token — bare, or double-quoted — ending in `/ccusage-tracker/codex-sync.mjs`, `/ccusage-tracker/session-end.mjs` or `/ccusage-tracker/session-start.mjs` (Claude legacy `.sh` and `.ps1` included), then only tracker arguments (`--hook`, `--notify`, `--mode=<value>`). The interpreter SHALL match the script extension: `node` for `.mjs`, `bash`/`sh` for `.sh`, `powershell`/`pwsh` for `.ps1`. The CLI SHALL NOT reassemble several whitespace-separated tokens into one path, because `<absolute path> <more text>` cannot be distinguished from a path containing spaces, and guessing wrong deletes a third-party hook. A command containing any shell syntax outside double quotes (`&`, `|`, `;`, `<`, `>`, backtick, `$`, parentheses, single quote, or a line break), or one where the tracker path is an argument to another program, SHALL be treated as third-party and SHALL be preserved unchanged, as SHALL any command that merely contains a tracker script path.
+The CLI SHALL treat a hook command as a tracker hook only when the whole command matches one of the canonical or known historical shapes: an optional interpreter (`node`, `bash`, `sh`, `powershell` or `pwsh`, bare or as an absolute path, and for PowerShell followed by its own switches and `-File`), then the tracker script path as exactly one token — bare, or double-quoted — ending in `/ccusage-tracker/codex-sync.mjs`, `/ccusage-tracker/session-end.mjs` or `/ccusage-tracker/session-start.mjs` (Claude legacy `.sh` and `.ps1` included), then only tracker arguments (`--hook`, `--notify`, `--mode=<value>`). The interpreter SHALL match the script extension: `node` for `.mjs`, `bash`/`sh` for `.sh`, `powershell`/`pwsh` for `.ps1`. The CLI SHALL NOT reassemble several whitespace-separated tokens into one path, because `<absolute path> <more text>` cannot be distinguished from a path containing spaces, and guessing wrong deletes a third-party hook. A command containing any shell syntax outside double quotes (`&`, `|`, `;`, `<`, `>`, parentheses, single quote, or a line break), or one where the tracker path is an argument to another program, SHALL be treated as third-party and SHALL be preserved unchanged, as SHALL any command that merely contains a tracker script path. Because a POSIX shell expands `$` and backticks inside double quotes too, and `%` is a cmd.exe expansion, a command containing any of those three characters SHALL be treated as third-party regardless of quoting. A backslash in the script path SHALL be accepted only as a Windows separator, that is when the path starts with a drive letter (`C:\`) or a UNC prefix (`\\`); any other backslash SHALL make the command third-party, because a POSIX shell reads it as an escape and would run a different file.
 
 #### Scenario: Third-party command references the tracker script
 
@@ -43,6 +43,12 @@ The CLI SHALL treat a hook command as a tracker hook only when the whole command
 
 - **WHEN** a command is `bash <home>/.config/ccusage-tracker/session-end.mjs` or `node <home>/.config/ccusage-tracker/session-end.sh`
 - **THEN** the CLI SHALL treat it as third-party
+
+#### Scenario: Characters the shell would reinterpret are never recognized
+
+- **WHEN** a command contains `$` or a backtick anywhere, inside double quotes or not (`node "/tmp/$(printf keep)/ccusage-tracker/codex-sync.mjs" --hook`), contains `%` (`node C:/%TARGET%/ccusage-tracker/codex-sync.mjs --hook`), or contains a backslash in the script path that is not part of a Windows drive (`C:\…`) or UNC (`\\server\…`) prefix (`node /tmp/ccusage-tracker\codex-sync.mjs --hook`)
+- **THEN** the CLI SHALL treat it as third-party, because the shell would run a different file than the literal text suggests
+- **AND** a Windows drive path or UNC path whose separators are backslashes SHALL still be recognized
 
 ## MODIFIED Requirements
 
