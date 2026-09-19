@@ -52,3 +52,4 @@
 - [x] 8.5 依 Codex round 5 finding (c1) 補測並實作：未加引號的直譯器或路徑 token 含 brace／glob（`{ } * ? [ ]`）一律第三方，引號內不受影響。驗證：`/opt/{real,foreign}/node "…"`、`/opt/*/node "…"`、`node /home/*/…` 皆原樣保留。
 - [x] 8.6 依 Codex round 5 finding (c2) 補測並實作：整條命令任何位置出現 `!` 一律第三方（cmd.exe delayed expansion），canonical 含 `!` 時由第一層接住。驗證：`node C:/!TARGET!/…`（引號內外）皆保留；家目錄 `/home/a!b` 重複安裝仍為 noop。
 - [x] 8.7 依 Codex round 5 finding (b) 修正反斜線規則：腳本路徑尾綴在 Windows 路徑（磁碟機／UNC）下兩種分隔都算，其餘只認正斜線；未加引號含反斜線的 token 一律第三方。驗證：`/home/a\b/.config/ccusage-tracker/codex-sync.mjs` 被辨識、`/tmp/ccusage-tracker\codex-sync.mjs` 被拒、Windows 與 UNC 路徑仍被辨識。
+- [x] 8.8 審查閘 round 6：`%` 收斂成「成對的 `%NAME%`」不成立（cmd 變數名不限於 `[A-Za-z_]\w*`，`%ProgramFiles(x86)%` 為真實變數、`%1` 為批次參數），實測 6 種形狀繞過。改回形狀層一律拒絕任何 `%`；家目錄含 `%` 時的冪等性本來就由第一層保證。驗證：六輪彙總掃描 41 條第三方無一被誤刪、8 種 tracker 形狀全部升級、12 種家目錄全部冪等。

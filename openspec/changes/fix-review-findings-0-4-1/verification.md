@@ -4,7 +4,7 @@
 
 ## 結論
 
-- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完；審查閘 round 3 指出該修正的護欄仍不足，已把路徑重組整個移除；複審 round 4 再以實際執行的反例指出 shell 重新解讀字元的繞過；round 5 指出嚴格化破壞了特殊字元家目錄的安裝冪等性，辨識因此拆成「精確比對 canonical」與「形狀比對」兩層。全部已修完（見末三節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
+- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完；審查閘 round 3 指出該修正的護欄仍不足，已把路徑重組整個移除；複審 round 4 再以實際執行的反例指出 shell 重新解讀字元的繞過；round 5 指出嚴格化破壞了特殊字元家目錄的安裝冪等性，辨識因此拆成「精確比對 canonical」與「形狀比對」兩層；round 6 再指出我在第二層對 `%` 的收斂不成立、已改回全面拒絕。全部已修完（見末四節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
 - 完整測試 **CLI 170 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **398 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 57 項 CLI 測試（round 1 新增 29、複審 round 2 再 14、審查閘 round 3 再 1 並改寫 2、複審 round 4 再 3 並改寫 1、round 5 再 10）。
 - `pnpm typecheck`、`pnpm --filter ccusage-tracker build`、`pnpm build` 全綠；`spectra validate fix-review-findings-0-4-1` 通過；`git diff --check` 無 whitespace error。
 - Node-built CLI smoke：暫存 HOME、兩份設定檔皆為 symlink、hooks.json 含引用 tracker 腳本路徑的第三方 `sha256sum` Stop 群組 —— setup 後該群組位元組不變留在索引 0、tracker 在索引 1、輸出含兩行 `Wrote through symlink`、symlink 保留；兩次 update 後 `hooks.json` 與 `settings.json` 的 sha256 皆不變；混合信任的 setup／update 與 status 訊息逐字符合規格；`config.toml` 位元組不變。
@@ -26,7 +26,7 @@
 |---|---|
 | `pnpm test` | CLI 170 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
 | `pnpm typecheck` | CLI 與 server 均 Done |
-| `pnpm --filter ccusage-tracker build` | Node target 通過；46.78 KB |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；46.75 KB |
 | `pnpm build` | Server Bun target 通過；233.48 KB |
 | `spectra validate fix-review-findings-0-4-1` | `✓ fix-review-findings-0-4-1 — valid` |
 | `spectra analyze fix-review-findings-0-4-1 --json` | 無 Critical／Warning；2 項「scenario 缺 examples」Suggestion（沿自提案時） |
@@ -302,11 +302,51 @@ Smoke 另外對三個含特殊字元的暫存家目錄各跑三次 update：
 [back\slash] run 1/2/3: Claude SessionEnd hook 數=1  Codex Stop 群組數=1
 ```
 
+### 審查閘 round 6：`%` 的收斂不成立
+
+前一輪我在第二層把 `%` 的拒絕收斂成「成對的 `%NAME%`」（`/[A-Za-z_][A-Za-z0-9_]*/`），想順便保住 `%` 家目錄的**舊形狀升級**。閘門指出這會誤刪第三方 hook，實測 6 種形狀繞過：
+
+```
+!!! 被誤收 !!!  node "C:/%ProgramFiles(x86)%/ccusage-tracker/codex-sync.mjs" --hook
+!!! 被誤收 !!!  node "C:/%1%/ccusage-tracker/codex-sync.mjs" --hook
+!!! 被誤收 !!!  node "C:/%COMMONPROGRAMFILES(X86)%/ccusage-tracker/codex-sync.mjs" --hook
+!!! 被誤收 !!!  node "C:/%~dp0%/ccusage-tracker/codex-sync.mjs" --hook
+!!! 被誤收 !!!  node "C:/%A-B%/ccusage-tracker/codex-sync.mjs" --hook
+!!! 被誤收 !!!  node "C:/%A.B%/ccusage-tracker/codex-sync.mjs" --hook
+```
+
+根因：cmd.exe 的變數名不限於 `[A-Za-z_][A-Za-z0-9_]*` —— `%ProgramFiles(x86)%`、`%CommonProgramFiles(x86)%` 是系統真實存在的變數，`%1` 是批次參數，`%~dp0` 是參數修飾。任何以字元類去枚舉變數名的收斂都會漏掉一整排形狀。
+
+修法：形狀層改回一律拒絕任何 `%`。這**不會**影響 `%` 家目錄的安裝冪等性 —— 那件事本來就由第一層（canonical 位元組相等）保證，而收斂只是為了多保住「舊形狀 ＋ `%` 家目錄」這個組合的升級，屬於 nice-to-have。用一個不成立的枚舉去換它，代價是誤刪第三方 hook，不划算。
+
+**教訓**：第二層的每一條放寬都必須能說出「為什麼這個字元集合是完備的」。說不出來就不要放寬 —— 第一層已經接住了真正的風險（冪等性），第二層只負責升級舊形狀，寧可少升級。
+
+### 六輪彙總的對抗性掃描
+
+| 檢查 | 結果 |
+|---|---|
+| 第三方命令（41 條，六輪反例全收） | **無一被誤刪** |
+| tracker 形狀（8 種，含 POSIX 反斜線家目錄、Windows 磁碟機、UNC） | **全部升級為唯一一條** |
+| 家目錄形狀（12 種：`%` `\` `!` `$` 反引號 `{}` `*` `?` 空白 一般 Windows `%TARGET%`） | **全部冪等** |
+
+### round 6 後的執行結果
+
+| 檢查 | 結果 |
+|---|---|
+| `pnpm test` | CLI **170 pass／0 fail**；server 228 pass／1 skip／0 fail |
+| `pnpm typecheck` | CLI 與 server 均 Done |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；46.75 KB |
+| `pnpm build` | Server Bun target 通過；233.48 KB |
+| `spectra validate fix-review-findings-0-4-1` | `✓ valid` |
+| `git diff --check` | 無 whitespace error |
+
+Smoke 重跑全綠：第三方 hook 5/5 保留、canonical tracker 只剩一條、舊 `bash .sh` 已被取代、兩次 update 後 sha256 不變、三個特殊字元家目錄各三次 update 後 hook 數皆為 1、`config.toml` 位元組不變、無殘留檔。
+
 ## 已知限制與範圍外
 
 - **Windows／Linux 未實機驗證**：路徑受支援（`isAbsolutePathToken` 認 `C:/`、UNC，辨識測試含 Windows 形狀），但只在 macOS 實跑。FIFO／socket 案例以 `it.skipIf(process.platform === "win32")` 跳過。中文與英文 README 都已寫明。
 - **`config.toml` 與 status 讀檔未套型態檢查**：本次的 `assertRegularFileTarget` 依規格只涵蓋安裝交易的目標（`settings.json`、`hooks.json`、tracker 腳本）。`defaultWiringDeps.readCodexConfig`（`packages/cli/src/hooks.ts:296`）與 `status.ts:138` 的 `readTextFile` 仍直接 `readFileSync`，若 `config.toml` 是指向無 writer FIFO 的 symlink 會卡住。兩處都只讀不寫、不在本 change 範圍，記錄於此不順手修。
 - **辨識收緊的取捨**：手動改過 tracker hook 命令（加自訂參數、包成複合命令）會被視為第三方而多出一份 tracker hook。舊版安裝器寫出的形狀已在 round 2 補上受限的遷移規則（round 3 再限定腳本路徑須為單一 token），但沒有涵蓋任何自訂改寫。已在兩份 README 寫明；重複觸發由 5 分鐘節流與獨立鎖吸收。
 - **未加引號且含空白的路徑不會被升級**：該形狀與「把 tracker 路徑當參數傳給別的腳本」在字串層面無法區分，改為一律視為第三方（round 3）。代價是這類舊 hook 會多出一條 canonical 並存，重複觸發由 5 分鐘節流與獨立鎖吸收。現行安裝器一律加引號，只影響 `f04098e`／`d758e52` 期間安裝且家目錄含空白、之後從未更新過的機器。
-- **含展開語法的「舊形狀」命令不會被升級**：家目錄含 `$`、反引號、`%NAME%`、`!` 或未加引號的 brace／glob 時，canonical 命令一律由第一層（位元組相等）接住，安裝冪等性不受影響；受影響的只有「舊形狀 ＋ 這類家目錄」的組合，那條舊 hook 不會就地升級而是多一條並存。
+- **含展開語法的「舊形狀」命令不會被升級**：家目錄含 `$`、反引號、`%`、`!` 或未加引號的 brace／glob 時，canonical 命令一律由第一層（位元組相等）接住，安裝冪等性不受影響；受影響的只有「舊形狀 ＋ 這類家目錄」的組合，那條舊 hook 不會就地升級而是多一條並存。
 - 版本號提升、CHANGELOG 的 `[Unreleased]` 定版、npm 發布與 Zeabur 部署都不在本 change，另開 release PR。
