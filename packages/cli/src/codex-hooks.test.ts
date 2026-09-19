@@ -194,6 +194,20 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
     }
   });
 
+  // 腳本路徑必須是單一 token：重組空白會讓「把 tracker 路徑當參數傳給別的腳本」
+  // 被誤收並整條刪掉（詳見 hooks.test.ts 的同名 describe）。
+  it("未加引號且含空白的路徑、或路徑前另有一支腳本：視為第三方", () => {
+    for (const thirdPartyCommand of [
+      `node /Users/Gill Chiang/.config/ccusage-tracker/codex-sync.mjs --hook`,
+      `node /opt/lint.js config/ccusage-tracker/codex-sync.mjs`,
+    ]) {
+      const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: thirdPartyCommand }] }] } }, command);
+
+      expect(result.updated.hooks!.Stop).toHaveLength(2);
+      expect(result.updated.hooks!.Stop![0].hooks[0].command).toBe(thirdPartyCommand);
+    }
+  });
+
   it("codex-sync.mjs 只接受 node 直譯器：bash 跑 .mjs 視為第三方", () => {
     const thirdPartyCommand = `bash ${script}`;
     const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: thirdPartyCommand }] }] } }, command);
@@ -209,7 +223,7 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
       `"/usr/local/bin/node" "${script}"`,
       `node "${script}" --notify`,
       `node "C:/Users/x/.config/ccusage-tracker/codex-sync.mjs" --hook`,
-      `node /Users/Gill Chiang/.config/ccusage-tracker/codex-sync.mjs --hook`,
+      `node "/Users/Gill Chiang/.config/ccusage-tracker/codex-sync.mjs" --hook`,
     ]) {
       const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: existing, timeout: 3 }] }] } }, command);
 

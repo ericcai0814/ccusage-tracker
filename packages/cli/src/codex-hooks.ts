@@ -141,12 +141,7 @@ function peelPowerShellFile(text: string): string | null {
   return null;
 }
 
-// 未加引號、含空白的舊版路徑要能重組，但 `node /other/lint.js <tracker>` 這種
-// 「把 tracker 路徑當參數傳給別的腳本」不能被誤收：一條路徑不會在中間又出現
-// 另一個絕對路徑的起點。加了引號的路徑沒有這個歧義，不套這條。
-function isSinglePath(path: string): boolean {
-  return path.split(/\s+/).slice(1).every((part) => !isAbsolutePathToken(part));
-}
+
 
 // script 是腳本路徑本身（已去引號）必須符合的尾綴樣式；Claude 端與 Codex 端各給一組。
 export function isTrackerHookCommand(command: unknown, script: RegExp): boolean {
@@ -168,16 +163,20 @@ export function isTrackerHookCommand(command: unknown, script: RegExp): boolean 
     }
   }
 
-  // 尾端只能是 tracker 自己的參數；剩下的整段就是腳本路徑（可能含空白）
+  // 尾端只能是 tracker 自己的參數
   for (let argument = TRACKER_ARGUMENT.exec(rest); argument !== null; argument = TRACKER_ARGUMENT.exec(rest)) {
     rest = rest.slice(0, argument.index);
   }
 
-  const trimmed = rest.trim();
-  const quoted = /^"[^"]*"$/.test(trimmed);
-  const path = quoted ? trimmed.slice(1, -1) : trimmed;
+  // 剩下的必須恰好是一個 token。把整段重組成路徑等於猜「空白是路徑的一部分還是
+  // 參數分隔」，而 `<絕對路徑> <更多文字>` 兩種解讀在字串層面無法區分，猜錯會把
+  // `node /opt/lint.js config/ccusage-tracker/session-end.mjs` 這種第三方 hook 整條
+  // 刪掉。因此不猜：未加引號又含空白的舊路徑視為第三方，寧可多 append 一條
+  // （重複觸發由節流與鎖吸收），也不刪別人的 hook。
+  const scriptPath = peelToken(rest.trim());
+  if (scriptPath === null || scriptPath.rest !== "") return false;
+  const path = scriptPath.token;
   if (!isAbsolutePathToken(path) || !script.test(path)) return false;
-  if (!quoted && !isSinglePath(path)) return false;
   return requiredExtension === null || extensionOf(path) === requiredExtension;
 }
 

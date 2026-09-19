@@ -558,14 +558,15 @@ describe("舊版安裝器寫出的歷史命令仍可就地升級", () => {
   const spaced = "/Users/Gill Chiang/.config/ccusage-tracker";
   const plain = "/home/u/.config/ccusage-tracker";
   const legacy: [string, string, "SessionEnd" | "Stop" | "SessionStart"][] = [
-    // db7435a：bash 時代的 .sh hook，$HOOK_SCRIPT 未加引號
+    // db7435a：bash 時代的 .sh hook
     [`bash ${plain}/session-end.sh`, endCmd, "SessionEnd"],
-    [`bash ${spaced}/session-end.sh`, endCmd, "SessionEnd"],
-    // f04098e：改 Node 但仍未加引號
-    [`node ${spaced}/session-start.mjs`, startCmd, "SessionStart"],
-    // d758e52：加了 --mode，仍未加引號
-    [`node ${spaced}/session-end.mjs --mode=session-end`, endCmd, "SessionEnd"],
-    [`node ${spaced}/session-end.mjs --mode=stop`, stopCmd, "Stop"],
+    // f04098e：改 Node，路徑未加引號（家目錄無空白時仍是單一 token）
+    [`node ${plain}/session-start.mjs`, startCmd, "SessionStart"],
+    // d758e52：加了 --mode
+    [`node ${plain}/session-end.mjs --mode=session-end`, endCmd, "SessionEnd"],
+    [`node ${plain}/session-end.mjs --mode=stop`, stopCmd, "Stop"],
+    // 加了引號的路徑即使含空白也是單一 token
+    [`node "${spaced}/session-end.mjs" --mode=stop`, stopCmd, "Stop"],
     // PowerShell 形狀：本 repo 未曾產生，但規格已列 .ps1，由同一條直譯器規則涵蓋
     [`powershell -NoProfile -ExecutionPolicy Bypass -File "C:/Users/Gill Chiang/.config/ccusage-tracker/session-end.ps1"`, endCmd, "SessionEnd"],
   ];
@@ -595,19 +596,25 @@ describe("舊版安裝器寫出的歷史命令仍可就地升級", () => {
   });
 });
 
-// 自審：為了讓未加引號、含空白的舊路徑能重組，重組是把直譯器與 tracker 參數以外的
-// 整段當成路徑。那會讓「把 tracker 路徑當參數傳給另一支腳本」也符合形狀。
-// 一條路徑不會在中間又出現另一個絕對路徑的起點，以此區分。
-describe("重組未加引號路徑時不誤收「tracker 路徑當參數」的第三方命令", () => {
-  const tracker = "/home/u/.config/ccusage-tracker/session-end.mjs";
+// 審查閘 round 3：把「直譯器與 tracker 參數以外的整段」重組成路徑，等於猜測空白是
+// 路徑的一部分還是參數分隔。兩者在字串層面無法區分（都是 `<絕對路徑> <更多文字>`，
+// 且都能以 tracker 腳本名結尾），猜錯就會刪掉第三方 hook。因此腳本路徑必須恰好是
+// 一個 token：未加引號又含空白的舊路徑改為不辨識，寧可多一條也不刪別人的。
+describe("腳本路徑必須是單一 token，不重組空白", () => {
+  const cases = [
+    // 第一個 token 是絕對路徑，後面接的是另一支腳本的相對路徑
+    "/opt/tools/run.sh sub/ccusage-tracker/session-end.sh",
+    "node /opt/lint.js config/ccusage-tracker/session-end.mjs",
+    "/usr/bin/env node /home/u/.config/ccusage-tracker/session-end.mjs",
+    "node /usr/local/lib/lint.js /home/u/.config/ccusage-tracker/session-end.mjs",
+    `node "/usr/local/lib/lint.js" "/home/u/.config/ccusage-tracker/session-end.mjs"`,
+    // 未加引號、含空白的舊路徑：已知的取捨 —— 不辨識，另行 append
+    "node /Users/Gill Chiang/.config/ccusage-tracker/session-end.mjs --mode=stop",
+    "bash /Users/Gill Chiang/.config/ccusage-tracker/session-end.sh",
+  ];
 
-  it("第二個絕對路徑出現在後面：視為第三方，原樣保留", () => {
-    for (const thirdParty of [
-      `node /usr/local/lib/lint.js ${tracker}`,
-      `node "/usr/local/lib/lint.js" "${tracker}"`,
-      `node C:/tools/lint.js C:/Users/x/.config/ccusage-tracker/session-end.mjs`,
-      `bash /usr/local/bin/wrap.sh /home/u/.config/ccusage-tracker/session-end.sh`,
-    ]) {
+  it("一律視為第三方並原樣保留，tracker 另行 append", () => {
+    for (const thirdParty of cases) {
       const r = applyTrackerHooks({ hooks: { Stop: [matcher(thirdParty)] } });
       const commands = r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command)) ?? [];
 
@@ -615,9 +622,9 @@ describe("重組未加引號路徑時不誤收「tracker 路徑當參數」的�
     }
   });
 
-  it("含空白但只有一條路徑：仍可就地升級", () => {
+  it("加了引號的路徑即使含空白仍是單一 token，可就地升級", () => {
     const r = applyTrackerHooks({
-      hooks: { Stop: [matcher("node /Users/Gill Chiang/.config/ccusage-tracker/session-end.mjs --mode=stop")] },
+      hooks: { Stop: [matcher(`node "/Users/Gill Chiang/.config/ccusage-tracker/session-end.mjs" --mode=stop`)] },
     });
 
     expect(r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command))).toEqual([stopCmd]);
