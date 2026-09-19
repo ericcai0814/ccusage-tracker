@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- tracker hook 的辨識收緊為標準命令形狀（可選的 `node` 執行檔、tracker 腳本絕對路徑、只允許 `--hook`／`--notify`／`--mode=<value>`）。原本只檢查命令是否含有腳本路徑，導致 `sha256sum "<script>"` 這類只是引用腳本的第三方 hook 被整組換成上報 hook、原有功能與額外欄位一併消失；現在一律視為第三方原樣保留，tracker 另行 append。請勿手動修改 tracker hook 的 command，否則會被視為第三方而多出一份。
+- `~/.claude/settings.json` 與 `$CODEX_HOME/hooks.json` 在讀取前先驗檔案型態。原本先 `readFileSync` 才檢查，指向 FIFO 的 symlink 會讓 `setup`／`update` 卡在 `open(2)`，指向目錄或 socket 則被誤報成 JSON 錯誤；現在解析後不是一般檔案一律在讀取前拒絕整筆交易，訊息帶出 symlink 目標（讀不到目標時退回不帶目標的訊息）。
+- 目標解析移到 staging 迴圈之前且每個檔案只解析一次：任一目標驗證失敗時，其他檔案連目錄都還沒被建立。
+- 寫穿 symlink 成功時輸出 `Wrote through symlink: <link> -> <real>`，讓使用者看見 HOME 以外被改寫的檔案。
+- Codex 信任狀態改用 tracker hook 的實際群組索引與群組內索引查詢。原本 hook 索引寫死 `:0`，tracker 位於混合群組的 `hooks[1]` 時會讀到隔壁第三方 hook 的信任或停用紀錄，甚至把尚未信任的 tracker 顯示為 trust recorded。
+- `setup`／`update` 的 Codex 結果行與 `status` 的 `Codex hooks:` 行改用同一個格式化函式，並在兩條 hook 狀態不同時逐 hook 說明（例如 `Stop trusted, SessionEnd awaiting trust`、`Stop disabled in Codex, SessionEnd trusted`）。
+- 舊 server 對 Codex 腳本回 404／410 時不再提示移除 `config.toml` 的 tracker `notify`：當下 hooks 根本沒接上，照做會關掉唯一的自動上報入口。
+- `config.toml` 的頂層掃描改為追蹤字串狀態與陣列深度，只在深度 0 且不在字串內時辨識 table 標頭。原本 `[[servers]]` 與 `[tui] # 註解` 沒被當成 table（提示多印），無尾逗號的陣列續行 `[3, 4]` 與多行字串裡的 `[tui]` 反而被當成 table（提示漏印）。
+- tracker hook 的辨識再收緊：引號外出現 shell 語法（`&`、`|`、`;`、`<`、`>`、反引號、`$`、括號、單引號、換行）一律視為第三方。原本只以空白切 token，`--mode=stop&&false` 這種黏在參數後、中間沒有空白的複合命令仍會被整條當成 tracker，更新時把後半段命令刪掉。
+- 舊版安裝器寫出的 hook 命令恢復可就地升級：辨識支援受限的直譯器前綴（`node`／`bash`／`sh`／`powershell`／`pwsh`，且必須與腳本副檔名相符），以及未加引號、家目錄含空白的腳本路徑。辨識收緊後這些舊 hook 會升級不了，變成新舊兩條並存重複觸發。腳本路徑必須是單一 token（裸的或雙引號）：把多個以空白分隔的 token 重組成路徑等於猜「空白是路徑的一部分還是參數分隔」，而 `node /opt/lint.js config/ccusage-tracker/session-end.mjs` 這種第三方命令與含空白的路徑在字串層面無法區分，猜錯會把第三方 hook 整條刪掉。代價是家目錄含空白、且由未加引號的舊安裝器裝的 hook 不會被升級，而是多 append 一條（重複觸發由節流與鎖吸收）。
+- tracker hook 辨識再補上 shell 重新解讀字元的防護：任何位置的 `$` 與反引號（POSIX 雙引號內照樣展開，`node "/tmp/$(cmd)/ccusage-tracker/codex-sync.mjs"` 指向的是別的檔案）、`%`（cmd.exe 變數展開），以及路徑中非 Windows 磁碟機／UNC 形狀的反斜線（POSIX 會當成跳脫，`/tmp/ccusage-tracker\codex-sync.mjs` 實際執行 `/tmp/ccusage-trackercodex-sync.mjs`）一律視為第三方。Windows 磁碟機與 UNC 路徑仍正常辨識。`%` 不收斂成「成對的 `%NAME%`」：cmd 的變數名不限於字母與底線（`%ProgramFiles(x86)%` 是真實存在的），`%1` 還是批次參數。
+- 未加引號的 token 含 brace／glob（`{ } * ? [ ]`）或任何位置出現 `!` 一律視為第三方：`/opt/{real,foreign}/node "<tracker>"` 會被 shell 展開成兩個路徑，真正執行的是後者；`!` 是 cmd.exe delayed expansion。引號內的同樣字元不受影響。
+- 反斜線只在 Windows 路徑（磁碟機／UNC）算分隔符，其餘路徑的尾綴只以正斜線比對：`/home/a\b/.config/ccusage-tracker/codex-sync.mjs` 是合法家目錄下的 tracker 腳本要被認得，`/tmp/ccusage-tracker\codex-sync.mjs` 在 POSIX 是單一檔名則不是。
+- 與本機此刻會寫出的命令位元組相等者一律視為 tracker hook：家目錄含 `$`、反引號或 `%VAR%` 時，形狀規則會拒絕 tracker 自己寫出的命令，導致每次 `setup`／`update` 都再 append 一條、無上限成長。位元組相等代表那本來就是自己寫的，替換為 no-op。
+- `config.toml` 掃描修正多行基本字串（`"""`）的反斜線跳脫：`\"""` 不再被當成字串結束，否則字串後真正的頂層 `notify` 會被漏報、字串內的假 `notify` 會被誤報。多行 literal 字串（`'''`）維持不吃跳脫。
+- 部分更新不再誤報未變動 hook 的信任狀態：改為依 `Stop`／`SessionEnd` 各自的變動與否作廢信任。原本只要任一條有變動就把兩條的信任紀錄一併降級，於是「只補裝 SessionEnd」時會要求重新信任已信任且未變動的 `Stop`。
+
+### Documentation
+
+- 中文 README 補上平台支援範圍：macOS、Linux 與 Windows 路徑受支援，但實機驗證只在 macOS 跑過，Windows／Linux 尚未實機驗證。
+- 兩份 README 補上「請勿手動修改 tracker hook 命令」與逐 hook 信任狀態的說明。
+
+### Tests
+
+- 補跨檔 rollback 案例：settings.json 已寫入、hooks.json（dotfiles symlink）最後一次 rename 失敗時，兩份設定、既有 `.backup`、symlink 與暫存檔全部復原。
+
 ## [0.4.0] - 2026-09-19
 
 CLI 0.2.0。server 需部署此版本，`/api/health` 回 `version: 0.4.0`；舊 CLI 0.1.7 對新 server 仍可正常上報。

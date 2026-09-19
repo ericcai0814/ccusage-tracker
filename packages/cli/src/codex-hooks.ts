@@ -22,9 +22,16 @@ export interface CodexHooksFile {
 
 export type CodexTrustState = "recorded" | "awaiting" | "disabled";
 
+// 信任 key 由「群組索引:群組內 hook 索引」組成。安裝支援「第三方在前、tracker 在後」
+// 的混合群組，所以 hook 索引不能寫死 0，否則會讀到隔壁第三方 hook 的信任或停用紀錄。
+export interface CodexHookLocation {
+  group: number;
+  hook: number;
+}
+
 export interface CodexGroupIndexes {
-  stop?: number;
-  sessionEnd?: number;
+  stop?: CodexHookLocation;
+  sessionEnd?: CodexHookLocation;
 }
 
 // 與 Claude hook 相同的 45 秒：codex-sync.mjs 的 worker deadline 是 180s，但 hook
@@ -52,10 +59,183 @@ export function getCodexHookCommand(): string {
   return `node "${getCodexSyncScriptPath()}" --hook`;
 }
 
-// 以路徑片段判斷，與 hooks.ts 的 isCcusageTrackerHook 同樣策略：認得舊的
-// --notify 寫法與未加旗標的寫法，才能就地升級而不是又 append 一份。
-export function isCodexTrackerHook(command?: unknown): boolean {
-  return typeof command === "string" && /[/\\]ccusage-tracker[/\\]codex-sync\.mjs(?=["'\s]|$)/.test(command);
+// tracker 自己寫出來的命令只有少數幾種形狀：可選的直譯器、tracker 腳本的絕對路徑、
+// 以及 tracker 自己的參數。只要命令「含有」腳本路徑就認定是 tracker，會讓
+// `sha256sum "<script>"` 這類第三方命令被整組換成上報 hook，原有功能與額外欄位一併消失。
+const TRACKER_ARGUMENT = /\s+(?:--hook|--notify|--mode=[^\s"]+)$/;
+
+// 引號外只要出現 shell 語法就不是 tracker 寫的命令。單純用空白切 token 不夠：
+// `--mode=stop&&false` 黏在一起，token 白名單看不出來，整條會被當成 tracker。
+const SHELL_SYNTAX = /[&|;<>()'\n\r]/;
+
+// 這些展開不分引號內外都要拒絕：POSIX 的雙引號內 `$` 與反引號照樣展開
+// （`"/tmp/$(printf x)/ccusage-tracker/codex-sync.mjs"` 指向的是別的檔案）。
+// `%` 與 `!` 都是 cmd.exe 的展開（後者需啟用 delayed expansion），引號內外都生效。
+// `%` 不收斂成「成對的 %NAME%」：cmd 的變數名不限於 [A-Za-z_]\w*（`%ProgramFiles(x86)%`
+// 是真實存在的），`%1` 還是批次參數，收斂會漏掉一整排形狀。家目錄真的含這些字元時，
+// canonical 命令由位元組相等那一層接住，安裝冪等性不受影響。
+const EXPANDS_ANYWHERE = /[$`!%]/;
+
+// 未加引號的 token 會被 shell 做 brace／glob 展開：`/opt/{real,foreign}/node` 實際
+// 展開成兩個路徑，真正執行的腳本就變成第二個；加了引號則不展開，是普通字元。
+const UNQUOTED_EXPANSION = /[{}*?[\]]/;
+
+function containsShellSyntax(command: string): boolean {
+  if (EXPANDS_ANYWHERE.test(command)) return true;
+  let quoted = false;
+  for (const character of command) {
+    if (character === '"') {
+      quoted = !quoted;
+      continue;
+    }
+    if (!quoted && SHELL_SYNTAX.test(character)) return true;
+  }
+  return quoted; // 未閉合的引號：形狀不明，一律當第三方
+}
+
+// 反斜線只有在 Windows 路徑（磁碟機或 UNC 開頭）才是分隔符。POSIX 路徑裡的反斜線
+// 是普通字元：`/home/a\b/.config/ccusage-tracker/codex-sync.mjs` 是合法家目錄下的
+// tracker 腳本，但 `/tmp/ccusage-tracker\codex-sync.mjs` 在 POSIX 是單一檔名，
+// 不是 `ccusage-tracker` 目錄下的腳本 —— 靠「只用正斜線比對尾綴」就能分開這兩者。
+function isWindowsPath(path: string): boolean {
+  return /^(?:[A-Za-z]:[/\\]|\\\\)/.test(path);
+}
+
+// 未加引號時 POSIX shell 會吃掉反斜線（`\c` 變成 `c`），字面文字不是真正執行的路徑。
+function hasAmbiguousBackslash(token: string): boolean {
+  return token.includes("\\") && !isWindowsPath(token);
+}
+
+// 腳本路徑的尾綴樣式：Windows 路徑兩種分隔都算，POSIX 只認正斜線。
+export interface TrackerScriptPattern {
+  posix: RegExp;
+  windows: RegExp;
+}
+
+// 舊版安裝器實際寫出的命令（git 史料）：db7435a 的 `bash $HOOK_SCRIPT`、
+// f04098e 的 `node $HOOK_SCRIPT`、d758e52 的 `node $HOOK_SCRIPT --mode=…`。
+// 這些變數在家目錄含空白時不帶引號展開，所以腳本路徑本身可能有空白 —— 辨識若只
+// 依空白切 token，這些舊 hook 會升級不了，變成新舊兩條並存重複觸發。
+// 直譯器必須與腳本副檔名相符，否則就是別人的命令借用了這條路徑。
+const INTERPRETERS: { matches: RegExp; extension: string }[] = [
+  { matches: /^node(?:\.exe)?$/i, extension: "mjs" },
+  { matches: /^(?:bash|sh)$/, extension: "sh" },
+  { matches: /^(?:powershell|pwsh)(?:\.exe)?$/i, extension: "ps1" },
+];
+
+// PowerShell 用 -File 指定腳本，之前可以帶幾個既有開關。
+const POWERSHELL_SWITCH = /^-(?:NoProfile|NoLogo|NonInteractive|Sta|Mta)$/i;
+const POWERSHELL_OPTION = /^-(?:ExecutionPolicy|WindowStyle|InputFormat|OutputFormat)$/i;
+
+function peelToken(text: string): { token: string; quoted: boolean; rest: string } | null {
+  const match = /^(?:"([^"]*)"|([^\s"]+))(?:\s+|$)/.exec(text);
+  if (match === null) return null;
+  return { token: match[1] ?? match[2], quoted: match[1] !== undefined, rest: text.slice(match[0].length) };
+}
+
+// 加了引號的 token 由 shell 原樣傳遞，裡面的 glob 字元是普通字元。
+function expandsUnquoted(peeled: { token: string; quoted: boolean }): boolean {
+  return !peeled.quoted && UNQUOTED_EXPANSION.test(peeled.token);
+}
+
+function basenameOf(path: string): string {
+  return path.split(/[/\\]/).pop() ?? "";
+}
+
+function extensionOf(path: string): string {
+  const base = basenameOf(path);
+  const dot = base.lastIndexOf(".");
+  return dot === -1 ? "" : base.slice(dot + 1).toLowerCase();
+}
+
+// POSIX 絕對路徑、Windows 磁碟機路徑（setup.ps1 會把反斜線換成正斜線）與 UNC 路徑。
+// 相對路徑一律不算：tracker 寫進設定檔的永遠是絕對路徑。
+function isAbsolutePathToken(token: string): boolean {
+  return token.startsWith("/") || token.startsWith("\\\\") || /^[A-Za-z]:[/\\]/.test(token);
+}
+
+// 直譯器只認裸名（靠 PATH 找）或絕對路徑；`./node` 這種相對路徑不算。
+function isExecutablePath(token: string): boolean {
+  return !/[/\\]/.test(token) || isAbsolutePathToken(token);
+}
+
+// 剝掉 PowerShell 的開關直到 -File；出現不認識的參數就不是已知形狀。
+function peelPowerShellFile(text: string): string | null {
+  let rest = text;
+  for (let peeled = peelToken(rest); peeled !== null; peeled = peelToken(rest)) {
+    if (/^-File$/i.test(peeled.token)) return peeled.rest;
+    if (POWERSHELL_SWITCH.test(peeled.token)) {
+      rest = peeled.rest;
+      continue;
+    }
+    if (POWERSHELL_OPTION.test(peeled.token)) {
+      const value = peelToken(peeled.rest);
+      if (value === null) return null;
+      rest = value.rest;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+
+
+// script 是腳本路徑本身（已去引號）必須符合的尾綴樣式；Claude 端與 Codex 端各給一組。
+// canonical 是本機此刻會寫出的命令；與其位元組相等者一律視為 tracker hook。
+// 沒有這個豁免的話，家目錄含 `$`、反引號或 `%VAR%` 的人會因為形狀規則拒絕
+// tracker 自己寫出的命令，於是每次 update 都再 append 一條、無上限成長。
+// 位元組相等代表那本來就是我們寫的，換成自己是 no-op，不可能誤刪第三方 hook。
+export function isTrackerHookCommand(command: unknown, script: TrackerScriptPattern, canonical: readonly string[] = []): boolean {
+  if (typeof command !== "string") return false;
+  if (canonical.includes(command)) return true;
+  if (containsShellSyntax(command)) return false;
+  let rest = command.trim();
+  const first = peelToken(rest);
+  if (first === null) return false;
+
+  // 可選的直譯器前綴；沒有前綴時（腳本自己可執行）不限定副檔名
+  let requiredExtension: string | null = null;
+  const interpreter = INTERPRETERS.find((candidate) => candidate.matches.test(basenameOf(first.token)));
+  if (interpreter !== undefined && isExecutablePath(first.token) && !hasAmbiguousBackslash(first.token) && !expandsUnquoted(first)) {
+    requiredExtension = interpreter.extension;
+    rest = first.rest;
+    if (interpreter.extension === "ps1") {
+      const peeled = peelPowerShellFile(rest);
+      if (peeled === null) return false;
+      rest = peeled;
+    }
+  }
+
+  // 尾端只能是 tracker 自己的參數
+  for (let argument = TRACKER_ARGUMENT.exec(rest); argument !== null; argument = TRACKER_ARGUMENT.exec(rest)) {
+    rest = rest.slice(0, argument.index);
+  }
+
+  // 剩下的必須恰好是一個 token。把整段重組成路徑等於猜「空白是路徑的一部分還是
+  // 參數分隔」，而 `<絕對路徑> <更多文字>` 兩種解讀在字串層面無法區分，猜錯會把
+  // `node /opt/lint.js config/ccusage-tracker/session-end.mjs` 這種第三方 hook 整條
+  // 刪掉。因此不猜：未加引號又含空白的舊路徑視為第三方，寧可多 append 一條
+  // （重複觸發由節流與鎖吸收），也不刪別人的 hook。
+  const scriptPath = peelToken(rest.trim());
+  if (scriptPath === null || scriptPath.rest !== "" || expandsUnquoted(scriptPath)) return false;
+  const path = scriptPath.token;
+  if (!isAbsolutePathToken(path)) return false;
+  const windows = isWindowsPath(path);
+  // 未加引號的 POSIX 路徑含反斜線：shell 會吃掉它，字面文字不是真正執行的檔案
+  if (!windows && !scriptPath.quoted && path.includes("\\")) return false;
+  if (!(windows ? script.windows : script.posix).test(path)) return false;
+  return requiredExtension === null || extensionOf(path) === requiredExtension;
+}
+
+export const CODEX_TRACKER_SCRIPT: TrackerScriptPattern = {
+  posix: /\/ccusage-tracker\/codex-sync\.mjs$/,
+  windows: /[/\\]ccusage-tracker[/\\]codex-sync\.mjs$/,
+};
+
+// 認得舊的 --notify 寫法與未加旗標的寫法，才能就地升級而不是又 append 一份。
+export function isCodexTrackerHook(command?: unknown, canonical = getCodexHookCommand()): boolean {
+  return isTrackerHookCommand(command, CODEX_TRACKER_SCRIPT, [canonical]);
 }
 
 export function isOnPath(name: string): boolean {
@@ -96,14 +276,14 @@ function readGroups(file: CodexHooksFile, event: string): CodexHookGroup[] {
 // 讓使用者其他 hook 的信任全部失效。
 function upsertCodexGroups(groups: CodexHookGroup[], command: string): { groups: CodexHookGroup[]; changed: boolean } {
   const entry: CodexHookEntry = { type: "command", command, timeout: CODEX_HOOK_TIMEOUT_SEC };
-  const index = groups.findIndex((group) => group.hooks.some((hook) => isCodexTrackerHook(hook.command)));
+  const index = groups.findIndex((group) => group.hooks.some((hook) => isCodexTrackerHook(hook.command, command)));
   if (index === -1) return { groups: [...groups, { hooks: [entry] }], changed: true };
 
   const current = groups[index];
-  const onlyTracker = current.hooks.every((hook) => isCodexTrackerHook(hook.command));
+  const onlyTracker = current.hooks.every((hook) => isCodexTrackerHook(hook.command, command));
   const replacement: CodexHookGroup = onlyTracker
     ? { hooks: [entry] }
-    : { ...current, hooks: current.hooks.map((hook) => (isCodexTrackerHook(hook.command) ? entry : hook)) };
+    : { ...current, hooks: current.hooks.map((hook) => (isCodexTrackerHook(hook.command, command) ? entry : hook)) };
   if (JSON.stringify(current) === JSON.stringify(replacement)) return { groups, changed: false };
   return { groups: groups.map((group, at) => (at === index ? replacement : group)), changed: true };
 }
@@ -113,7 +293,7 @@ function upsertCodexGroups(groups: CodexHookGroup[], command: string): { groups:
 export function applyCodexHooks(
   file: CodexHooksFile,
   command = getCodexHookCommand(),
-): { updated: CodexHooksFile; stopChanged: boolean; sessionEndChanged: boolean; anyChanged: boolean } {
+): { updated: CodexHooksFile; stopChanged: boolean; sessionEndChanged: boolean; anyChanged: boolean; indexes: CodexGroupIndexes } {
   if (!file || typeof file !== "object" || Array.isArray(file)) invalid("must contain a JSON object");
   if (file.hooks !== undefined && (!file.hooks || typeof file.hooks !== "object" || Array.isArray(file.hooks))) {
     invalid("hooks must be an object");
@@ -122,25 +302,30 @@ export function applyCodexHooks(
   const stop = upsertCodexGroups(readGroups(file, CODEX_EVENTS.stop), command);
   const sessionEnd = upsertCodexGroups(readGroups(file, CODEX_EVENTS.sessionEnd), command);
   const anyChanged = stop.changed || sessionEnd.changed;
+  const updated = anyChanged
+    ? { ...file, hooks: { ...file.hooks, [CODEX_EVENTS.stop]: stop.groups, [CODEX_EVENTS.sessionEnd]: sessionEnd.groups } }
+    : file;
 
   return {
-    updated: anyChanged
-      ? { ...file, hooks: { ...file.hooks, [CODEX_EVENTS.stop]: stop.groups, [CODEX_EVENTS.sessionEnd]: sessionEnd.groups } }
-      : file,
+    updated,
     stopChanged: stop.changed,
     sessionEndChanged: sessionEnd.changed,
     anyChanged,
+    indexes: findCodexTrackerIndexes(updated, command),
   };
 }
 
-// hooks.json 中 tracker 群組的索引，信任 key 需要它；找不到回 undefined。
-export function findCodexTrackerIndexes(file: CodexHooksFile): CodexGroupIndexes {
-  const find = (event: string): number | undefined => {
+// hooks.json 中 tracker hook 的群組索引與群組內索引，信任 key 需要兩者；找不到回 undefined。
+export function findCodexTrackerIndexes(file: CodexHooksFile, canonical = getCodexHookCommand()): CodexGroupIndexes {
+  const find = (event: string): CodexHookLocation | undefined => {
     const groups = file.hooks?.[event];
     if (!Array.isArray(groups)) return undefined;
-    const index = groups.findIndex((group) =>
-      Array.isArray(group?.hooks) && group.hooks.some((hook) => isCodexTrackerHook(hook?.command)));
-    return index === -1 ? undefined : index;
+    for (const [group, entry] of groups.entries()) {
+      if (!Array.isArray(entry?.hooks)) continue;
+      const hook = entry.hooks.findIndex((candidate) => isCodexTrackerHook(candidate?.command, canonical));
+      if (hook !== -1) return { group, hook };
+    }
+    return undefined;
   };
   const stop = find(CODEX_EVENTS.stop);
   const sessionEnd = find(CODEX_EVENTS.sessionEnd);
@@ -157,8 +342,8 @@ export function readCodexTrustState(
 ): { stop?: CodexTrustState; sessionEnd?: CodexTrustState } {
   const wanted = new Map<string, "stop" | "sessionEnd">();
   for (const event of ["stop", "sessionEnd"] as const) {
-    const index = indexes[event];
-    if (index !== undefined) wanted.set(`${hooksPath}:${TRUST_EVENT_KEYS[event]}:${index}:0`, event);
+    const at = indexes[event];
+    if (at !== undefined) wanted.set(`${hooksPath}:${TRUST_EVENT_KEYS[event]}:${at.group}:${at.hook}`, event);
   }
 
   const state: { stop?: CodexTrustState; sessionEnd?: CodexTrustState } = {};
@@ -180,21 +365,120 @@ export function readCodexTrustState(
   return state;
 }
 
+const CODEX_TRUST_MESSAGE =
+  "Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.";
+
+const CODEX_DISABLED_MESSAGE = "Codex: hooks installed but disabled in Codex";
+
+// 皆 recorded 代表兩條都沒被動過（動過的那一條會先被降成 awaiting），所以講得出
+// 「已是最新」。措辭是 trust recorded 而不是 trusted：雜湊值本身不驗證。
+const CODEX_RECORDED_MESSAGE = "Codex: hooks already up to date (trust recorded)";
+
+const TRUST_LABELS: Record<CodexTrustState, string> = {
+  recorded: "trusted",
+  awaiting: "awaiting trust",
+  disabled: "disabled in Codex",
+};
+
+const TRUST_HINT = "open /hooks in Codex";
+
+// 兩條 hook 的信任是分開記的，實際上很容易只信任其中一條（Eric 本機就是這樣）。
+// 籠統一句「awaiting trust」會讓人以為兩條都要重做，所以混合狀態逐 hook 講。
+// setup／update 與 status 共用這個函式，兩邊的措辭才不會各自漂移。
+export function formatCodexTrustLine(
+  states: { stop?: CodexTrustState; sessionEnd?: CodexTrustState },
+  options: { forStatus: boolean },
+): string {
+  const entries = ([["Stop", "stop"], ["SessionEnd", "sessionEnd"]] as const).flatMap(([label, event]) => {
+    const state = states[event];
+    return state === undefined ? [] : [{ label, state }];
+  });
+  const values = entries.map((entry) => entry.state);
+  const uniform = values.length > 0 && values.every((state) => state === values[0]) ? values[0] : null;
+  const detail = entries.map((entry) => `${entry.label} ${TRUST_LABELS[entry.state]}`).join(", ");
+  // 已停用是使用者的明示意圖，不該再被要求去信任
+  const hint = values.includes("awaiting");
+
+  // 沒有任何事件狀態（hooks 已接上時不會發生）：不冒稱已信任
+  if (entries.length === 0) {
+    return options.forStatus ? `Codex hooks: installed, awaiting trust (${TRUST_HINT})` : CODEX_TRUST_MESSAGE;
+  }
+  if (options.forStatus) {
+    if (uniform === "recorded") return "Codex hooks: installed, trust recorded";
+    if (uniform === "awaiting") return `Codex hooks: installed, awaiting trust (${TRUST_HINT})`;
+    if (uniform === "disabled") return "Codex hooks: installed, disabled in Codex";
+    return `Codex hooks: installed, ${detail}${hint ? ` (${TRUST_HINT})` : ""}`;
+  }
+  if (uniform === "recorded") return CODEX_RECORDED_MESSAGE;
+  if (uniform === "awaiting") return CODEX_TRUST_MESSAGE;
+  if (uniform === "disabled") return CODEX_DISABLED_MESSAGE;
+  return `Codex: hooks installed (${detail}).${hint ? " Open Codex and run /hooks once to trust the remaining ccusage-tracker hook." : ""}`;
+}
+
 // 唯讀掃描 config.toml 頂層的 notify 陣列。只用來提示使用者自行移除重複觸發的
 // 舊設定 —— 本工具永不編輯 Codex 的 TOML。
+//
+// 「整行以 [ 開頭就算進入 table」會同時錯兩邊：`[[servers]]` 與 `[tui] # 註解`
+// 不被當成 table（提示多印），無尾逗號的陣列續行 `[3, 4]` 與多行字串裡的 `[tui]`
+// 卻被當成 table（提示漏印）。因此改為追蹤字串狀態與陣列深度，只有在深度 0、
+// 不在字串內時，整行是 table 標頭才算頂層結束。
+const TABLE_HEADER = /^\[\[?[^\]]*\]\]?\s*(#.*)?$/;
+const STRING_DELIMITERS = ['"""', "'''", '"', "'"] as const;
+
+interface ScanState {
+  inString: string | null;
+  depth: number;
+}
+
+// 逐字元掃一行，回傳行尾的字串與陣列深度狀態。註解之後的字元全部略過；
+// 單行字串（"…" / '…'）不跨行，行尾一律關閉，壞掉的 TOML 不會污染後續狀態。
+function scanLine(line: string, state: ScanState): ScanState {
+  let inString = state.inString;
+  let depth = state.depth;
+  for (let at = 0; at < line.length; at++) {
+    if (inString !== null) {
+      // 基本字串（" 與 """）吃反斜線跳脫，literal 字串不吃。跳脫必須先判：
+      // 多行基本字串裡的 \""" 是跳脫後的引號，不能被當成結束符。
+      if ((inString === '"' || inString === '"""') && line[at] === "\\") {
+        at += 1;
+        continue;
+      }
+      if (line.startsWith(inString, at)) {
+        at += inString.length - 1;
+        inString = null;
+      }
+      continue;
+    }
+    if (line[at] === "#") break;
+    const opened = STRING_DELIMITERS.find((delimiter) => line.startsWith(delimiter, at));
+    if (opened !== undefined) {
+      inString = opened;
+      at += opened.length - 1;
+      continue;
+    }
+    if (line[at] === "[") depth += 1;
+    else if (line[at] === "]") depth -= 1;
+  }
+  const spansLines = inString === '"""' || inString === "'''";
+  return { inString: spansLines ? inString : null, depth };
+}
+
 export function hasTrackerNotify(configToml: string): boolean {
-  const lines = configToml.split(/\r?\n/);
+  let state: ScanState = { inString: null, depth: 0 };
   let collected: string | null = null;
-  let depth = 0;
-  for (const line of lines) {
+
+  for (const line of configToml.split(/\r?\n/)) {
     const trimmed = line.trim();
-    // 只有整行是 table 標頭才代表頂層結束；跨行陣列的續行（例如 `[1, 2],`）也以
-    // `[` 開頭，但仍在頂層，不能提早中斷掃描。
-    if (collected === null && /^\[[^\]]*\]$/.test(trimmed)) return false;
-    if (collected === null && !/^notify\s*=/.test(trimmed)) continue;
-    collected = (collected ?? "") + trimmed;
-    depth += (trimmed.match(/\[/g)?.length ?? 0) - (trimmed.match(/\]/g)?.length ?? 0);
-    if (depth <= 0) break;
+    if (collected === null && state.inString === null && state.depth === 0) {
+      if (TABLE_HEADER.test(trimmed)) return false; // 進入第一個 table，頂層結束
+      if (/^notify\s*=/.test(trimmed)) collected = "";
+    }
+    state = scanLine(line, state);
+    if (collected !== null) {
+      // 跨行的 notify 值累積到深度回到 0 才判斷
+      collected += trimmed;
+      if (state.inString === null && state.depth <= 0) break;
+    }
   }
   return collected !== null && /[/\\]ccusage-tracker[/\\]codex-sync\.mjs/.test(collected);
 }

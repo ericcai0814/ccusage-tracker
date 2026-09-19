@@ -27,6 +27,10 @@ interface MockOptions {
   codexScript?: boolean;
   collector?: (string | null)[];
   configToml?: string | null;
+  codexChanged?: boolean;
+  codexStopChanged?: boolean;
+  codexSessionEndChanged?: boolean;
+  writtenThrough?: { link: string; real: string }[];
 }
 
 function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps & MockState {
@@ -47,16 +51,20 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
     installHook: (scripts: TrackerScripts, targets: InstallTargets): InstallResult => {
       deps.targets = targets;
       const codexWired = targets.codex && scripts.codexSync !== undefined;
+      const stopChanged = codexWired && (options.codexStopChanged ?? options.codexChanged ?? true);
+      const sessionEndChanged = codexWired && (options.codexSessionEndChanged ?? options.codexChanged ?? true);
       return {
         sessionEndChanged: targets.claude,
         sessionStartChanged: targets.claude,
         stopChanged: targets.claude,
         claudeChanged: targets.claude,
-        codexStopChanged: codexWired,
-        codexSessionEndChanged: codexWired,
-        codexChanged: codexWired,
+        // codexChanged 必須與真實 installHook 一樣由兩個事件推導，否則部分更新的案例會被遮住
+        codexStopChanged: stopChanged,
+        codexSessionEndChanged: sessionEndChanged,
+        codexChanged: stopChanged || sessionEndChanged,
         codexWired,
-        codexIndexes: codexWired ? { stop: 0, sessionEnd: 0 } : {},
+        codexIndexes: codexWired ? { stop: { group: 0, hook: 0 }, sessionEnd: { group: 0, hook: 0 } } : {},
+        writtenThrough: options.writtenThrough ?? [],
         backedUp: false,
       };
     },
@@ -208,6 +216,56 @@ describe("setup 逐工具接線", () => {
     expect(output(deps)).not.toContain("/hooks");
   });
 
+  // Eric 本機的真實狀態：Stop 信任了、SessionEnd 沒有。只說「awaiting trust」
+  // 會讓人以為兩條都要重做，訊息必須指名還缺哪一條。
+  it("Stop 已信任、SessionEnd 還沒：結果行逐 hook 說明", async () => {
+    const hooksPath = getCodexHooksPath();
+    const deps = createMockDeps(answers, {
+      codexChanged: false,
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "sha256:a"\n`,
+    });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain(
+      "Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
+    );
+  });
+
+  // Codex 複審 round 2 [low]：原本只要任一 Codex hook 有變動，就把兩條的 recorded
+  // 全部降成 awaiting。只補裝 SessionEnd 時，已信任且未變動的 Stop 被誤報成待信任。
+  it("兩條原本都已信任、只補裝 SessionEnd：只有 SessionEnd 降為待信任", async () => {
+    // 起始狀態兩條都 recorded，作廢邏輯若被拿掉，輸出會變成「已是最新」而不是這句。
+    const hooksPath = getCodexHooksPath();
+    const deps = createMockDeps(answers, {
+      codexStopChanged: false,
+      codexSessionEndChanged: true,
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "sha256:a"\n` +
+        `[hooks.state."${hooksPath}:session_end:0:0"]\ntrusted_hash = "sha256:b"\n`,
+    });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain(
+      "Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
+    );
+    expect(output(deps)).not.toContain("already up to date");
+  });
+
+  it("Stop 有變動：即使 config.toml 還留著舊的信任紀錄，也不冒稱已信任", async () => {
+    // 信任雜湊算的是 hook 設定身分，內容一改就作廢
+    const hooksPath = getCodexHooksPath();
+    const deps = createMockDeps(answers, {
+      codexStopChanged: true,
+      codexSessionEndChanged: false,
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "sha256:stale"\n` +
+        `[hooks.state."${hooksPath}:session_end:0:0"]\ntrusted_hash = "sha256:b"\n`,
+    });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain(
+      "Codex: hooks installed (Stop awaiting trust, SessionEnd trusted). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
+    );
+  });
+
   it("config.toml 仍留著 tracker 的 notify：提示自行移除，但不編輯 TOML", async () => {
     const deps = createMockDeps(answers, {
       configToml: 'notify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs", "--notify"]\n',
@@ -217,6 +275,21 @@ describe("setup 逐工具接線", () => {
     const text = output(deps);
     expect(text).toContain("Remove the ccusage-tracker `notify` entry");
     expect(text).toContain("never edits that file");
+  });
+
+  // Codex 補審 [low]：server 回 404／410 時 hooks 根本沒接上，卻同時叫人移除 notify。
+  // 使用者照做會關掉當下唯一的自動上報入口。
+  it("server 回 404 且仍有 tracker notify：印相容訊息，但不叫人移除 notify", async () => {
+    const deps = createMockDeps(answers, {
+      codexScript: false,
+      configToml: 'notify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs", "--notify"]\n',
+    });
+    await setupCommand(deps);
+
+    const text = output(deps);
+    expect(text).toContain("does not provide Codex support");
+    expect(text).toContain("Codex: hooks not installed");
+    expect(text).not.toContain("Remove the ccusage-tracker `notify` entry");
   });
 
   it("第三方 notify 不觸發提示（hooks 與 notify 可共存）", async () => {
@@ -317,11 +390,11 @@ describe("setup 對 symlink 設定檔", () => {
     deps.installHook = (scripts: TrackerScripts, targets: InstallTargets): InstallResult => {
       const claude = applyTrackerHooks(JSON.parse(readFileSync(settingsLink, "utf8")));
       const codex = applyCodexHooks(JSON.parse(readFileSync(hooksLink, "utf8")));
-      installFiles([
+      const installed = installFiles([
         { path: settingsLink, content: JSON.stringify(claude.updated, null, 2) + "\n" },
         { path: hooksLink, content: JSON.stringify(codex.updated, null, 2) + "\n" },
       ]);
-      return recordTargets(scripts, targets);
+      return { ...recordTargets(scripts, targets), writtenThrough: installed.writtenThrough };
     };
 
     await setupCommand(deps);
@@ -334,5 +407,7 @@ describe("setup 對 symlink 設定檔", () => {
     expect(JSON.parse(readFileSync(realHooks, "utf8")).hooks.Stop[0].hooks[0].command).toContain("codex-sync.mjs");
     expect(readFileSync(`${realSettings}.backup`, "utf8")).toBe(settingsRaw);
     expect(existsSync(`${settingsLink}.backup`)).toBe(false);
+    expect(output(deps)).toContain(`Wrote through symlink: ${settingsLink} -> ${realSettings}`);
+    expect(output(deps)).toContain(`Wrote through symlink: ${hooksLink} -> ${realHooks}`);
   });
 });

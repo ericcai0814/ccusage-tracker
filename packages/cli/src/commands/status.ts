@@ -3,6 +3,7 @@ import { isHookInstalled } from "../hooks";
 import {
   detectCodex,
   findCodexTrackerIndexes,
+  formatCodexTrustLine,
   getCodexHooksPath,
   readCodexTrustState,
   type CodexHooksFile,
@@ -155,10 +156,8 @@ export function codexHooksLine(hooksJson: string | null, configToml: string | nu
   const indexes = file ? findCodexTrackerIndexes(file) : {};
   if (indexes.stop === undefined && indexes.sessionEnd === undefined) return "Codex hooks: not installed";
 
-  const states = Object.values(readCodexTrustState(configToml ?? "", hooksPath, indexes));
-  if (states.includes("disabled")) return "Codex hooks: installed, disabled in Codex";
-  if (states.every((state) => state === "recorded")) return "Codex hooks: installed, trust recorded";
-  return "Codex hooks: installed, awaiting trust (open /hooks in Codex)";
+  // 與 setup／update 的 Codex 結果行共用同一個格式化函式，措辭不會兩邊漂移
+  return formatCodexTrustLine(readCodexTrustState(configToml ?? "", hooksPath, indexes), { forStatus: true });
 }
 
 // 只有「上報確實送達」才會更新 last-upload.txt。缺這一行的話，背景 worker

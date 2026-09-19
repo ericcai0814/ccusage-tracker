@@ -5,6 +5,10 @@ import { join } from "node:path";
 import {
   applyCodexHooks,
   detectCodex,
+  CODEX_TRACKER_SCRIPT,
+  findCodexTrackerIndexes,
+  formatCodexTrustLine,
+  isTrackerHookCommand,
   getCodexHome,
   getCodexHookCommand,
   getCodexHooksPath,
@@ -151,14 +155,277 @@ describe("applyCodexHooks", () => {
   });
 });
 
+// Codex 補審 [med]：只檢查命令「含有」腳本路徑時，`sha256sum "<script>"` 這種第三方
+// 命令會被整組替換成上報 hook，原有功能與額外欄位一併消失。辨識改為整條命令的形狀比對。
+describe("isCodexTrackerHook 只認標準命令形狀", () => {
+  const script = "/Users/x/.config/ccusage-tracker/codex-sync.mjs";
+
+  it("第三方命令只是引用腳本路徑：群組位元組不變留在原索引，tracker append 在尾端", () => {
+    for (const thirdPartyCommand of [
+      `sha256sum "${script}"`,
+      `node "${script}" --hook && echo done`,
+      `cat ${script} | wc -l`,
+    ]) {
+      const group = { hooks: [{ type: "command", command: thirdPartyCommand, timeout: 3 }], note: "keep" };
+
+      const result = applyCodexHooks({ hooks: { Stop: [group] } }, command);
+
+      const stop = result.updated.hooks!.Stop!;
+      expect(stop).toHaveLength(2);
+      expect(JSON.stringify(stop[0])).toBe(JSON.stringify(group));
+      expect(stop[1]).toEqual({ hooks: [{ type: "command", command, timeout: 45 }] });
+    }
+  });
+
+  it("引號外有 shell 運算子（含無空白黏在參數後）：群組原樣保留，tracker append 在尾端", () => {
+    for (const thirdPartyCommand of [
+      `node "${script}" --hook&&false`,
+      `node "${script}" --hook;rm -rf /tmp/x`,
+      `node "${script}" --hook|tee /tmp/x`,
+      `node "${script}" --hook>/tmp/x`,
+      `node "${script}" $(whoami)`,
+    ]) {
+      const group = { hooks: [{ type: "command", command: thirdPartyCommand, timeout: 3 }], note: "keep" };
+
+      const result = applyCodexHooks({ hooks: { Stop: [group] } }, command);
+
+      const stop = result.updated.hooks!.Stop!;
+      expect(stop).toHaveLength(2);
+      expect(JSON.stringify(stop[0])).toBe(JSON.stringify(group));
+      expect(stop[1]).toEqual({ hooks: [{ type: "command", command, timeout: 45 }] });
+    }
+  });
+
+  // 腳本路徑必須是單一 token：重組空白會讓「把 tracker 路徑當參數傳給別的腳本」
+  // 被誤收並整條刪掉（詳見 hooks.test.ts 的同名 describe）。
+  it("未加引號且含空白的路徑、或路徑前另有一支腳本：視為第三方", () => {
+    for (const thirdPartyCommand of [
+      `node /Users/Gill Chiang/.config/ccusage-tracker/codex-sync.mjs --hook`,
+      `node /opt/lint.js config/ccusage-tracker/codex-sync.mjs`,
+    ]) {
+      const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: thirdPartyCommand }] }] } }, command);
+
+      expect(result.updated.hooks!.Stop).toHaveLength(2);
+      expect(result.updated.hooks!.Stop![0].hooks[0].command).toBe(thirdPartyCommand);
+    }
+  });
+
+  // 審查閘 round 4：Codex 實測出的繞過形狀原文。共通點是字串長得像 tracker 路徑，
+  // 但 shell 實際執行的是別的檔案 —— 認錯就會把第三方 hook 整條刪掉。
+  it("shell 會改寫字面意義的字元：反斜線、%VAR%、引號內的 $() 與反引號皆為第三方", () => {
+    const bypasses = [
+      'node "/tmp/ccusage-tracker/codex-sync.mjs --hook',                       // 未閉合引號
+      'node "/tmp/ccusage-tracker/codex-sync.mjs" --hook\necho keep',           // 引號外換行
+      "node /tmp/ccusage-tracker\\codex-sync.mjs --hook",                        // POSIX 會把 \c 當跳脫
+      "node C:/%TARGET%/ccusage-tracker/codex-sync.mjs --hook",                 // cmd.exe 變數展開
+      'node "C:/%TARGET:~0,1%/ccusage-tracker/codex-sync.mjs" --hook',          // 變數切片，引號內照樣展開
+      "node C:/ccusage-tracker^/codex-sync.mjs --hook",                         // cmd.exe 跳脫字元
+      'node "/tmp/$(printf keep)/ccusage-tracker/codex-sync.mjs" --hook',       // 雙引號內仍會展開
+      'node "/tmp/`printf keep`/ccusage-tracker/codex-sync.mjs" --hook',        // 同上，反引號
+    ];
+
+    for (const thirdPartyCommand of bypasses) {
+      const group = { hooks: [{ type: "command", command: thirdPartyCommand }], note: "keep" };
+
+      const result = applyCodexHooks({ hooks: { Stop: [group] } }, command);
+
+      expect([thirdPartyCommand, result.updated.hooks!.Stop!.length]).toEqual([thirdPartyCommand, 2]);
+      expect(JSON.stringify(result.updated.hooks!.Stop![0])).toBe(JSON.stringify(group));
+    }
+  });
+
+  it("codex-sync.mjs 只接受 node 直譯器：bash 跑 .mjs 視為第三方", () => {
+    const thirdPartyCommand = `bash ${script}`;
+    const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: thirdPartyCommand }] }] } }, command);
+
+    expect(result.updated.hooks!.Stop).toHaveLength(2);
+    expect(result.updated.hooks!.Stop![0].hooks[0].command).toBe(thirdPartyCommand);
+  });
+
+  it("標準形狀仍被辨識並就地替換：帶引號、不帶引號、帶引號 node 絕對路徑、--notify", () => {
+    for (const existing of [
+      `node "${script}" --hook`,
+      `node ${script} --hook`,
+      `"/usr/local/bin/node" "${script}"`,
+      `node "${script}" --notify`,
+      `node "C:/Users/x/.config/ccusage-tracker/codex-sync.mjs" --hook`,
+      `node "/Users/Gill Chiang/.config/ccusage-tracker/codex-sync.mjs" --hook`,
+    ]) {
+      const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: existing, timeout: 3 }] }] } }, command);
+
+      expect(result.updated.hooks!.Stop).toEqual([{ hooks: [{ type: "command", command, timeout: 45 }] }]);
+    }
+  });
+});
+
+// 審查閘 round 5：形狀規則若拒絕 tracker 自己寫出的 canonical 命令，每次 update 都會
+// 再 append 一條，無上限成長 —— 比「多一條」嚴重得多。canonical 命令一律以位元組相等
+// 辨識：那本來就是我們寫的，換成自己是 no-op，不可能誤刪第三方。
+describe("canonical 命令的冪等性不變量", () => {
+  const exotic = 'node "/tmp/home %TARGET%/.config/ccusage-tracker/codex-sync.mjs" --hook';
+
+  // 下一個測試用的家目錄，第二層一定拒絕（%、!、$、反引號都是展開字元）。
+  // 先把這件事釘住，冪等測試才證明得了「是第一層讓它冪等」而不是第二層放行。
+  it("這些 canonical 命令一定通不過第二層", () => {
+    for (const canonical of [
+      exotic,
+      'node "/tmp/home!x/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a$b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a`b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/home/100%/.config/ccusage-tracker/codex-sync.mjs" --hook',
+    ]) {
+      expect([canonical, isTrackerHookCommand(canonical, CODEX_TRACKER_SCRIPT)]).toEqual([canonical, false]);
+    }
+  });
+
+  it("家目錄含 shell 特殊字元時，重複安裝仍是 noop", () => {
+    for (const canonical of [
+      exotic,
+      'node "/tmp/home!x/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a$b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a`b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/home/100%/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/home/a\\b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/home/a!b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      String.raw`node "C:\Users\a%b\.config\ccusage-tracker\codex-sync.mjs" --hook`,
+    ]) {
+      const first = applyCodexHooks({}, canonical);
+      const second = applyCodexHooks(first.updated, canonical);
+      const third = applyCodexHooks(second.updated, canonical);
+
+      expect([canonical, second.anyChanged, third.updated.hooks!.Stop!.length]).toEqual([canonical, false, 1]);
+      expect(second.updated).toBe(first.updated);
+    }
+  });
+
+  it("只有位元組相等才享有這個豁免：同一路徑的其他形狀仍被拒", () => {
+    const script = CODEX_TRACKER_SCRIPT;
+    // 用含 `$` 的路徑：形狀規則一定拒絕它，所以能看出豁免確實只靠位元組相等
+    const expanding = 'node "/Users/a$b/.config/ccusage-tracker/codex-sync.mjs" --hook';
+
+    expect(isTrackerHookCommand(expanding, script, [expanding])).toBe(true);
+    expect(isTrackerHookCommand(expanding, script, [])).toBe(false);
+    // 換了參數就不是位元組相等，形狀規則照樣把它擋下來
+    expect(isTrackerHookCommand(expanding.replace("--hook", "--notify"), script, [expanding])).toBe(false);
+    // 豁免名單裡的是別條命令時也不放行
+    expect(isTrackerHookCommand(expanding, script, ["node \"/other/ccusage-tracker/codex-sync.mjs\" --hook"])).toBe(false);
+  });
+
+  it("findCodexTrackerIndexes 對 canonical 命令同樣認得", () => {
+    const file = applyCodexHooks({}, exotic).updated;
+
+    expect(findCodexTrackerIndexes(file, exotic)).toEqual({
+      stop: { group: 0, hook: 0 },
+      sessionEnd: { group: 0, hook: 0 },
+    });
+  });
+});
+
+// cmd.exe 的變數名不限於 [A-Za-z_]\w*（`%ProgramFiles(x86)%` 是真實存在的），
+// `%1` 還是批次參數。用「成對的 %NAME%」去收斂會漏掉一整排形狀，因此形狀層一律
+// 拒絕任何 `%`；家目錄真的含 % 時，canonical 命令由第一層接住，冪等性不受影響。
+describe("形狀層一律拒絕 %", () => {
+  const script = CODEX_TRACKER_SCRIPT;
+
+  it("各種 cmd.exe 展開形狀都視為第三方", () => {
+    for (const command of [
+      "node C:/%TARGET%/ccusage-tracker/codex-sync.mjs",
+      'node "C:/%TARGET%/ccusage-tracker/codex-sync.mjs"',
+      'node "C:/%ProgramFiles(x86)%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%COMMONPROGRAMFILES(X86)%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%1%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%~dp0%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%A-B%/ccusage-tracker/codex-sync.mjs" --hook',
+      // 變數切片與替換語法：任何想枚舉「安全的 %」的規則都會漏掉這些
+      'node "C:/%TARGET:~0,1%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%TARGET:old=new%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+    ]) {
+      expect([command, isTrackerHookCommand(command, script)]).toEqual([command, false]);
+    }
+  });
+
+  it("但家目錄含 % 時 canonical 仍由第一層接住", () => {
+    const canonical = 'node "/tmp/home %TARGET%/.config/ccusage-tracker/codex-sync.mjs" --hook';
+
+    expect(isTrackerHookCommand(canonical, script, [canonical])).toBe(true);
+  });
+});
+
+// 審查閘 round 5 第二層：未加引號的 token 會被 shell 做 brace／glob 展開，
+// `/opt/{real,foreign}/node "<tracker>"` 實際展開成兩個路徑，真正執行的腳本是後者；
+// `!` 則是啟用 delayed expansion 的 cmd.exe 的展開。canonical 含這些字元時由第一層接住。
+describe("未加引號的展開語法一律視為第三方", () => {
+  const T = "/home/u/.config/ccusage-tracker/codex-sync.mjs";
+  const bypasses = [
+    `/opt/{real,foreign}/node "${T}" --hook`,
+    `/opt/*/node "${T}" --hook`,
+    `/opt/?/node "${T}" --hook`,
+    `/opt/[ab]/node "${T}" --hook`,
+    `node /home/{u,other}/.config/ccusage-tracker/codex-sync.mjs --hook`,
+    `node /home/*/.config/ccusage-tracker/codex-sync.mjs --hook`,
+    "node C:/!TARGET!/ccusage-tracker/codex-sync.mjs --hook",
+    'node "C:/!TARGET!/ccusage-tracker/codex-sync.mjs" --hook',
+  ];
+
+  it("brace、glob 與 delayed expansion 都保留不動", () => {
+    for (const thirdPartyCommand of bypasses) {
+      const group = { hooks: [{ type: "command", command: thirdPartyCommand }], note: "keep" };
+
+      const result = applyCodexHooks({ hooks: { Stop: [group] } }, command);
+
+      expect([thirdPartyCommand, result.updated.hooks!.Stop!.length]).toEqual([thirdPartyCommand, 2]);
+      expect(JSON.stringify(result.updated.hooks!.Stop![0])).toBe(JSON.stringify(group));
+    }
+  });
+
+  it("Codex 確認已擋住的形狀維持被擋（正向確認）", () => {
+    const script = CODEX_TRACKER_SCRIPT;
+
+    expect(isTrackerHookCommand("node ~/ccusage-tracker/codex-sync.mjs --hook", script)).toBe(false);
+    expect(isTrackerHookCommand("node /home/u\\*/ccusage-tracker/codex-sync.mjs --hook", script)).toBe(false);
+  });
+
+  // Codex round 5 finding (b)：合法的 POSIX 家目錄不該被誤拒，否則舊 hook 升級不了。
+  it("合法特殊字元家目錄的路徑仍被辨識", () => {
+    for (const path of [
+      "/home/a\\b/.config/ccusage-tracker/codex-sync.mjs",
+      "/home/a b/.config/ccusage-tracker/codex-sync.mjs",
+      "/home/a'b/.config/ccusage-tracker/codex-sync.mjs".replace("'", "-"),
+    ]) {
+      expect([path, isTrackerHookCommand(`node "${path}" --hook`, CODEX_TRACKER_SCRIPT)]).toEqual([path, true]);
+    }
+  });
+
+  it("POSIX 路徑的反斜線不算分隔符：單一檔名不等於目錄下的腳本", () => {
+    // /tmp/ccusage-tracker\codex-sync.mjs 在 POSIX 是 /tmp 下的單一檔案，
+    // 不是 /tmp/ccusage-tracker/ 目錄裡的 codex-sync.mjs
+    expect(isTrackerHookCommand('node "/tmp/ccusage-tracker\\codex-sync.mjs" --hook', CODEX_TRACKER_SCRIPT)).toBe(false);
+    expect(isTrackerHookCommand("node /tmp/ccusage-tracker\\codex-sync.mjs --hook", CODEX_TRACKER_SCRIPT)).toBe(false);
+    // 未加引號的 POSIX 路徑含反斜線：shell 會吃掉它，字面文字不是真正執行的檔案
+    expect(isTrackerHookCommand("node /home/a\\b/.config/ccusage-tracker/codex-sync.mjs --hook", CODEX_TRACKER_SCRIPT)).toBe(false);
+    // Windows 磁碟機與 UNC 路徑的反斜線照樣是分隔符
+    expect(isTrackerHookCommand(String.raw`node "C:\Users\x\.config\ccusage-tracker\codex-sync.mjs" --hook`, CODEX_TRACKER_SCRIPT)).toBe(true);
+    expect(isTrackerHookCommand(String.raw`node "\\srv\team\.config\ccusage-tracker\codex-sync.mjs" --hook`, CODEX_TRACKER_SCRIPT)).toBe(true);
+  });
+
+  it("加了引號的路徑不受 glob 影響：shell 不會展開引號內的字元", () => {
+    const script = CODEX_TRACKER_SCRIPT;
+
+    expect(isTrackerHookCommand('node "/home/a[1]/.config/ccusage-tracker/codex-sync.mjs" --hook', script)).toBe(true);
+    expect(isTrackerHookCommand('node "/home/a*b/.config/ccusage-tracker/codex-sync.mjs" --hook', script)).toBe(true);
+  });
+});
+
 describe("readCodexTrustState", () => {
   const hooksPath = "/Users/test/.codex/hooks.json";
-  const section = (event: string, index: number) => `[hooks.state."${hooksPath}:${event}:${index}:0"]`;
+  const section = (event: string, group: number, hook = 0) =>
+    `[hooks.state."${hooksPath}:${event}:${group}:${hook}"]`;
 
   it("區段含 trusted_hash → recorded", () => {
     const toml = `model = "gpt-5"\n\n${section("stop", 3)}\ntrusted_hash = "sha256:abc"\n\n${section("session_end", 0)}\ntrusted_hash = "sha256:def"\n`;
 
-    expect(readCodexTrustState(toml, hooksPath, { stop: 3, sessionEnd: 0 })).toEqual({
+    expect(readCodexTrustState(toml, hooksPath, { stop: { group: 3, hook: 0 }, sessionEnd: { group: 0, hook: 0 } })).toEqual({
       stop: "recorded",
       sessionEnd: "recorded",
     });
@@ -167,25 +434,92 @@ describe("readCodexTrustState", () => {
   it("區段含 enabled = false → disabled，即使同時有 trusted_hash", () => {
     const toml = `${section("stop", 0)}\ntrusted_hash = "sha256:abc"\nenabled = false\n`;
 
-    expect(readCodexTrustState(toml, hooksPath, { stop: 0 }).stop).toBe("disabled");
+    expect(readCodexTrustState(toml, hooksPath, { stop: { group: 0, hook: 0 } }).stop).toBe("disabled");
   });
 
   it("缺區段、空字串或索引不符 → awaiting", () => {
     const toml = `${section("stop", 0)}\ntrusted_hash = "sha256:abc"\n`;
 
-    expect(readCodexTrustState(toml, hooksPath, { stop: 1 }).stop).toBe("awaiting");
-    expect(readCodexTrustState("", hooksPath, { stop: 0 }).stop).toBe("awaiting");
-    expect(readCodexTrustState(toml, "/other/hooks.json", { stop: 0 }).stop).toBe("awaiting");
+    expect(readCodexTrustState(toml, hooksPath, { stop: { group: 1, hook: 0 } }).stop).toBe("awaiting");
+    expect(readCodexTrustState("", hooksPath, { stop: { group: 0, hook: 0 } }).stop).toBe("awaiting");
+    expect(readCodexTrustState(toml, "/other/hooks.json", { stop: { group: 0, hook: 0 } }).stop).toBe("awaiting");
   });
 
   it("只認區段標頭到下一個 [ 之前的行，不把別的區段的 trusted_hash 算進來", () => {
     const toml = `${section("stop", 0)}\n\n[other.table]\ntrusted_hash = "sha256:not-ours"\n`;
 
-    expect(readCodexTrustState(toml, hooksPath, { stop: 0 }).stop).toBe("awaiting");
+    expect(readCodexTrustState(toml, hooksPath, { stop: { group: 0, hook: 0 } }).stop).toBe("awaiting");
   });
 
   it("未提供索引的事件不回報狀態", () => {
-    expect(readCodexTrustState("", hooksPath, { stop: 0 }).sessionEnd).toBeUndefined();
+    expect(readCodexTrustState("", hooksPath, { stop: { group: 0, hook: 0 } }).sessionEnd).toBeUndefined();
+  });
+
+  // Codex 補審 [low]：信任 key 的 hook 索引原本寫死 :0，但安裝支援
+  // 「第三方 hook 在前、tracker 在後」的混合群組。tracker 落在 hooks[1] 時，
+  // 寫死的 :0 會去讀第三方那一條的信任或停用紀錄。
+  it("混合群組：索引取實際的 group 與 hook，不讀同群組第一條的紀錄", () => {
+    const tracker = { type: "command", command: getCodexHookCommand() };
+    const file: CodexHooksFile = {
+      hooks: {
+        Stop: [thirdParty("a"), thirdParty("b"), { hooks: [{ type: "command", command: "echo keep" }, tracker] }],
+        SessionEnd: [{ hooks: [tracker] }],
+      },
+    };
+
+    const indexes = findCodexTrackerIndexes(file);
+
+    expect(indexes).toEqual({ stop: { group: 2, hook: 1 }, sessionEnd: { group: 0, hook: 0 } });
+    // 第三方那一條（:stop:2:0）有信任紀錄，tracker（:stop:2:1）沒有 → 不得冒稱已信任
+    const neighbour = `${section("stop", 2, 0)}\ntrusted_hash = "sha256:not-ours"\n`;
+    expect(readCodexTrustState(neighbour, hooksPath, indexes).stop).toBe("awaiting");
+    const ours = `${section("stop", 2, 1)}\ntrusted_hash = "sha256:ours"\n`;
+    expect(readCodexTrustState(ours, hooksPath, indexes).stop).toBe("recorded");
+  });
+});
+
+// Eric 本機的真實情境：Stop 已信任、SessionEnd 還沒（兩條 hook 的信任是分開記的）。
+// 只說「awaiting trust」會讓人以為兩條都要重做，訊息必須逐 hook 講清楚。
+describe("formatCodexTrustLine", () => {
+  const combos = {
+    recorded: { stop: "recorded", sessionEnd: "recorded" },
+    awaiting: { stop: "awaiting", sessionEnd: "awaiting" },
+    partial: { stop: "recorded", sessionEnd: "awaiting" },
+    disabled: { stop: "disabled", sessionEnd: "recorded" },
+  } as const;
+
+  it("status 的四種組合逐字符合規格", () => {
+    expect(formatCodexTrustLine(combos.recorded, { forStatus: true })).toBe("Codex hooks: installed, trust recorded");
+    expect(formatCodexTrustLine(combos.awaiting, { forStatus: true })).toBe("Codex hooks: installed, awaiting trust (open /hooks in Codex)");
+    expect(formatCodexTrustLine(combos.partial, { forStatus: true }))
+      .toBe("Codex hooks: installed, Stop trusted, SessionEnd awaiting trust (open /hooks in Codex)");
+    expect(formatCodexTrustLine(combos.disabled, { forStatus: true }))
+      .toBe("Codex hooks: installed, Stop disabled in Codex, SessionEnd trusted");
+  });
+
+  it("setup／update 的四種組合逐字符合規格", () => {
+    // 皆 recorded 代表兩條都沒被動過（動過的會先被降成 awaiting），措辭是 trust recorded
+    expect(formatCodexTrustLine(combos.recorded, { forStatus: false }))
+      .toBe("Codex: hooks already up to date (trust recorded)");
+    expect(formatCodexTrustLine(combos.awaiting, { forStatus: false }))
+      .toBe("Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.");
+    expect(formatCodexTrustLine(combos.partial, { forStatus: false }))
+      .toBe("Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook.");
+    expect(formatCodexTrustLine(combos.disabled, { forStatus: false }))
+      .toBe("Codex: hooks installed (Stop disabled in Codex, SessionEnd trusted).");
+  });
+
+  it("兩條皆停用：安裝端與 status 都收斂為單句", () => {
+    const allDisabled = { stop: "disabled", sessionEnd: "disabled" } as const;
+
+    expect(formatCodexTrustLine(allDisabled, { forStatus: false })).toBe("Codex: hooks installed but disabled in Codex");
+    expect(formatCodexTrustLine(allDisabled, { forStatus: true })).toBe("Codex hooks: installed, disabled in Codex");
+  });
+
+  it("已停用的 hook 不再被要求去信任", () => {
+    for (const forStatus of [true, false]) {
+      expect(formatCodexTrustLine(combos.disabled, { forStatus })).not.toContain("/hooks");
+    }
   });
 });
 
@@ -213,6 +547,34 @@ describe("hasTrackerNotify", () => {
     const toml = '[tui]\ntheme = "dark"\nnotify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs"]\n';
 
     expect(hasTrackerNotify(toml)).toBe(false);
+  });
+
+  // Codex 補審 [low] 與 subagent F4：頂層掃描原本只認 `^\[[^\]]*\]$`，於是
+  // `[[servers]]` 與帶行尾註解的標頭沒被當成 table（提示多印），無尾逗號的
+  // `[3, 4]` 續行與多行字串裡的 `[tui]` 卻被當成 table（提示漏印）。
+  describe("頂層掃描正確處理陣列、字串與註解", () => {
+    const tracker = 'notify = ["node", "/Users/x/.config/ccusage-tracker/codex-sync.mjs", "--notify"]\n';
+    const fixtures: [string, string, string][] = [
+      // [名稱, notify 之前的頂層內容, notify 之前的 table 內容]
+      ["[[array]] 標頭", "", '[[servers]]\nurl = "x"\n'],
+      ["帶行尾註解的標頭", "", '[tui] # theme settings\ntheme = "dark"\n'],
+      ["無尾逗號的陣列續行", "pairs = [\n [1, 2],\n [3, 4]\n]\n", '[tui]\npairs = [\n [1, 2],\n [3, 4]\n]\n'],
+      ["多行字串內含 table 標頭", 'banner = """\n[tui]\n"""\n', '[tui]\nbanner = """\nx\n"""\n'],
+      // TOML 的多行基本字串同樣吃反斜線跳脫：\""" 不會提前結束字串
+      ["三引號內的跳脫引號", 'banner = """\nquote: \\"""\n[tui]\n"""\n', 'banner = """\n\\"""\nnotify = ["node", "/x/ccusage-tracker/codex-sync.mjs"]\n"""\n[tui]\n'],
+      // literal 字串不吃跳脫：結尾的 ''' 照樣結束字串
+      ["literal 字串不吃跳脫", "path = '''C:\\Users\\x\\'''\n", "[tui]\npath = '''C:\\Users\\x\\'''\n"],
+    ];
+
+    for (const [name, topLevel, insideTable] of fixtures) {
+      it(`${name}：notify 在頂層 → true`, () => {
+        expect(hasTrackerNotify(topLevel + tracker)).toBe(true);
+      });
+
+      it(`${name}：notify 在 table 內 → false`, () => {
+        expect(hasTrackerNotify(insideTable + tracker)).toBe(false);
+      });
+    }
   });
 
   it("第三方 notify 或 table 內的同名鍵 → false（hooks 與 notify 可共存）", () => {

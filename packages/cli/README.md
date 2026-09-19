@@ -68,7 +68,9 @@ The hook process only reads `hook_event_name` from the event on stdin and hands 
 
 Hook scripts come from your configured tracker server. Setup/update migrate old tracker commands and quote paths containing spaces. Existing shell/PowerShell installers remain Claude-only; they do not install Codex reporting.
 
-When `settings.json` or `hooks.json` is a symbolic link (dotfiles setups), the CLI writes through to the real file and leaves the link in place; the `.backup` is written next to the real file. A link that dangles or resolves to anything other than a regular file is refused, and the whole transaction is rolled back.
+**Do not hand-edit the tracker hook command.** A hook counts as a tracker hook only when the whole command matches a canonical or known historical shape: an optional interpreter that matches the script extension (`node` for `.mjs`, `bash`/`sh` for `.sh`, `powershell`/`pwsh` with `-File` for `.ps1`), the absolute tracker script path, and only tracker arguments (`--hook`, `--notify`, `--mode=<value>`). Commands written by earlier installers still upgrade in place to exactly one tracker hook, as long as the script path is a single token. An unquoted path containing spaces is not reassembled: that shape cannot be told apart from a command passing the tracker path to another program, and guessing wrong would delete a third-party hook, so such a hook gets a second, canonical tracker entry instead. Anything else is treated as third-party, kept byte-identical, and the tracker group is appended separately: a custom flag, a wrapper, any shell syntax outside quotes (`&&`, `;`, a pipe, a redirect, a substitution — with or without surrounding whitespace), a command that merely passes the script path to another program (`node /opt/lint.js <tracker path>`, `/usr/bin/env node <tracker path>`), or anything the shell would reinterpret — `$` or a backtick anywhere (they expand inside double quotes too), `%` (cmd.exe expansion), `%` or `!` anywhere (cmd.exe expansions; `%` is not narrowed to `%NAME%` pairs, because cmd.exe variable names are not limited to letters and `%1` is a batch parameter), brace or glob syntax in an unquoted token (`/opt/{real,foreign}/node …` runs a different program than it appears to; the same characters inside quotes are fine), or a backslash in an unquoted token (a POSIX shell consumes it). Backslashes count as separators only in Windows drive and UNC paths, so `"/home/a\b/.config/ccusage-tracker/session-end.mjs"` is recognized while `"/tmp/ccusage-tracker\session-end.mjs"` is not — on POSIX the latter is one file name, not a script inside a directory. A command byte-identical to the one this CLI would write is always recognized, so repeated runs stay a no-op even when your home directory contains those characters. That means an edited tracker command results in two tracker hooks rather than an upgraded one.
+
+When `settings.json` or `hooks.json` is a symbolic link (dotfiles setups), the CLI writes through to the real file and leaves the link in place; the `.backup` is written next to the real file, and the output names each file written this way (`Wrote through symlink: <link> -> <real>`). File types are checked before anything is read, so a link that dangles or resolves to a directory, FIFO, socket or other non-regular file is refused before the first read and the whole transaction is rolled back.
 
 ### Collector
 
@@ -98,11 +100,13 @@ Codex **silently skips** hooks it has not been told to trust, so "installed but 
 | Output | Meaning |
 |---|---|
 | `installed, trust recorded` | Hooks are installed and a matching trust record exists |
-| `installed, awaiting trust (open /hooks in Codex)` | Installed, but Codex will not run them yet |
+| `installed, awaiting trust (open /hooks in Codex)` | Neither hook is trusted yet, so Codex will not run them |
+| `installed, Stop trusted, SessionEnd awaiting trust (open /hooks in Codex)` | Only one of the two is trusted; the line names which one is missing |
 | `installed, disabled in Codex` | You disabled them inside Codex |
+| `installed, Stop disabled in Codex, SessionEnd trusted` | Only one of the two is disabled |
 | `not installed` | Not wired yet — run `update` |
 
-The CLI only reads `config.toml` to see whether a trust record exists. It never validates the hash (Codex's algorithm is internal, hence "trust recorded" rather than "trusted") and never writes `hooks.state` on your behalf.
+Each hook is trusted separately, so setup, update and `status` all report the two hooks individually when their states differ. The CLI only reads `config.toml` to see whether a trust record exists. It never validates the hash (Codex's algorithm is internal, hence "trust recorded" rather than "trusted") and never writes `hooks.state` on your behalf.
 
 ### Manual fallback
 
