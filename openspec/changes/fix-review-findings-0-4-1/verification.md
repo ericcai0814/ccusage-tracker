@@ -4,8 +4,8 @@
 
 ## 結論
 
-- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完；審查閘 round 3 指出該修正的護欄仍不足，已把路徑重組整個移除；複審 round 4 再以實際執行的反例指出 shell 重新解讀字元的繞過，也已修完（見末兩節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
-- 完整測試 **CLI 160 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **388 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 47 項 CLI 測試（round 1 新增 29、複審 round 2 再新增 14、審查閘 round 3 再新增 1 並改寫 2、複審 round 4 再新增 3 並改寫 1）。
+- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完；審查閘 round 3 指出該修正的護欄仍不足，已把路徑重組整個移除；複審 round 4 再以實際執行的反例指出 shell 重新解讀字元的繞過；round 5 指出嚴格化破壞了特殊字元家目錄的安裝冪等性，辨識因此拆成「精確比對 canonical」與「形狀比對」兩層。全部已修完（見末三節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
+- 完整測試 **CLI 170 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **398 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 57 項 CLI 測試（round 1 新增 29、複審 round 2 再 14、審查閘 round 3 再 1 並改寫 2、複審 round 4 再 3 並改寫 1、round 5 再 10）。
 - `pnpm typecheck`、`pnpm --filter ccusage-tracker build`、`pnpm build` 全綠；`spectra validate fix-review-findings-0-4-1` 通過；`git diff --check` 無 whitespace error。
 - Node-built CLI smoke：暫存 HOME、兩份設定檔皆為 symlink、hooks.json 含引用 tracker 腳本路徑的第三方 `sha256sum` Stop 群組 —— setup 後該群組位元組不變留在索引 0、tracker 在索引 1、輸出含兩行 `Wrote through symlink`、symlink 保留；兩次 update 後 `hooks.json` 與 `settings.json` 的 sha256 皆不變；混合信任的 setup／update 與 status 訊息逐字符合規格；`config.toml` 位元組不變。
 - 未讀寫真實的 `~/.claude`、`~/.codex`、`~/.config/ccusage-tracker`、`~/dotfiles`；全程未執行真實 `npm install -g`。
@@ -24,9 +24,9 @@
 
 | 檢查 | 結果 |
 |---|---|
-| `pnpm test` | CLI 160 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
+| `pnpm test` | CLI 170 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
 | `pnpm typecheck` | CLI 與 server 均 Done |
-| `pnpm --filter ccusage-tracker build` | Node target 通過；45.81 KB |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；46.78 KB |
 | `pnpm build` | Server Bun target 通過；233.48 KB |
 | `spectra validate fix-review-findings-0-4-1` | `✓ fix-review-findings-0-4-1 — valid` |
 | `spectra analyze fix-review-findings-0-4-1 --json` | 無 Critical／Warning；2 項「scenario 缺 examples」Suggestion（沿自提案時） |
@@ -247,10 +247,66 @@ canonical tracker 條數: 1        => 只剩一條 OK
 舊的 bash .sh hook 已被取代:      OK
 ```
 
+### 審查閘 round 5／Codex 第五輪：辨識拆成兩層
+
+閘門與複審指出同一個核心矛盾：**嚴格拒絕特殊字元會讓家目錄含這些字元的機器連自己寫出的 canonical 命令都認不得**，於是每次 update 再 append 一條、hooks 無上限成長；放寬又會被 shell 展開繞過。實測重現（家目錄含 `%`）：
+
+```
+run 1: anyChanged=true Stop 群組數=1
+run 2: anyChanged=true Stop 群組數=2
+run 3: anyChanged=true Stop 群組數=3
+```
+
+這比「多一條」嚴重得多 —— 是每跑一次就漏一條。解法是把辨識拆成兩層。
+
+**第一層（精確比對，永遠優先）**：命令字串逐位元等於本機當下的 canonical 命令（Codex 用 `applyCodexHooks` 傳入的 command，Claude 用三條 `get*HookCommand()`）就是 tracker，不看任何字元規則。理由：那是我們自己產生、加了雙引號的字串；第三方寫出一模一樣的字串在定義上就是這條 hook，換成自己是 no-op，不可能誤刪。
+
+**第二層（形狀比對，只用於升級舊形狀）**：維持嚴格規則，並依複審再收緊三點：
+
+| finding | 修法 |
+|---|---|
+| (c1) `/opt/{real,foreign}/node "<tracker>"` 與 `/opt/*/node …` 被誤收（Bash 實測展開成兩個路徑，真正執行的是後者） | 未加引號的 token 含 brace／glob（`{ } * ? [ ]`）一律第三方；引號內不受影響（shell 不展開） |
+| (c2) `node C:/!TARGET!/ccusage-tracker/codex-sync.mjs` 被誤收（cmd.exe delayed expansion） | `!` 不分引號內外一律第三方；canonical 含 `!` 由第一層接住 |
+| (b) 合法家目錄 `/home/100%`、`/home/a\b` 產生的 canonical 被誤拒 | `%` 收斂為成對的 `%NAME%`；反斜線只在 Windows 路徑（磁碟機／UNC）算分隔符，其餘路徑的尾綴只以正斜線比對，未加引號含反斜線的 token 仍一律第三方 |
+
+第二層辨識成功後會升級成 canonical，之後就走第一層，所以嚴格不會造成重複。
+
+### 反斜線規則的推導
+
+`/tmp/ccusage-tracker\codex-sync.mjs` 與 `/home/a\b/.config/ccusage-tracker/codex-sync.mjs` 都含反斜線，但只有前者危險：前者在 POSIX 是 `/tmp` 下的**單一檔名**（不是 `ccusage-tracker/` 目錄裡的腳本），後者的反斜線只是家目錄名稱的普通字元、tracker 的部分仍用正斜線。因此規則不是「有沒有反斜線」，而是「尾綴用哪種分隔符比對」：Windows 路徑兩種都算，其餘只認正斜線。未加引號時 POSIX shell 會吃掉反斜線，字面文字不是真正執行的路徑，所以另外一律拒絕。
+
+### 五輪彙總的對抗性掃描
+
+| 檢查 | 結果 |
+|---|---|
+| Codex round 5 原文反例（8 條，含兩條「應接受」的合法家目錄） | 判斷全對 |
+| 前四輪反例（21 條） | 無一被誤收 |
+| 家目錄形狀（10 種：`%` `\` `!` `$` 反引號 `{}` `*` 空白 一般 Windows） | 全部冪等（第二次 `anyChanged` 為 false、群組數維持 1） |
+
+### round 5 後的執行結果
+
+| 檢查 | 結果 |
+|---|---|
+| `pnpm test` | CLI **170 pass／0 fail**；server 228 pass／1 skip／0 fail |
+| `pnpm typecheck` | CLI 與 server 均 Done |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；46.78 KB |
+| `pnpm build` | Server Bun target 通過；233.48 KB |
+| `spectra validate fix-review-findings-0-4-1` | `✓ valid` |
+| `git diff --check` | 無 whitespace error |
+
+Smoke 另外對三個含特殊字元的暫存家目錄各跑三次 update：
+
+```
+[pct%home]   run 1/2/3: Claude SessionEnd hook 數=1  Codex Stop 群組數=1
+[bang!home]  run 1/2/3: Claude SessionEnd hook 數=1  Codex Stop 群組數=1
+[back\slash] run 1/2/3: Claude SessionEnd hook 數=1  Codex Stop 群組數=1
+```
+
 ## 已知限制與範圍外
 
 - **Windows／Linux 未實機驗證**：路徑受支援（`isAbsolutePathToken` 認 `C:/`、UNC，辨識測試含 Windows 形狀），但只在 macOS 實跑。FIFO／socket 案例以 `it.skipIf(process.platform === "win32")` 跳過。中文與英文 README 都已寫明。
 - **`config.toml` 與 status 讀檔未套型態檢查**：本次的 `assertRegularFileTarget` 依規格只涵蓋安裝交易的目標（`settings.json`、`hooks.json`、tracker 腳本）。`defaultWiringDeps.readCodexConfig`（`packages/cli/src/hooks.ts:296`）與 `status.ts:138` 的 `readTextFile` 仍直接 `readFileSync`，若 `config.toml` 是指向無 writer FIFO 的 symlink 會卡住。兩處都只讀不寫、不在本 change 範圍，記錄於此不順手修。
 - **辨識收緊的取捨**：手動改過 tracker hook 命令（加自訂參數、包成複合命令）會被視為第三方而多出一份 tracker hook。舊版安裝器寫出的形狀已在 round 2 補上受限的遷移規則（round 3 再限定腳本路徑須為單一 token），但沒有涵蓋任何自訂改寫。已在兩份 README 寫明；重複觸發由 5 分鐘節流與獨立鎖吸收。
 - **未加引號且含空白的路徑不會被升級**：該形狀與「把 tracker 路徑當參數傳給別的腳本」在字串層面無法區分，改為一律視為第三方（round 3）。代價是這類舊 hook 會多出一條 canonical 並存，重複觸發由 5 分鐘節流與獨立鎖吸收。現行安裝器一律加引號，只影響 `f04098e`／`d758e52` 期間安裝且家目錄含空白、之後從未更新過的機器。
+- **含展開語法的「舊形狀」命令不會被升級**：家目錄含 `$`、反引號、`%NAME%`、`!` 或未加引號的 brace／glob 時，canonical 命令一律由第一層（位元組相等）接住，安裝冪等性不受影響；受影響的只有「舊形狀 ＋ 這類家目錄」的組合，那條舊 hook 不會就地升級而是多一條並存。
 - 版本號提升、CHANGELOG 的 `[Unreleased]` 定版、npm 發布與 Zeabur 部署都不在本 change，另開 release PR。
