@@ -2,7 +2,7 @@
 
 ### Requirement: Tracker hook recognition
 
-The CLI SHALL treat a hook command as a tracker hook only when the whole command matches one of the canonical or known historical shapes: an optional interpreter (`node`, `bash`, `sh`, `powershell` or `pwsh`, bare or as an absolute path, and for PowerShell followed by its own switches and `-File`), then the tracker script path — bare, or double-quoted — ending in `/ccusage-tracker/codex-sync.mjs`, `/ccusage-tracker/session-end.mjs` or `/ccusage-tracker/session-start.mjs` (Claude legacy `.sh` and `.ps1` included), then only tracker arguments (`--hook`, `--notify`, `--mode=<value>`). The interpreter SHALL match the script extension: `node` for `.mjs`, `bash`/`sh` for `.sh`, `powershell`/`pwsh` for `.ps1`. A command containing any shell syntax outside double quotes (`&`, `|`, `;`, `<`, `>`, backtick, `$`, parentheses, single quote, or a line break), or one where the tracker path is an argument to another program, SHALL be treated as third-party and SHALL be preserved unchanged, as SHALL any command that merely contains a tracker script path.
+The CLI SHALL treat a hook command as a tracker hook only when the whole command matches one of the canonical or known historical shapes: an optional interpreter (`node`, `bash`, `sh`, `powershell` or `pwsh`, bare or as an absolute path, and for PowerShell followed by its own switches and `-File`), then the tracker script path as exactly one token — bare, or double-quoted — ending in `/ccusage-tracker/codex-sync.mjs`, `/ccusage-tracker/session-end.mjs` or `/ccusage-tracker/session-start.mjs` (Claude legacy `.sh` and `.ps1` included), then only tracker arguments (`--hook`, `--notify`, `--mode=<value>`). The interpreter SHALL match the script extension: `node` for `.mjs`, `bash`/`sh` for `.sh`, `powershell`/`pwsh` for `.ps1`. The CLI SHALL NOT reassemble several whitespace-separated tokens into one path, because `<absolute path> <more text>` cannot be distinguished from a path containing spaces, and guessing wrong deletes a third-party hook. A command containing any shell syntax outside double quotes (`&`, `|`, `;`, `<`, `>`, backtick, `$`, parentheses, single quote, or a line break), or one where the tracker path is an argument to another program, SHALL be treated as third-party and SHALL be preserved unchanged, as SHALL any command that merely contains a tracker script path.
 
 #### Scenario: Third-party command references the tracker script
 
@@ -26,13 +26,18 @@ The CLI SHALL treat a hook command as a tracker hook only when the whole command
 
 #### Scenario: Historical installer commands upgrade to exactly one tracker hook
 
-- **WHEN** an event contains one of the commands earlier installers wrote — `bash <home>/.config/ccusage-tracker/session-end.sh`, `node <home>/.config/ccusage-tracker/session-start.mjs`, or `node <home>/.config/ccusage-tracker/session-end.mjs --mode=stop` with an unquoted home directory that contains spaces — or `powershell -NoProfile -ExecutionPolicy Bypass -File "<home>/.config/ccusage-tracker/session-end.ps1"`
+- **WHEN** an event contains one of the commands earlier installers wrote — `bash <home>/.config/ccusage-tracker/session-end.sh`, `node <home>/.config/ccusage-tracker/session-start.mjs`, `node <home>/.config/ccusage-tracker/session-end.mjs --mode=stop`, or `powershell -NoProfile -ExecutionPolicy Bypass -File "<home>/.config/ccusage-tracker/session-end.ps1"` — where the script path is one token
 - **THEN** the CLI SHALL recognize it, replace it in place with the canonical command, and leave exactly one tracker hook for that event
+
+#### Scenario: Unquoted path containing spaces is not recognized
+
+- **WHEN** a command is `node /Users/Gill Chiang/.config/ccusage-tracker/session-end.mjs --mode=stop`, written by an installer that expanded an unquoted home directory containing spaces
+- **THEN** the CLI SHALL treat it as third-party, SHALL preserve it unchanged and SHALL append the canonical tracker group, leaving two tracker hooks for that event rather than risking the deletion of a third-party hook with the same shape
 
 #### Scenario: Tracker path passed as an argument to another program
 
-- **WHEN** a command is `node /usr/local/lib/lint.js <home>/.config/ccusage-tracker/session-end.mjs`
-- **THEN** the CLI SHALL treat it as third-party, because the reassembled path would contain a second absolute path start
+- **WHEN** a command is `node /usr/local/lib/lint.js <home>/.config/ccusage-tracker/session-end.mjs`, `/usr/bin/env node <home>/.config/ccusage-tracker/session-end.mjs` or `/opt/tools/run.sh sub/ccusage-tracker/session-end.sh`
+- **THEN** the CLI SHALL treat each as third-party, because the script path is not a single token
 
 #### Scenario: Interpreter does not match the script extension
 
