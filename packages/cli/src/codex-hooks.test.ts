@@ -261,11 +261,26 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
 // 再 append 一條，無上限成長 —— 比「多一條」嚴重得多。canonical 命令一律以位元組相等
 // 辨識：那本來就是我們寫的，換成自己是 no-op，不可能誤刪第三方。
 describe("canonical 命令的冪等性不變量", () => {
-  const exotic = 'node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook';
+  const exotic = 'node "/tmp/home %TARGET%/.config/ccusage-tracker/codex-sync.mjs" --hook';
+
+  // 下一個測試用的家目錄，第二層一定拒絕（%、!、$、反引號都是展開字元）。
+  // 先把這件事釘住，冪等測試才證明得了「是第一層讓它冪等」而不是第二層放行。
+  it("這些 canonical 命令一定通不過第二層", () => {
+    for (const canonical of [
+      exotic,
+      'node "/tmp/home!x/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a$b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a`b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/home/100%/.config/ccusage-tracker/codex-sync.mjs" --hook',
+    ]) {
+      expect([canonical, isTrackerHookCommand(canonical, CODEX_TRACKER_SCRIPT)]).toEqual([canonical, false]);
+    }
+  });
 
   it("家目錄含 shell 特殊字元時，重複安裝仍是 noop", () => {
     for (const canonical of [
       exotic,
+      'node "/tmp/home!x/.config/ccusage-tracker/codex-sync.mjs" --hook',
       'node "/Users/a$b/.config/ccusage-tracker/codex-sync.mjs" --hook',
       'node "/Users/a`b/.config/ccusage-tracker/codex-sync.mjs" --hook',
       'node "/home/100%/.config/ccusage-tracker/codex-sync.mjs" --hook',
@@ -320,6 +335,9 @@ describe("形狀層一律拒絕 %", () => {
       'node "C:/%1%/ccusage-tracker/codex-sync.mjs" --hook',
       'node "C:/%~dp0%/ccusage-tracker/codex-sync.mjs" --hook',
       'node "C:/%A-B%/ccusage-tracker/codex-sync.mjs" --hook',
+      // 變數切片與替換語法：任何想枚舉「安全的 %」的規則都會漏掉這些
+      'node "C:/%TARGET:~0,1%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%TARGET:old=new%/ccusage-tracker/codex-sync.mjs" --hook',
       'node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook',
     ]) {
       expect([command, isTrackerHookCommand(command, script)]).toEqual([command, false]);
@@ -327,7 +345,7 @@ describe("形狀層一律拒絕 %", () => {
   });
 
   it("但家目錄含 % 時 canonical 仍由第一層接住", () => {
-    const canonical = 'node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook';
+    const canonical = 'node "/tmp/home %TARGET%/.config/ccusage-tracker/codex-sync.mjs" --hook';
 
     expect(isTrackerHookCommand(canonical, script, [canonical])).toBe(true);
   });
