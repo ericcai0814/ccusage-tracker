@@ -11,6 +11,7 @@ import {
   getCodexHooksPath,
   hasTrackerNotify,
   isOnPath,
+  isTrackerHookCommand,
   readCodexTrustState,
   type CodexGroupIndexes,
   type CodexHooksFile,
@@ -70,11 +71,16 @@ export function getStartHookCommand(): string {
   return buildHookCommand(join(homedir(), ".config", "ccusage-tracker", "session-start.mjs"));
 }
 
-// 以路徑片段判斷，可同時辨識新版（含 --mode）與舊版（無 --mode）hook。
+// 腳本路徑可同時辨識新版（.mjs）與舊版 shell 安裝器（.sh／.ps1）留下的 hook。
 // codex-sync.mjs 也算 tracker hook：它屬於 Codex 的 hooks.json，被手動塞進
 // Claude settings.json 時要一併收掉，否則會重複觸發。
+const CLAUDE_TRACKER_SCRIPT =
+  /[/\\]ccusage-tracker(?:[/\\](?:session-end|session-start|codex-sync)\.(?:mjs|sh|ps1)|\.(?:sh|ps1))$/;
+
+// 比對整條命令的形狀而非「含有腳本路徑」：後者會把 `sha256sum "<script>"` 這種
+// 只是引用腳本的第三方 hook 整條換掉（Codex 補審 med）。見 isTrackerHookCommand。
 function isCcusageTrackerHook(command?: string): boolean {
-  return typeof command === "string" && /[/\\]ccusage-tracker(?:[/\\](?:session-end|session-start|codex-sync)\.(?:mjs|sh|ps1)|\.(?:sh|ps1))(?=["'\s]|$)/.test(command);
+  return isTrackerHookCommand(command, CLAUDE_TRACKER_SCRIPT);
 }
 
 // Claude 視為存在：~/.claude 目錄存在，或 claude 在 PATH。
@@ -170,6 +176,13 @@ export interface InstallTargets {
   codex: boolean;
 }
 
+// 寫穿 symlink 的設定檔：link 是使用者看到的路徑，real 是實際被改寫的檔案。
+// 兩者不同時安裝結束要印出來，否則使用者不會知道 HOME 以外的檔案被改了。
+export interface WriteTarget {
+  link: string;
+  real: string;
+}
+
 export interface InstallResult {
   sessionEndChanged: boolean;
   sessionStartChanged: boolean;
@@ -180,14 +193,18 @@ export interface InstallResult {
   codexChanged: boolean;
   codexWired: boolean;
   codexIndexes: CodexGroupIndexes;
+  writtenThrough: WriteTarget[];
   backedUp: boolean;
 }
 
+// 型態檢查必須早於 readFileSync：指向 FIFO 的 symlink 一旦被 open(2) 就會等到有 writer
+// 為止（setup／update 永久卡住），指向目錄或 socket 則會被誤報成 JSON 錯誤。
 function readCodexHooksFile(path: string): CodexHooksFile {
-  if (!existsSync(path)) return {};
+  const target = assertRegularFileTarget(path);
+  if (target === null) return {};
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(path, "utf-8"));
+    parsed = JSON.parse(readFileSync(target.realPath, "utf-8"));
   } catch {
     throw new Error("Codex hooks.json is not valid JSON; repair it before updating.");
   }
@@ -204,8 +221,9 @@ export function installHook(
   const settingsPath = getClaudeSettingsPath();
   let settings: ClaudeSettings = {};
 
-  if (targets.claude && existsSync(settingsPath)) {
-    const raw = readFileSync(settingsPath, "utf-8");
+  const settingsTarget = targets.claude ? assertRegularFileTarget(settingsPath) : null;
+  if (settingsTarget !== null) {
+    const raw = readFileSync(settingsTarget.realPath, "utf-8");
     settings = JSON.parse(raw);
     if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
       throw new Error("Claude settings.json must contain a JSON object; repair it before updating.");
@@ -242,7 +260,7 @@ export function installHook(
     ...(claudeChanged ? [{ path: settingsPath, content: JSON.stringify(claude.updated, null, 2) + "\n" }] : []),
     ...(codex.anyChanged ? [{ path: codexHooksPath, content: JSON.stringify(codex.updated, null, 2) + "\n" }] : []),
   ];
-  const backedUp = installFiles(files);
+  const installed = installFiles(files);
   return {
     sessionEndChanged: targets.claude && claude.sessionEndChanged,
     sessionStartChanged: targets.claude && claude.sessionStartChanged,
@@ -253,7 +271,8 @@ export function installHook(
     codexChanged: codex.anyChanged,
     codexWired,
     codexIndexes: codexWired ? findCodexTrackerIndexes(codex.updated) : {},
-    backedUp,
+    writtenThrough: installed.writtenThrough,
+    backedUp: installed.backedUp,
   };
 }
 
@@ -324,6 +343,7 @@ export function wireTools(
     deps.warn("Codex hooks now handle reporting. Remove the ccusage-tracker `notify` entry from $CODEX_HOME/config.toml to avoid triggering it twice; this tool never edits that file.");
   }
 
+  for (const { link, real } of result.writtenThrough) deps.log(`Wrote through symlink: ${link} -> ${real}`);
   if (result.backedUp) deps.log("Changed files backed up (.backup).");
   if (!claudeDetected && !codexDetected) deps.log(NO_TOOL_MESSAGE);
 
@@ -346,40 +366,91 @@ function nonRegularFileError(path: string, linkTarget?: string): Error {
 
 // dotfiles 使用者的設定檔常是 symlink。寫穿：解析到真實檔案後，暫存、backup 與
 // rename 全部套在真實路徑上，symlink 本身不動（unlink 它等於毀掉使用者的 dotfiles
-// 管理）。斷鏈或解析後不是一般檔案（目錄、socket…）一律拒絕整筆交易，訊息帶出
+// 管理）。斷鏈或解析後不是一般檔案（目錄、FIFO、socket…）一律拒絕整筆交易，訊息帶出
 // link 目標，使用者才知道擋在哪、寫去哪。
-function resolveWriteTarget(path: string): string {
+// 回傳 null 代表路徑還不存在，照常新建一般檔案。
+export function assertRegularFileTarget(path: string): { realPath: string } | null {
   let link;
   try {
     link = lstatSync(path);
   } catch {
-    return path; // 路徑還不存在：照常新建一般檔案
+    return null; // 路徑還不存在：照常新建一般檔案
   }
   if (!link.isSymbolicLink()) {
     if (!link.isFile()) throw nonRegularFileError(path);
-    return path;
+    return { realPath: path };
   }
   let real: string;
   try {
     real = realpathSync(path);
   } catch {
     // 斷鏈：realpath 解不出來，只能報 link 自己記的目標
-    throw nonRegularFileError(path, readlinkSync(path));
+    throw nonRegularFileError(path, readLinkTarget(path));
   }
   if (!statSync(real).isFile()) throw nonRegularFileError(path, real);
-  return real;
+  return { realPath: real };
+}
+
+// link 在解析失敗與讀取目標之間被移除時 readlink 也會失敗。訊息退回不帶目標的版本，
+// 而不是讓使用者看到一個與「拒絕寫入」無關的錯誤。
+function readLinkTarget(path: string): string | undefined {
+  try {
+    return readlinkSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+interface PlannedWrite {
+  target: string;
+  content: Buffer;
+  backup: boolean;
+}
+
+export interface InstallFilesResult {
+  backedUp: boolean;
+  writtenThrough: WriteTarget[];
 }
 
 // Stage every replacement and backup first, then rename them into place. Keep
 // rollback copies until the entire installation succeeds (including settings).
 // Exported for tests: installHook 自己走 homedir()（bun 啟動時就快取），交易層
 // 的檔案系統行為只能用測試給定的路徑直接驗。
-export function installFiles(files: { path: string; content: string }[]): boolean {
+export function installFiles(files: { path: string; content: string }[]): InstallFilesResult {
+  // 全部目標的解析與型態驗證都在 staging 之前完成，每個路徑只解析一次：任一目標被拒時
+  // 還沒有建過目錄、沒有寫過暫存檔，也就沒有東西需要善後。
+  const resolved = files.map((file) => ({
+    link: file.path,
+    target: assertRegularFileTarget(file.path)?.realPath ?? file.path,
+    content: Buffer.from(file.content),
+  }));
+
+  // 內容相同的檔案整個跳過；需要備份的，備份路徑也在這裡一併驗證，
+  // 同樣不讓任何驗證落在 staging 之後。
+  const planned = resolved.map((file) => {
+    const previous = existsSync(file.target) ? readFileSync(file.target) : null;
+    if (previous !== null && previous.equals(file.content)) return { file, writes: [] as PlannedWrite[] };
+    const backupPath = `${file.target}.backup`;
+    return {
+      file,
+      writes: [
+        ...(previous === null
+          ? []
+          : [{ target: assertRegularFileTarget(backupPath)?.realPath ?? backupPath, content: previous, backup: true }]),
+        { target: file.target, content: file.content, backup: false },
+      ],
+    };
+  });
+
+  const writes = planned.flatMap((entry) => entry.writes);
+  const backedUp = writes.some((write) => write.backup);
+  const writtenThrough = planned
+    .filter((entry) => entry.writes.length > 0 && entry.file.target !== entry.file.link)
+    .map((entry) => ({ link: entry.file.link, real: entry.file.target }));
+
   const staged: StagedFile[] = [];
-  let backedUp = false;
   let committed = false;
-  function stage(path: string, content: Buffer): void {
-    const target = resolveWriteTarget(path);
+  function stage(target: string, content: Buffer): void {
     mkdirSync(dirname(target), { recursive: true });
     const current = existsSync(target) ? lstatSync(target) : null;
     const entry: StagedFile = { path: target, staged: `${target}.${randomUUID()}.tmp`, installed: false };
@@ -391,17 +462,7 @@ export function installFiles(files: { path: string; content: string }[]): boolea
     }
   }
   try {
-    for (const file of files) {
-      const next = Buffer.from(file.content);
-      const target = resolveWriteTarget(file.path);
-      if (existsSync(target)) {
-        const previous = readFileSync(target);
-        if (previous.equals(next)) continue;
-        stage(target + ".backup", previous);
-        backedUp = true;
-      }
-      stage(target, next);
-    }
+    for (const write of writes) stage(write.target, write.content);
     for (const entry of staged) {
       renameSync(entry.staged, entry.path);
       entry.installed = true;
@@ -429,7 +490,7 @@ export function installFiles(files: { path: string; content: string }[]): boolea
       }
     }
   }
-  return backedUp;
+  return { backedUp, writtenThrough };
 }
 
 export function isHookInstalled(): boolean {

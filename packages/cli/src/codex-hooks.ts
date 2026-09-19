@@ -52,10 +52,67 @@ export function getCodexHookCommand(): string {
   return `node "${getCodexSyncScriptPath()}" --hook`;
 }
 
-// 以路徑片段判斷，與 hooks.ts 的 isCcusageTrackerHook 同樣策略：認得舊的
-// --notify 寫法與未加旗標的寫法，才能就地升級而不是又 append 一份。
+// tracker 自己寫出來的命令只有一種形狀：可選的 node 執行檔、tracker 腳本的絕對路徑、
+// 以及 tracker 自己的參數。只要命令「含有」腳本路徑就認定是 tracker，會讓
+// `sha256sum "<script>"` 這類第三方命令被整組換成上報 hook，原有功能與額外欄位一併消失
+// （Codex 補審 med）。因此改為整條命令的形狀比對：多出任何一個 token 就是第三方。
+const TRACKER_ARGUMENT = /^(?:--hook|--notify|--mode=\S+)$/;
+
+// 只認雙引號 —— 三支安裝器（setup.sh、setup.ps1、CLI 的 buildHookCommand）寫出來的
+// 都是 `node "<path>"`。單引號、管線、`&&` 之類的 token 進不了白名單，自然被判為第三方。
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = [];
+  let token = "";
+  let present = false;
+  let quoted = false;
+  for (const character of command) {
+    if (quoted) {
+      if (character === '"') quoted = false;
+      else token += character;
+      continue;
+    }
+    if (character === '"') {
+      quoted = true;
+      present = true;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (present) tokens.push(token);
+      token = "";
+      present = false;
+      continue;
+    }
+    token += character;
+    present = true;
+  }
+  return present ? [...tokens, token] : tokens;
+}
+
+// POSIX 絕對路徑、Windows 磁碟機路徑（setup.ps1 會把反斜線換成正斜線）與 UNC 路徑。
+// 相對路徑一律不算：tracker 寫進設定檔的永遠是絕對路徑。
+function isAbsolutePathToken(token: string): boolean {
+  return token.startsWith("/") || token.startsWith("\\\\") || /^[A-Za-z]:[/\\]/.test(token);
+}
+
+function isNodeExecutable(token: string): boolean {
+  if (token === "node" || token === "node.exe") return true;
+  return isAbsolutePathToken(token) && /[/\\]node(?:\.exe)?$/.test(token);
+}
+
+// script 是腳本路徑本身（已去引號）必須符合的尾綴樣式；Claude 端與 Codex 端各給一組。
+export function isTrackerHookCommand(command: unknown, script: RegExp): boolean {
+  if (typeof command !== "string") return false;
+  const tokens = tokenizeCommand(command);
+  const [scriptPath, ...args] = tokens.length > 0 && isNodeExecutable(tokens[0]) ? tokens.slice(1) : tokens;
+  if (scriptPath === undefined || !isAbsolutePathToken(scriptPath) || !script.test(scriptPath)) return false;
+  return args.every((argument) => TRACKER_ARGUMENT.test(argument));
+}
+
+const CODEX_TRACKER_SCRIPT = /[/\\]ccusage-tracker[/\\]codex-sync\.mjs$/;
+
+// 認得舊的 --notify 寫法與未加旗標的寫法，才能就地升級而不是又 append 一份。
 export function isCodexTrackerHook(command?: unknown): boolean {
-  return typeof command === "string" && /[/\\]ccusage-tracker[/\\]codex-sync\.mjs(?=["'\s]|$)/.test(command);
+  return isTrackerHookCommand(command, CODEX_TRACKER_SCRIPT);
 }
 
 export function isOnPath(name: string): boolean {

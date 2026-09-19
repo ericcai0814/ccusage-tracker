@@ -11,6 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -355,12 +356,14 @@ describe("installFiles 對 symlink 設定檔寫穿真實檔案", () => {
     mkdirSync(dirname(link), { recursive: true });
     symlinkSync(real, link);
 
-    const backedUp = installFiles([
+    const installed = installFiles([
       { path: script, content: "// session-end\n" },
       { path: link, content: next },
     ]);
 
-    expect(backedUp).toBe(true);
+    expect(installed.backedUp).toBe(true);
+    // 寫穿的是 settings.json，腳本是一般檔案：只回報前者
+    expect(installed.writtenThrough).toEqual([{ link, real }]);
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readFileSync(real, "utf8")).toBe(next);
     expect(readFileSync(link, "utf8")).toBe(next);
@@ -388,11 +391,72 @@ describe("installFiles 對 symlink 設定檔寫穿真實檔案", () => {
     expect(message).toContain("Refusing to replace non-regular file");
     expect(message).toContain(link);
     expect(message).toContain(target);
-    expect(existsSync(script)).toBe(false);
+    // 驗證全部發生在 staging 之前，所以腳本目錄根本沒被建出來
+    expect(existsSync(dirname(script))).toBe(false);
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readdirSync(target)).toEqual([]);
-    expect(leftovers(dirname(script))).toEqual([]);
     expect(leftovers(dirname(link))).toEqual([]);
+  });
+
+  // Codex 補審 [med] 的另一半：目標的型態驗證必須全部發生在 staging 之前，否則第二個
+  // 檔案被拒時，第一個檔案已經建了目錄、寫了暫存檔與備份暫存檔。
+  it("第二個檔案驗證失敗：第一個檔案的目錄都不該被建出來", () => {
+    const home = scratch("tracker home ");
+    const target = scratch("tracker target ");
+    const link = join(home, "codex", "hooks.json");
+    const scriptDir = join(home, ".config", "ccusage-tracker");
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(target, link);
+
+    const message = refusal([
+      { path: join(scriptDir, "codex-sync.mjs"), content: "// codex-sync\n" },
+      { path: link, content: "{}\n" },
+    ]);
+
+    expect(message).toContain("Refusing to replace non-regular file");
+    expect(existsSync(scriptDir)).toBe(false);
+  });
+
+  it("第二個檔案驗證失敗：第一個檔案的既有內容與既有 .backup 位元組不變，且無殘留", () => {
+    const home = scratch("tracker home ");
+    const target = scratch("tracker target ");
+    const link = join(home, "codex", "hooks.json");
+    const scriptDir = join(home, ".config", "ccusage-tracker");
+    const script = join(scriptDir, "codex-sync.mjs");
+    mkdirSync(dirname(link), { recursive: true });
+    mkdirSync(scriptDir, { recursive: true });
+    writeFileSync(script, "// previous\n");
+    writeFileSync(`${script}.backup`, "older backup\n");
+    symlinkSync(target, link);
+
+    const message = refusal([
+      { path: script, content: "// codex-sync\n" },
+      { path: link, content: "{}\n" },
+    ]);
+
+    expect(message).toContain("Refusing to replace non-regular file");
+    expect(readFileSync(script, "utf8")).toBe("// previous\n");
+    expect(readFileSync(`${script}.backup`, "utf8")).toBe("older backup\n");
+    expect(leftovers(scriptDir)).toEqual([]);
+  });
+
+  it("symlink → FIFO（無 writer）：不開啟 FIFO，直接以非一般檔案訊息拒絕", () => {
+    const home = scratch("tracker home ");
+    const fifoDir = scratch("tracker fifo ");
+    const fifo = join(fifoDir, "hooks.fifo");
+    const link = join(home, "codex", "hooks.json");
+    execFileSync("mkfifo", [fifo]);
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(fifo, link);
+
+    // 沒有 writer 的 FIFO 一旦被 open(2) 讀就會永久阻塞；本測試能回到這一行，
+    // 就證明拒絕發生在任何 readFileSync 之前。
+    const message = refusal([{ path: link, content: "{}\n" }]);
+
+    expect(message).toContain("Refusing to replace non-regular file");
+    expect(message).toContain(link);
+    expect(message).toContain(fifo);
+    expect(message).not.toContain("JSON");
   });
 
   it("斷鏈 symlink：整筆交易拒絕，訊息帶出 link 目標，其他檔案不落地", () => {
@@ -411,10 +475,50 @@ describe("installFiles 對 symlink 設定檔寫穿真實檔案", () => {
     expect(message).toContain("Refusing to replace non-regular file");
     expect(message).toContain(link);
     expect(message).toContain(missing);
-    expect(existsSync(script)).toBe(false);
+    expect(existsSync(dirname(script))).toBe(false);
     expect(existsSync(missing)).toBe(false);
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(leftovers(dirname(script))).toEqual([]);
     expect(leftovers(dirname(link))).toEqual([]);
+  });
+});
+
+// Codex 補審 [med]：辨識規則原本只檢查命令字串「含有」腳本路徑，於是任何引用該路徑的
+// 第三方命令（雜湊校驗、包一層的複合命令）都會被整組換成上報 hook，原有功能直接消失。
+// 現在整條命令必須符合標準形狀：可選的 node 執行檔、tracker 腳本絕對路徑、只有 tracker
+// 自己的參數。其餘一律視為第三方，原樣保留，tracker 另行 append。
+describe("tracker hook 辨識只認標準命令形狀", () => {
+  const trackerScript = "/Users/x/.config/ccusage-tracker/session-end.mjs";
+
+  const commandsIn = (settings: Parameters<typeof applyTrackerHooks>[0], event: "SessionEnd" | "Stop" | "SessionStart") =>
+    applyTrackerHooks(settings).updated.hooks?.[event]?.flatMap((m) => m.hooks.map((h) => h.command)) ?? [];
+
+  it("第三方命令只是引用腳本路徑：原樣保留，tracker 另行 append", () => {
+    for (const thirdParty of [
+      `sha256sum "${trackerScript}"`,
+      `node "${trackerScript}" --mode=stop && echo done`,
+      `cat ${trackerScript} | head -1`,
+      `bash -c 'node "${trackerScript}" --mode=stop'`,
+    ]) {
+      const commands = commandsIn({ hooks: { Stop: [matcher(thirdParty)] } }, "Stop");
+
+      expect(commands).toEqual([thirdParty, stopCmd]);
+    }
+  });
+
+  it("標準形狀的四種寫法仍被辨識並就地升級為 canonical 命令", () => {
+    const canonical: [string, string, "SessionEnd" | "Stop" | "SessionStart"][] = [
+      // 帶引號 + --mode=session-end（bash/PowerShell 安裝器寫出的形狀）
+      [`node "${trackerScript}" --mode=session-end`, endCmd, "SessionEnd"],
+      // 不帶引號（家目錄無空白的舊版）
+      [`node ${trackerScript} --mode=stop`, stopCmd, "Stop"],
+      // 帶引號的 node 絕對路徑
+      [`"/usr/local/bin/node" "/Users/x/.config/ccusage-tracker/session-start.mjs"`, startCmd, "SessionStart"],
+      // Windows 正斜線磁碟機路徑（setup.ps1 會把反斜線換成正斜線）
+      [`node "C:/Users/x/.config/ccusage-tracker/session-end.mjs" --mode=stop`, stopCmd, "Stop"],
+    ];
+
+    for (const [existing, expected, event] of canonical) {
+      expect(commandsIn({ hooks: { [event]: [matcher(existing)] } }, event)).toEqual([expected]);
+    }
   });
 });

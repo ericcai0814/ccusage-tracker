@@ -1,9 +1,9 @@
 ## 1. 辨識規則與檔案型態（Codex med）
 
-- [ ] [P] 1.1 依 design「tracker hook 只辨識標準命令形狀」與規格「Tracker hook recognition」先在 packages/cli/src/hooks.test.ts 與 packages/cli/src/codex-hooks.test.ts 寫失敗測試：`sha256sum "<home>/.config/ccusage-tracker/codex-sync.mjs"` 與含 `&&` 的複合命令不被辨識且原樣保留、tracker 群組 append 在尾端；帶引號、不帶引號、`--mode=stop`、帶引號 node 路徑四種標準形狀仍被辨識。驗證：該組先紅。
-- [ ] 1.2 實作 packages/cli/src/hooks.ts 的 isCcusageTrackerHook 與 packages/cli/src/codex-hooks.ts 的辨識為完整形狀比對（可選 node、tracker 腳本絕對路徑、只允許 `--hook`／`--notify`／`--mode=<value>`）。驗證：1.1 全綠，既有 hooks.test.ts 與 codex-hooks.test.ts 全綠。
-- [ ] [P] 1.3 依 design「讀取設定檔前先驗檔案型態」與規格「Symlinked configuration files」先寫失敗測試：hooks.json 為指向 FIFO 的 symlink（無 writer）時 setup／update 在 2 秒內 exit 1、訊息為非一般檔案訊息含目標、不寫任何檔；指向目錄或 socket 時不報 JSON 錯誤；斷鏈時 readlink 失敗退回不帶目標的訊息；第二個檔案驗證失敗時第一個檔案沒有 `.tmp`／`.rollback`／`.backup`。驗證：先紅。
-- [ ] 1.4 實作 packages/cli/src/hooks.ts 的 assertRegularFileTarget，讓 settings.json 與 hooks.json 的讀取、installFiles 的 stage 都先過型態檢查再 readFileSync；目標解析移到 staging 迴圈前且每檔一次；依 design「寫穿 symlink 時印出真實路徑並提前解析」在 installFiles 回傳 writtenThrough 並於 setup／update 印 `Wrote through symlink: <link> -> <real>`。驗證：1.3 全綠，setup.test.ts／update.test.ts 新增輸出含該行的斷言並全綠。
+- [x] [P] 1.1 依 design「tracker hook 只辨識標準命令形狀」與規格「Tracker hook recognition」先在 packages/cli/src/hooks.test.ts 與 packages/cli/src/codex-hooks.test.ts 寫失敗測試：`sha256sum "<home>/.config/ccusage-tracker/codex-sync.mjs"` 與含 `&&` 的複合命令不被辨識且原樣保留、tracker 群組 append 在尾端；帶引號、不帶引號、`--mode=stop`、帶引號 node 路徑四種標準形狀仍被辨識。驗證：該組先紅。
+- [x] 1.2 實作 packages/cli/src/hooks.ts 的 isCcusageTrackerHook 與 packages/cli/src/codex-hooks.ts 的辨識為完整形狀比對（可選 node、tracker 腳本絕對路徑、只允許 `--hook`／`--notify`／`--mode=<value>`）。驗證：1.1 全綠，既有 hooks.test.ts 與 codex-hooks.test.ts 全綠。
+- [x] [P] 1.3 依 design「讀取設定檔前先驗檔案型態」與規格「Symlinked configuration files」先寫失敗測試：hooks.json 為指向 FIFO 的 symlink（無 writer）時 setup／update 在 2 秒內 exit 1、訊息為非一般檔案訊息含目標、不寫任何檔；指向目錄或 socket 時不報 JSON 錯誤；斷鏈時 readlink 失敗退回不帶目標的訊息；第二個檔案驗證失敗時第一個檔案沒有 `.tmp`／`.rollback`／`.backup`。驗證：先紅。
+- [x] 1.4 實作 packages/cli/src/hooks.ts 的 assertRegularFileTarget，讓 settings.json 與 hooks.json 的讀取、installFiles 的 stage 都先過型態檢查再 readFileSync；目標解析移到 staging 迴圈前且每檔一次；依 design「寫穿 symlink 時印出真實路徑並提前解析」在 installFiles 回傳 writtenThrough 並於 setup／update 印 `Wrote through symlink: <link> -> <real>`。驗證：1.3 全綠，setup.test.ts／update.test.ts 新增輸出含該行的斷言並全綠。
 
 ## 2. 信任狀態與訊息
 

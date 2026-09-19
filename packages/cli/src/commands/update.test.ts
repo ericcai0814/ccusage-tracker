@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
-import { spawn } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -76,10 +77,13 @@ function configure(): string {
 function codexHooks(): { hooks?: Record<string, { hooks: { type?: string; command?: string; timeout?: number }[] }[]> } {
   return JSON.parse(readFileSync(join(home, "codex", "hooks.json"), "utf8"));
 }
-function cli(args: string[], input = "", preload?: string): Promise<{ code: number | null; output: string }> {
+// timeoutMs 交給 spawn 自己在逾時後 SIGKILL：驗「不會卡在 FIFO」的案例必須有硬上限，
+// 否則測試自己會跟著永久阻塞。被殺掉的子程序回 code null，與自行結束的 1 可以分辨。
+function cli(args: string[], input = "", preload?: string, timeoutMs?: number): Promise<{ code: number | null; output: string }> {
   writeFileSync(join(home, "http-replies.json"), JSON.stringify(replies));
   return new Promise((resolve, reject) => {
     const child = spawn(nodeBin, [...(httpPreload ? ["--import", httpPreload] : []), ...(preload ? ["--import", preload] : []), join(buildDir, "index.js"), ...args], {
+      ...(timeoutMs === undefined ? {} : { timeout: timeoutMs, killSignal: "SIGKILL" as const }),
       env: {
         ...process.env,
         HOME: home,
@@ -295,6 +299,10 @@ describe("Node CLI update", () => {
     expect(readFileSync(`${realHooks}.backup`, "utf8")).toBe(hooksRaw);
     expect(existsSync(join(home, ".claude", "settings.json.backup"))).toBe(false);
     expect(existsSync(join(home, "codex", "hooks.json.backup"))).toBe(false);
+    // 寫到 HOME 以外的檔案必須講出來，否則使用者不知道 dotfiles 被改了。
+    // 目標用 realpathSync 取：macOS 的 /var 本身是 → /private/var 的 symlink。
+    expect(first.output).toContain(`Wrote through symlink: ${join(home, ".claude", "settings.json")} -> ${realpathSync(realSettings)}`);
+    expect(first.output).toContain(`Wrote through symlink: ${join(home, "codex", "hooks.json")} -> ${realpathSync(realHooks)}`);
 
     const installedSettings = readFileSync(realSettings, "utf8");
     const installedHooks = readFileSync(realHooks, "utf8");
@@ -303,8 +311,69 @@ describe("Node CLI update", () => {
     expect(second.code).toBe(0);
     expect(readFileSync(realSettings, "utf8")).toBe(installedSettings);
     expect(readFileSync(realHooks, "utf8")).toBe(installedHooks);
+    // 第二次沒有任何檔案被寫，就不該再宣稱寫穿了誰
+    expect(second.output).not.toContain("Wrote through symlink");
     expect(readdirSync(join(dotfiles, "claude")).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
     expect(readdirSync(join(dotfiles, "codex")).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
+  });
+
+  // Codex 補審 [med]：CLI 入口在檔案型態檢查之前就 readFileSync，於是指向 FIFO 的
+  // symlink 會讓 setup／update 永久卡住（open(2) 等 writer），指向目錄或 socket 則被
+  // 誤報成 JSON 錯誤。既有拒絕測試直接呼叫 installFiles，繞過了這個入口。
+  it.skipIf(process.platform === "win32")("hooks.json 指向 FIFO、目錄或 socket：讀取前就拒絕，不卡住也不報 JSON 錯誤", async () => {
+    configure();
+    const old = existingInstall();
+    mkdirSync(join(home, "codex"));
+    const hooksLink = join(home, "codex", "hooks.json");
+    const fifo = join(home, "codex", "target.fifo");
+    const directory = join(home, "codex", "target-dir");
+    const socket = join(home, "codex", "target.sock");
+    execFileSync("mkfifo", [fifo]);
+    mkdirSync(directory);
+    const listener = createServer();
+    await new Promise<void>((resolve) => listener.listen(socket, resolve));
+
+    try {
+      for (const target of [fifo, directory, socket]) {
+        symlinkSync(target, hooksLink);
+        const started = Date.now();
+
+        const result = await cli(["update"], "", undefined, 2000);
+
+        rmSync(hooksLink);
+        // code 1（而非 SIGKILL 的 null）證明 CLI 自己結束了，沒有停在 FIFO 的 open 上
+        expect(result.code).toBe(1);
+        expect(Date.now() - started).toBeLessThan(2000);
+        expect(result.output).toContain("Refusing to replace non-regular file");
+        expect(result.output).toContain(target);
+        expect(result.output).not.toContain("JSON");
+        expect(readFileSync(join(home, ".claude", "settings.json"), "utf8")).toBe(old.raw);
+        expect(readFileSync(join(configDir, "session-end.mjs"), "utf8")).toBe("// previous session-end.mjs");
+      }
+    } finally {
+      await new Promise<void>((resolve) => listener.close(() => resolve()));
+    }
+  });
+
+  it("斷鏈 symlink 且 readlink 也失敗：仍以非一般檔案訊息拒絕，只是不帶目標路徑", async () => {
+    configure();
+    existingInstall();
+    mkdirSync(join(home, "codex"));
+    const hooksLink = join(home, "codex", "hooks.json");
+    const missing = join(home, "codex", "gone.json");
+    symlinkSync(missing, hooksLink);
+    // 解析失敗後才去讀 link 目標；目標在這兩步之間被移除時 readlink 也會失敗，
+    // 那時必須退回不帶目標的訊息，而不是換一個看不懂的錯誤。
+    const preload = join(home, "fail-readlink.mjs");
+    writeFileSync(preload, `import fs from 'node:fs';\nimport { syncBuiltinESMExports } from 'node:module';\nconst original = fs.readlinkSync;\nfs.readlinkSync = function(path, ...rest) {\n if (String(path) === ${JSON.stringify(hooksLink)}) throw new Error('fixture readlink failure');\n return original(path, ...rest);\n};\nsyncBuiltinESMExports();\n`);
+
+    const result = await cli(["update"], "", preload);
+
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("Refusing to replace non-regular file");
+    expect(result.output).toContain(hooksLink);
+    expect(result.output).not.toContain("symlink target:");
+    expect(result.output).not.toContain("fixture readlink failure");
   });
 
   it("rejects malformed Claude settings without mutating scripts", async () => {

@@ -151,6 +151,43 @@ describe("applyCodexHooks", () => {
   });
 });
 
+// Codex 補審 [med]：只檢查命令「含有」腳本路徑時，`sha256sum "<script>"` 這種第三方
+// 命令會被整組替換成上報 hook，原有功能與額外欄位一併消失。辨識改為整條命令的形狀比對。
+describe("isCodexTrackerHook 只認標準命令形狀", () => {
+  const script = "/Users/x/.config/ccusage-tracker/codex-sync.mjs";
+
+  it("第三方命令只是引用腳本路徑：群組位元組不變留在原索引，tracker append 在尾端", () => {
+    for (const thirdPartyCommand of [
+      `sha256sum "${script}"`,
+      `node "${script}" --hook && echo done`,
+      `cat ${script} | wc -l`,
+    ]) {
+      const group = { hooks: [{ type: "command", command: thirdPartyCommand, timeout: 3 }], note: "keep" };
+
+      const result = applyCodexHooks({ hooks: { Stop: [group] } }, command);
+
+      const stop = result.updated.hooks!.Stop!;
+      expect(stop).toHaveLength(2);
+      expect(JSON.stringify(stop[0])).toBe(JSON.stringify(group));
+      expect(stop[1]).toEqual({ hooks: [{ type: "command", command, timeout: 45 }] });
+    }
+  });
+
+  it("標準形狀仍被辨識並就地替換：帶引號、不帶引號、帶引號 node 絕對路徑、--notify", () => {
+    for (const existing of [
+      `node "${script}" --hook`,
+      `node ${script} --hook`,
+      `"/usr/local/bin/node" "${script}"`,
+      `node "${script}" --notify`,
+      `node "C:/Users/x/.config/ccusage-tracker/codex-sync.mjs" --hook`,
+    ]) {
+      const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: existing, timeout: 3 }] }] } }, command);
+
+      expect(result.updated.hooks!.Stop).toEqual([{ hooks: [{ type: "command", command, timeout: 45 }] }]);
+    }
+  });
+});
+
 describe("readCodexTrustState", () => {
   const hooksPath = "/Users/test/.codex/hooks.json";
   const section = (event: string, index: number) => `[hooks.state."${hooksPath}:${event}:${index}:0"]`;

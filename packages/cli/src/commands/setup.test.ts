@@ -27,6 +27,7 @@ interface MockOptions {
   codexScript?: boolean;
   collector?: (string | null)[];
   configToml?: string | null;
+  writtenThrough?: { link: string; real: string }[];
 }
 
 function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps & MockState {
@@ -57,6 +58,7 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
         codexChanged: codexWired,
         codexWired,
         codexIndexes: codexWired ? { stop: 0, sessionEnd: 0 } : {},
+        writtenThrough: options.writtenThrough ?? [],
         backedUp: false,
       };
     },
@@ -317,11 +319,11 @@ describe("setup 對 symlink 設定檔", () => {
     deps.installHook = (scripts: TrackerScripts, targets: InstallTargets): InstallResult => {
       const claude = applyTrackerHooks(JSON.parse(readFileSync(settingsLink, "utf8")));
       const codex = applyCodexHooks(JSON.parse(readFileSync(hooksLink, "utf8")));
-      installFiles([
+      const installed = installFiles([
         { path: settingsLink, content: JSON.stringify(claude.updated, null, 2) + "\n" },
         { path: hooksLink, content: JSON.stringify(codex.updated, null, 2) + "\n" },
       ]);
-      return recordTargets(scripts, targets);
+      return { ...recordTargets(scripts, targets), writtenThrough: installed.writtenThrough };
     };
 
     await setupCommand(deps);
@@ -334,5 +336,7 @@ describe("setup 對 symlink 設定檔", () => {
     expect(JSON.parse(readFileSync(realHooks, "utf8")).hooks.Stop[0].hooks[0].command).toContain("codex-sync.mjs");
     expect(readFileSync(`${realSettings}.backup`, "utf8")).toBe(settingsRaw);
     expect(existsSync(`${settingsLink}.backup`)).toBe(false);
+    expect(output(deps)).toContain(`Wrote through symlink: ${settingsLink} -> ${realSettings}`);
+    expect(output(deps)).toContain(`Wrote through symlink: ${hooksLink} -> ${realHooks}`);
   });
 });
