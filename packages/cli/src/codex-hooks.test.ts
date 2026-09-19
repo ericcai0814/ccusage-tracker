@@ -305,18 +305,31 @@ describe("canonical 命令的冪等性不變量", () => {
   });
 });
 
-// `%` 只有成對的 %NAME% 才是 cmd.exe 的變數展開；單獨一個 % 在路徑裡是普通字元，
-// 拒絕它只會讓這類家目錄的舊 hook 白白升級不了。
-describe("% 只在成對的 %VAR% 形狀下才算展開", () => {
+// cmd.exe 的變數名不限於 [A-Za-z_]\w*（`%ProgramFiles(x86)%` 是真實存在的），
+// `%1` 還是批次參數。用「成對的 %NAME%」去收斂會漏掉一整排形狀，因此形狀層一律
+// 拒絕任何 `%`；家目錄真的含 % 時，canonical 命令由第一層接住，冪等性不受影響。
+describe("形狀層一律拒絕 %", () => {
   const script = CODEX_TRACKER_SCRIPT;
 
-  it("成對的 %VAR% 視為第三方", () => {
-    expect(isTrackerHookCommand("node C:/%TARGET%/ccusage-tracker/codex-sync.mjs", script)).toBe(false);
-    expect(isTrackerHookCommand('node "C:/%TARGET%/ccusage-tracker/codex-sync.mjs"', script)).toBe(false);
+  it("各種 cmd.exe 展開形狀都視為第三方", () => {
+    for (const command of [
+      "node C:/%TARGET%/ccusage-tracker/codex-sync.mjs",
+      'node "C:/%TARGET%/ccusage-tracker/codex-sync.mjs"',
+      'node "C:/%ProgramFiles(x86)%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%COMMONPROGRAMFILES(X86)%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%1%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%~dp0%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "C:/%A-B%/ccusage-tracker/codex-sync.mjs" --hook',
+      'node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook',
+    ]) {
+      expect([command, isTrackerHookCommand(command, script)]).toEqual([command, false]);
+    }
   });
 
-  it("單獨的 % 仍可辨識", () => {
-    expect(isTrackerHookCommand('node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook', script)).toBe(true);
+  it("但家目錄含 % 時 canonical 仍由第一層接住", () => {
+    const canonical = 'node "/Users/a%b/.config/ccusage-tracker/codex-sync.mjs" --hook';
+
+    expect(isTrackerHookCommand(canonical, script, [canonical])).toBe(true);
   });
 });
 
@@ -357,9 +370,9 @@ describe("未加引號的展開語法一律視為第三方", () => {
   // Codex round 5 finding (b)：合法的 POSIX 家目錄不該被誤拒，否則舊 hook 升級不了。
   it("合法特殊字元家目錄的路徑仍被辨識", () => {
     for (const path of [
-      "/home/100%/.config/ccusage-tracker/codex-sync.mjs",
       "/home/a\\b/.config/ccusage-tracker/codex-sync.mjs",
       "/home/a b/.config/ccusage-tracker/codex-sync.mjs",
+      "/home/a'b/.config/ccusage-tracker/codex-sync.mjs".replace("'", "-"),
     ]) {
       expect([path, isTrackerHookCommand(`node "${path}" --hook`, CODEX_TRACKER_SCRIPT)]).toEqual([path, true]);
     }

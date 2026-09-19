@@ -70,9 +70,11 @@ const SHELL_SYNTAX = /[&|;<>()'\n\r]/;
 
 // 這些展開不分引號內外都要拒絕：POSIX 的雙引號內 `$` 與反引號照樣展開
 // （`"/tmp/$(printf x)/ccusage-tracker/codex-sync.mjs"` 指向的是別的檔案）。
-// `%` 只有成對的 `%NAME%` 才是 cmd.exe 的變數展開，單獨一個 % 在路徑裡是普通字元。
-// `!` 是 cmd.exe 啟用 delayed expansion 時的展開，引號內外都會生效。
-const EXPANDS_ANYWHERE = /[$`!]|%[A-Za-z_][A-Za-z0-9_]*%/;
+// `%` 與 `!` 都是 cmd.exe 的展開（後者需啟用 delayed expansion），引號內外都生效。
+// `%` 不收斂成「成對的 %NAME%」：cmd 的變數名不限於 [A-Za-z_]\w*（`%ProgramFiles(x86)%`
+// 是真實存在的），`%1` 還是批次參數，收斂會漏掉一整排形狀。家目錄真的含這些字元時，
+// canonical 命令由位元組相等那一層接住，安裝冪等性不受影響。
+const EXPANDS_ANYWHERE = /[$`!%]/;
 
 // 未加引號的 token 會被 shell 做 brace／glob 展開：`/opt/{real,foreign}/node` 實際
 // 展開成兩個路徑，真正執行的腳本就變成第二個；加了引號則不展開，是普通字元。
