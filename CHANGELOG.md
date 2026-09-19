@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- tracker hook 的辨識收緊為標準命令形狀（可選的 `node` 執行檔、tracker 腳本絕對路徑、只允許 `--hook`／`--notify`／`--mode=<value>`）。原本只檢查命令是否含有腳本路徑，導致 `sha256sum "<script>"` 這類只是引用腳本的第三方 hook 被整組換成上報 hook、原有功能與額外欄位一併消失；現在一律視為第三方原樣保留，tracker 另行 append。請勿手動修改 tracker hook 的 command，否則會被視為第三方而多出一份。
+- `~/.claude/settings.json` 與 `$CODEX_HOME/hooks.json` 在讀取前先驗檔案型態。原本先 `readFileSync` 才檢查，指向 FIFO 的 symlink 會讓 `setup`／`update` 卡在 `open(2)`，指向目錄或 socket 則被誤報成 JSON 錯誤；現在解析後不是一般檔案一律在讀取前拒絕整筆交易，訊息帶出 symlink 目標（讀不到目標時退回不帶目標的訊息）。
+- 目標解析移到 staging 迴圈之前且每個檔案只解析一次：任一目標驗證失敗時，其他檔案連目錄都還沒被建立。
+- 寫穿 symlink 成功時輸出 `Wrote through symlink: <link> -> <real>`，讓使用者看見 HOME 以外被改寫的檔案。
+- Codex 信任狀態改用 tracker hook 的實際群組索引與群組內索引查詢。原本 hook 索引寫死 `:0`，tracker 位於混合群組的 `hooks[1]` 時會讀到隔壁第三方 hook 的信任或停用紀錄，甚至把尚未信任的 tracker 顯示為 trust recorded。
+- `setup`／`update` 的 Codex 結果行與 `status` 的 `Codex hooks:` 行改用同一個格式化函式，並在兩條 hook 狀態不同時逐 hook 說明（例如 `Stop trusted, SessionEnd awaiting trust`、`Stop disabled in Codex, SessionEnd trusted`）。
+- 舊 server 對 Codex 腳本回 404／410 時不再提示移除 `config.toml` 的 tracker `notify`：當下 hooks 根本沒接上，照做會關掉唯一的自動上報入口。
+- `config.toml` 的頂層掃描改為追蹤字串狀態與陣列深度，只在深度 0 且不在字串內時辨識 table 標頭。原本 `[[servers]]` 與 `[tui] # 註解` 沒被當成 table（提示多印），無尾逗號的陣列續行 `[3, 4]` 與多行字串裡的 `[tui]` 反而被當成 table（提示漏印）。
+
+### Documentation
+
+- 中文 README 補上平台支援範圍：macOS、Linux 與 Windows 路徑受支援，但實機驗證只在 macOS 跑過，Windows／Linux 尚未實機驗證。
+- 兩份 README 補上「請勿手動修改 tracker hook 命令」與逐 hook 信任狀態的說明。
+
+### Tests
+
+- 補跨檔 rollback 案例：settings.json 已寫入、hooks.json（dotfiles symlink）最後一次 rename 失敗時，兩份設定、既有 `.backup`、symlink 與暫存檔全部復原。
+
 ## [0.4.0] - 2026-09-19
 
 CLI 0.2.0。server 需部署此版本，`/api/health` 回 `version: 0.4.0`；舊 CLI 0.1.7 對新 server 仍可正常上報。

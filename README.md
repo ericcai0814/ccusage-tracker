@@ -75,6 +75,8 @@
 
 首次使用先準備 [Node.js](https://nodejs.org)（tracker CLI >=18；collector 有自己的版本需求，見下方 Codex 章節）。
 
+> 平台支援範圍：tracker CLI／腳本支援 macOS、Linux 與 Windows 路徑，但實機驗證只在 macOS 跑過（Node 24 與 Node 18.20.8，含帶空白的路徑）；Windows／Linux 尚未實機驗證。collector 的 `ccusage@20.0.20` 原生執行驗證平台為 macOS arm64。
+
 ```bash
 npx ccusage-tracker@latest setup
 ```
@@ -179,13 +181,17 @@ Codex 會**靜默略過**尚未信任的新 hook —— 裝好了卻沒在跑，
 | 輸出 | 意思 |
 |---|---|
 | `installed, trust recorded` | hooks 已安裝且找得到對應的信任紀錄 |
-| `installed, awaiting trust (open /hooks in Codex)` | hooks 已安裝但還沒信任，Codex 現在不會執行它 |
+| `installed, awaiting trust (open /hooks in Codex)` | 兩條 hook 都還沒信任，Codex 現在不會執行它們 |
+| `installed, Stop trusted, SessionEnd awaiting trust (open /hooks in Codex)` | 只信任了其中一條；逐 hook 指名還缺哪一條 |
 | `installed, disabled in Codex` | 使用者在 Codex 內把它停用了 |
+| `installed, Stop disabled in Codex, SessionEnd trusted` | 只停用了其中一條 |
 | `not installed` | 還沒接上，跑 `update` |
 
 tracker 只讀 `config.toml` 判斷有沒有信任紀錄，不驗證雜湊值（演算法是 Codex 內部實作），所以措辭是 trust recorded 而不是 trusted，也永遠不會替使用者寫入 `hooks.state`。
 
-Codex hook 的 command 在每次 update 之間逐位元相同，腳本內容更新不需要重新信任；只有 hook 設定本身改變（例如從舊格式升級）才需要再信任一次。
+Codex hook 的 command 在每次 update 之間逐位元相同，腳本內容更新不需要重新信任；只有 hook 設定本身改變（例如從舊格式升級）才需要再信任一次。兩條 hook 的信任是分開記的，只信任其中一條時 `setup`／`update` 與 `status` 都會指名還缺哪一條。
+
+> 請勿手動修改 tracker hook 的 command。辨識規則只認 `node "<path>/codex-sync.mjs" --hook` 這種標準形狀；加了自訂參數或包成複合命令後會被視為第三方 hook 而保留不動，tracker 會另外 append 一份，變成重複觸發（由 5 分鐘節流與獨立鎖吸收，但狀態會變難讀）。
 
 ### 手動補送與除錯
 

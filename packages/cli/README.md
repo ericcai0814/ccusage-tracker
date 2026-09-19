@@ -68,7 +68,9 @@ The hook process only reads `hook_event_name` from the event on stdin and hands 
 
 Hook scripts come from your configured tracker server. Setup/update migrate old tracker commands and quote paths containing spaces. Existing shell/PowerShell installers remain Claude-only; they do not install Codex reporting.
 
-When `settings.json` or `hooks.json` is a symbolic link (dotfiles setups), the CLI writes through to the real file and leaves the link in place; the `.backup` is written next to the real file. A link that dangles or resolves to anything other than a regular file is refused, and the whole transaction is rolled back.
+**Do not hand-edit the tracker hook command.** A hook counts as a tracker hook only when the whole command has the canonical shape: an optional `node` executable, the absolute tracker script path, and only tracker arguments (`--hook`, `--notify`, `--mode=<value>`). Anything else — a custom flag, a wrapper, a compound command, or a third-party command that merely references the script path — is treated as third-party, kept byte-identical, and the tracker group is appended separately. That means an edited tracker command results in two tracker hooks rather than an upgraded one.
+
+When `settings.json` or `hooks.json` is a symbolic link (dotfiles setups), the CLI writes through to the real file and leaves the link in place; the `.backup` is written next to the real file, and the output names each file written this way (`Wrote through symlink: <link> -> <real>`). File types are checked before anything is read, so a link that dangles or resolves to a directory, FIFO, socket or other non-regular file is refused before the first read and the whole transaction is rolled back.
 
 ### Collector
 
@@ -98,11 +100,13 @@ Codex **silently skips** hooks it has not been told to trust, so "installed but 
 | Output | Meaning |
 |---|---|
 | `installed, trust recorded` | Hooks are installed and a matching trust record exists |
-| `installed, awaiting trust (open /hooks in Codex)` | Installed, but Codex will not run them yet |
+| `installed, awaiting trust (open /hooks in Codex)` | Neither hook is trusted yet, so Codex will not run them |
+| `installed, Stop trusted, SessionEnd awaiting trust (open /hooks in Codex)` | Only one of the two is trusted; the line names which one is missing |
 | `installed, disabled in Codex` | You disabled them inside Codex |
+| `installed, Stop disabled in Codex, SessionEnd trusted` | Only one of the two is disabled |
 | `not installed` | Not wired yet — run `update` |
 
-The CLI only reads `config.toml` to see whether a trust record exists. It never validates the hash (Codex's algorithm is internal, hence "trust recorded" rather than "trusted") and never writes `hooks.state` on your behalf.
+Each hook is trusted separately, so setup, update and `status` all report the two hooks individually when their states differ. The CLI only reads `config.toml` to see whether a trust record exists. It never validates the hash (Codex's algorithm is internal, hence "trust recorded" rather than "trusted") and never writes `hooks.state` on your behalf.
 
 ### Manual fallback
 

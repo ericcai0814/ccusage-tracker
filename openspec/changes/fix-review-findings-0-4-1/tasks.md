@@ -22,5 +22,5 @@
 
 ## 5. 文件與驗證
 
-- [ ] [P] 5.1 依 design「中文 README 補未實機驗證平台」更新 README.md（架構表或 Codex 章節加「macOS 實測，Windows／Linux 路徑受支援但尚未實機驗證」）；packages/cli/README.md 補「勿手動修改 tracker hook 命令，否則會被視為第三方而另行 append」；CHANGELOG 的 Unreleased 新增 Fixed 條目（辨識收緊、型態檢查、實際索引、notify 提示條件、TOML 掃描、寫穿訊息、rollback 測試、逐 hook 訊息）。驗證：內容審閱，grep README.md 含「尚未實機驗證」。
+- [x] [P] 5.1 依 design「中文 README 補未實機驗證平台」更新 README.md（架構表或 Codex 章節加「macOS 實測，Windows／Linux 路徑受支援但尚未實機驗證」）；packages/cli/README.md 補「勿手動修改 tracker hook 命令，否則會被視為第三方而另行 append」；CHANGELOG 的 Unreleased 新增 Fixed 條目（辨識收緊、型態檢查、實際索引、notify 提示條件、TOML 掃描、寫穿訊息、rollback 測試、逐 hook 訊息）。驗證：內容審閱，grep README.md 含「尚未實機驗證」。
 - [ ] 5.2 完整驗證：pnpm test、pnpm typecheck、pnpm --filter ccusage-tracker build 全綠；Node-built CLI smoke 在暫存 HOME 內以 symlink 設定檔與含 `sha256sum` 第三方命令的 hooks.json 跑 setup 與兩次 update，第三方群組位元組不變、tracker 在尾端、輸出含 `Wrote through symlink`、第二次 update 後 sha256 不變；輸出寫入 openspec/changes/fix-review-findings-0-4-1/verification.md；spectra validate 通過。
