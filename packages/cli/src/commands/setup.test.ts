@@ -28,6 +28,8 @@ interface MockOptions {
   collector?: (string | null)[];
   configToml?: string | null;
   codexChanged?: boolean;
+  codexStopChanged?: boolean;
+  codexSessionEndChanged?: boolean;
   writtenThrough?: { link: string; real: string }[];
 }
 
@@ -49,14 +51,17 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
     installHook: (scripts: TrackerScripts, targets: InstallTargets): InstallResult => {
       deps.targets = targets;
       const codexWired = targets.codex && scripts.codexSync !== undefined;
+      const stopChanged = codexWired && (options.codexStopChanged ?? options.codexChanged ?? true);
+      const sessionEndChanged = codexWired && (options.codexSessionEndChanged ?? options.codexChanged ?? true);
       return {
         sessionEndChanged: targets.claude,
         sessionStartChanged: targets.claude,
         stopChanged: targets.claude,
         claudeChanged: targets.claude,
-        codexStopChanged: codexWired,
-        codexSessionEndChanged: codexWired,
-        codexChanged: codexWired && (options.codexChanged ?? true),
+        // codexChanged 必須與真實 installHook 一樣由兩個事件推導，否則部分更新的案例會被遮住
+        codexStopChanged: stopChanged,
+        codexSessionEndChanged: sessionEndChanged,
+        codexChanged: stopChanged || sessionEndChanged,
         codexWired,
         codexIndexes: codexWired ? { stop: { group: 0, hook: 0 }, sessionEnd: { group: 0, hook: 0 } } : {},
         writtenThrough: options.writtenThrough ?? [],
@@ -223,6 +228,38 @@ describe("setup 逐工具接線", () => {
 
     expect(output(deps)).toContain(
       "Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
+    );
+  });
+
+  // Codex 複審 round 2 [low]：原本只要任一 Codex hook 有變動，就把兩條的 recorded
+  // 全部降成 awaiting。只補裝 SessionEnd 時，已信任且未變動的 Stop 被誤報成待信任。
+  it("Stop 未變動且已信任、只補裝 SessionEnd：只要求信任 SessionEnd", async () => {
+    const hooksPath = getCodexHooksPath();
+    const deps = createMockDeps(answers, {
+      codexStopChanged: false,
+      codexSessionEndChanged: true,
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "sha256:a"\n`,
+    });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain(
+      "Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
+    );
+  });
+
+  it("Stop 有變動：即使 config.toml 還留著舊的信任紀錄，也不冒稱已信任", async () => {
+    // 信任雜湊算的是 hook 設定身分，內容一改就作廢
+    const hooksPath = getCodexHooksPath();
+    const deps = createMockDeps(answers, {
+      codexStopChanged: true,
+      codexSessionEndChanged: false,
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "sha256:stale"\n` +
+        `[hooks.state."${hooksPath}:session_end:0:0"]\ntrusted_hash = "sha256:b"\n`,
+    });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain(
+      "Codex: hooks installed (Stop awaiting trust, SessionEnd trusted). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
     );
   });
 

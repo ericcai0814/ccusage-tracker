@@ -59,40 +59,55 @@ export function getCodexHookCommand(): string {
   return `node "${getCodexSyncScriptPath()}" --hook`;
 }
 
-// tracker 自己寫出來的命令只有一種形狀：可選的 node 執行檔、tracker 腳本的絕對路徑、
+// tracker 自己寫出來的命令只有少數幾種形狀：可選的直譯器、tracker 腳本的絕對路徑、
 // 以及 tracker 自己的參數。只要命令「含有」腳本路徑就認定是 tracker，會讓
-// `sha256sum "<script>"` 這類第三方命令被整組換成上報 hook，原有功能與額外欄位一併消失
-// （Codex 補審 med）。因此改為整條命令的形狀比對：多出任何一個 token 就是第三方。
-const TRACKER_ARGUMENT = /^(?:--hook|--notify|--mode=\S+)$/;
+// `sha256sum "<script>"` 這類第三方命令被整組換成上報 hook，原有功能與額外欄位一併消失。
+const TRACKER_ARGUMENT = /\s+(?:--hook|--notify|--mode=[^\s"]+)$/;
 
-// 只認雙引號 —— 三支安裝器（setup.sh、setup.ps1、CLI 的 buildHookCommand）寫出來的
-// 都是 `node "<path>"`。單引號、管線、`&&` 之類的 token 進不了白名單，自然被判為第三方。
-function tokenizeCommand(command: string): string[] {
-  const tokens: string[] = [];
-  let token = "";
-  let present = false;
+// 引號外只要出現 shell 語法就不是 tracker 寫的命令。單純用空白切 token 不夠：
+// `--mode=stop&&false` 黏在一起，token 白名單看不出來，整條會被當成 tracker 刪掉後半。
+const SHELL_SYNTAX = /[&|;<>`$()'\n\r]/;
+
+function containsShellSyntax(command: string): boolean {
   let quoted = false;
   for (const character of command) {
-    if (quoted) {
-      if (character === '"') quoted = false;
-      else token += character;
-      continue;
-    }
     if (character === '"') {
-      quoted = true;
-      present = true;
+      quoted = !quoted;
       continue;
     }
-    if (/\s/.test(character)) {
-      if (present) tokens.push(token);
-      token = "";
-      present = false;
-      continue;
-    }
-    token += character;
-    present = true;
+    if (!quoted && SHELL_SYNTAX.test(character)) return true;
   }
-  return present ? [...tokens, token] : tokens;
+  return quoted; // 未閉合的引號：形狀不明，一律當第三方
+}
+
+// 舊版安裝器實際寫出的命令（git 史料）：db7435a 的 `bash $HOOK_SCRIPT`、
+// f04098e 的 `node $HOOK_SCRIPT`、d758e52 的 `node $HOOK_SCRIPT --mode=…`。
+// 這些變數在家目錄含空白時不帶引號展開，所以腳本路徑本身可能有空白 —— 辨識若只
+// 依空白切 token，這些舊 hook 會升級不了，變成新舊兩條並存重複觸發。
+// 直譯器必須與腳本副檔名相符，否則就是別人的命令借用了這條路徑。
+const INTERPRETERS: { matches: RegExp; extension: string }[] = [
+  { matches: /^node(?:\.exe)?$/i, extension: "mjs" },
+  { matches: /^(?:bash|sh)$/, extension: "sh" },
+  { matches: /^(?:powershell|pwsh)(?:\.exe)?$/i, extension: "ps1" },
+];
+
+// PowerShell 用 -File 指定腳本，之前可以帶幾個既有開關。
+const POWERSHELL_SWITCH = /^-(?:NoProfile|NoLogo|NonInteractive|Sta|Mta)$/i;
+const POWERSHELL_OPTION = /^-(?:ExecutionPolicy|WindowStyle|InputFormat|OutputFormat)$/i;
+
+function peelToken(text: string): { token: string; rest: string } | null {
+  const match = /^(?:"([^"]*)"|([^\s"]+))(?:\s+|$)/.exec(text);
+  return match === null ? null : { token: match[1] ?? match[2], rest: text.slice(match[0].length) };
+}
+
+function basenameOf(path: string): string {
+  return path.split(/[/\\]/).pop() ?? "";
+}
+
+function extensionOf(path: string): string {
+  const base = basenameOf(path);
+  const dot = base.lastIndexOf(".");
+  return dot === -1 ? "" : base.slice(dot + 1).toLowerCase();
 }
 
 // POSIX 絕對路徑、Windows 磁碟機路徑（setup.ps1 會把反斜線換成正斜線）與 UNC 路徑。
@@ -101,18 +116,69 @@ function isAbsolutePathToken(token: string): boolean {
   return token.startsWith("/") || token.startsWith("\\\\") || /^[A-Za-z]:[/\\]/.test(token);
 }
 
-function isNodeExecutable(token: string): boolean {
-  if (token === "node" || token === "node.exe") return true;
-  return isAbsolutePathToken(token) && /[/\\]node(?:\.exe)?$/.test(token);
+// 直譯器只認裸名（靠 PATH 找）或絕對路徑；`./node` 這種相對路徑不算。
+function isExecutablePath(token: string): boolean {
+  return !/[/\\]/.test(token) || isAbsolutePathToken(token);
+}
+
+// 剝掉 PowerShell 的開關直到 -File；出現不認識的參數就不是已知形狀。
+function peelPowerShellFile(text: string): string | null {
+  let rest = text;
+  for (let peeled = peelToken(rest); peeled !== null; peeled = peelToken(rest)) {
+    if (/^-File$/i.test(peeled.token)) return peeled.rest;
+    if (POWERSHELL_SWITCH.test(peeled.token)) {
+      rest = peeled.rest;
+      continue;
+    }
+    if (POWERSHELL_OPTION.test(peeled.token)) {
+      const value = peelToken(peeled.rest);
+      if (value === null) return null;
+      rest = value.rest;
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+// 未加引號、含空白的舊版路徑要能重組，但 `node /other/lint.js <tracker>` 這種
+// 「把 tracker 路徑當參數傳給別的腳本」不能被誤收：一條路徑不會在中間又出現
+// 另一個絕對路徑的起點。加了引號的路徑沒有這個歧義，不套這條。
+function isSinglePath(path: string): boolean {
+  return path.split(/\s+/).slice(1).every((part) => !isAbsolutePathToken(part));
 }
 
 // script 是腳本路徑本身（已去引號）必須符合的尾綴樣式；Claude 端與 Codex 端各給一組。
 export function isTrackerHookCommand(command: unknown, script: RegExp): boolean {
-  if (typeof command !== "string") return false;
-  const tokens = tokenizeCommand(command);
-  const [scriptPath, ...args] = tokens.length > 0 && isNodeExecutable(tokens[0]) ? tokens.slice(1) : tokens;
-  if (scriptPath === undefined || !isAbsolutePathToken(scriptPath) || !script.test(scriptPath)) return false;
-  return args.every((argument) => TRACKER_ARGUMENT.test(argument));
+  if (typeof command !== "string" || containsShellSyntax(command)) return false;
+  let rest = command.trim();
+  const first = peelToken(rest);
+  if (first === null) return false;
+
+  // 可選的直譯器前綴；沒有前綴時（腳本自己可執行）不限定副檔名
+  let requiredExtension: string | null = null;
+  const interpreter = INTERPRETERS.find((candidate) => candidate.matches.test(basenameOf(first.token)));
+  if (interpreter !== undefined && isExecutablePath(first.token)) {
+    requiredExtension = interpreter.extension;
+    rest = first.rest;
+    if (interpreter.extension === "ps1") {
+      const peeled = peelPowerShellFile(rest);
+      if (peeled === null) return false;
+      rest = peeled;
+    }
+  }
+
+  // 尾端只能是 tracker 自己的參數；剩下的整段就是腳本路徑（可能含空白）
+  for (let argument = TRACKER_ARGUMENT.exec(rest); argument !== null; argument = TRACKER_ARGUMENT.exec(rest)) {
+    rest = rest.slice(0, argument.index);
+  }
+
+  const trimmed = rest.trim();
+  const quoted = /^"[^"]*"$/.test(trimmed);
+  const path = quoted ? trimmed.slice(1, -1) : trimmed;
+  if (!isAbsolutePathToken(path) || !script.test(path)) return false;
+  if (!quoted && !isSinglePath(path)) return false;
+  return requiredExtension === null || extensionOf(path) === requiredExtension;
 }
 
 const CODEX_TRACKER_SCRIPT = /[/\\]ccusage-tracker[/\\]codex-sync\.mjs$/;
@@ -254,6 +320,10 @@ const CODEX_TRUST_MESSAGE =
 
 const CODEX_DISABLED_MESSAGE = "Codex: hooks installed but disabled in Codex";
 
+// 皆 recorded 代表兩條都沒被動過（動過的那一條會先被降成 awaiting），所以講得出
+// 「已是最新」。措辭是 trust recorded 而不是 trusted：雜湊值本身不驗證。
+const CODEX_RECORDED_MESSAGE = "Codex: hooks already up to date (trust recorded)";
+
 const TRUST_LABELS: Record<CodexTrustState, string> = {
   recorded: "trusted",
   awaiting: "awaiting trust",
@@ -279,12 +349,17 @@ export function formatCodexTrustLine(
   // 已停用是使用者的明示意圖，不該再被要求去信任
   const hint = values.includes("awaiting");
 
+  // 沒有任何事件狀態（hooks 已接上時不會發生）：不冒稱已信任
+  if (entries.length === 0) {
+    return options.forStatus ? `Codex hooks: installed, awaiting trust (${TRUST_HINT})` : CODEX_TRUST_MESSAGE;
+  }
   if (options.forStatus) {
     if (uniform === "recorded") return "Codex hooks: installed, trust recorded";
     if (uniform === "awaiting") return `Codex hooks: installed, awaiting trust (${TRUST_HINT})`;
     if (uniform === "disabled") return "Codex hooks: installed, disabled in Codex";
     return `Codex hooks: installed, ${detail}${hint ? ` (${TRUST_HINT})` : ""}`;
   }
+  if (uniform === "recorded") return CODEX_RECORDED_MESSAGE;
   if (uniform === "awaiting") return CODEX_TRUST_MESSAGE;
   if (uniform === "disabled") return CODEX_DISABLED_MESSAGE;
   return `Codex: hooks installed (${detail}).${hint ? " Open Codex and run /hooks once to trust the remaining ccusage-tracker hook." : ""}`;
@@ -312,11 +387,15 @@ function scanLine(line: string, state: ScanState): ScanState {
   let depth = state.depth;
   for (let at = 0; at < line.length; at++) {
     if (inString !== null) {
+      // 基本字串（" 與 """）吃反斜線跳脫，literal 字串不吃。跳脫必須先判：
+      // 多行基本字串裡的 \""" 是跳脫後的引號，不能被當成結束符。
+      if ((inString === '"' || inString === '"""') && line[at] === "\\") {
+        at += 1;
+        continue;
+      }
       if (line.startsWith(inString, at)) {
         at += inString.length - 1;
         inString = null;
-      } else if (inString === '"' && line[at] === "\\") {
-        at += 1; // 基本字串的逸出字元，下一個字元不算結束符
       }
       continue;
     }

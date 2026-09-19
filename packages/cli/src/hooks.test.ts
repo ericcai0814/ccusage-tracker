@@ -522,3 +522,104 @@ describe("tracker hook 辨識只認標準命令形狀", () => {
     }
   });
 });
+
+// Codex 複審 round 2 [med]：tokenizer 只依空白切分，`--mode=stop&&false` 這種黏在
+// 參數後、中間沒有空白的複合命令仍會被整條當成 tracker，更新時把後面的命令刪掉。
+// 引號外只要出現 shell 運算子就一律視為第三方。
+describe("引號外的 shell 運算子一律視為第三方", () => {
+  const script = "/Users/x/.config/ccusage-tracker/session-end.mjs";
+  const compounds = [
+    `node "${script}" --mode=stop&&false`,
+    `node "${script}" --mode=stop||true`,
+    `node "${script}" --hook;rm -rf /tmp/x`,
+    `node "${script}" --hook|tee /tmp/x`,
+    `node "${script}" --hook>/tmp/x`,
+    `node "${script}" --hook<//dev/null`,
+    `node "${script}" $(whoami)`,
+    "node \"" + script + "\" `whoami`",
+    `bash -c 'node "${script}" --mode=stop'`,
+  ];
+
+  it("Claude 端：複合命令原樣保留，tracker 另行 append", () => {
+    for (const thirdParty of compounds) {
+      const r = applyTrackerHooks({ hooks: { Stop: [matcher(thirdParty)] } });
+      const commands = r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command)) ?? [];
+
+      expect(commands).toEqual([thirdParty, stopCmd]);
+    }
+  });
+});
+
+// Codex 複審 round 2 [med]：辨識收緊後，舊版安裝器實際寫出的命令無法就地升級，
+// 會留下舊的再 append 一條 canonical，變成兩條並存、重複觸發。
+// 以下形狀取自 git 史料（db7435a 的 `bash $HOOK_SCRIPT`、f04098e 的 `node $HOOK_SCRIPT`、
+// d758e52 的 `node $HOOK_SCRIPT --mode=…`），這些變數在家目錄含空白時不帶引號展開。
+describe("舊版安裝器寫出的歷史命令仍可就地升級", () => {
+  const spaced = "/Users/Gill Chiang/.config/ccusage-tracker";
+  const plain = "/home/u/.config/ccusage-tracker";
+  const legacy: [string, string, "SessionEnd" | "Stop" | "SessionStart"][] = [
+    // db7435a：bash 時代的 .sh hook，$HOOK_SCRIPT 未加引號
+    [`bash ${plain}/session-end.sh`, endCmd, "SessionEnd"],
+    [`bash ${spaced}/session-end.sh`, endCmd, "SessionEnd"],
+    // f04098e：改 Node 但仍未加引號
+    [`node ${spaced}/session-start.mjs`, startCmd, "SessionStart"],
+    // d758e52：加了 --mode，仍未加引號
+    [`node ${spaced}/session-end.mjs --mode=session-end`, endCmd, "SessionEnd"],
+    [`node ${spaced}/session-end.mjs --mode=stop`, stopCmd, "Stop"],
+    // PowerShell 形狀：本 repo 未曾產生，但規格已列 .ps1，由同一條直譯器規則涵蓋
+    [`powershell -NoProfile -ExecutionPolicy Bypass -File "C:/Users/Gill Chiang/.config/ccusage-tracker/session-end.ps1"`, endCmd, "SessionEnd"],
+  ];
+
+  it("就地升級成 canonical，升級後只剩一條 tracker hook", () => {
+    for (const [existing, expected, event] of legacy) {
+      const r = applyTrackerHooks({ hooks: { [event]: [matcher(existing)] } });
+      const commands = r.updated.hooks?.[event]?.flatMap((m) => m.hooks.map((h) => h.command)) ?? [];
+
+      expect(commands).toEqual([expected]);
+    }
+  });
+
+  it("直譯器與副檔名不符、或路徑後還有其他參數，仍視為第三方", () => {
+    for (const thirdParty of [
+      `bash ${plain}/session-end.mjs`,          // .mjs 不該用 bash 跑
+      `node ${plain}/session-end.sh`,           // .sh 不該用 node 跑
+      `node ${plain}/session-end.mjs --verbose`, // 不是 tracker 自己的參數
+      `python3 ${plain}/session-end.mjs`,        // 不是已知直譯器
+      `./node ${plain}/session-end.mjs`,         // 相對路徑的直譯器
+    ]) {
+      const r = applyTrackerHooks({ hooks: { Stop: [matcher(thirdParty)] } });
+      const commands = r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command)) ?? [];
+
+      expect(commands).toEqual([thirdParty, stopCmd]);
+    }
+  });
+});
+
+// 自審：為了讓未加引號、含空白的舊路徑能重組，重組是把直譯器與 tracker 參數以外的
+// 整段當成路徑。那會讓「把 tracker 路徑當參數傳給另一支腳本」也符合形狀。
+// 一條路徑不會在中間又出現另一個絕對路徑的起點，以此區分。
+describe("重組未加引號路徑時不誤收「tracker 路徑當參數」的第三方命令", () => {
+  const tracker = "/home/u/.config/ccusage-tracker/session-end.mjs";
+
+  it("第二個絕對路徑出現在後面：視為第三方，原樣保留", () => {
+    for (const thirdParty of [
+      `node /usr/local/lib/lint.js ${tracker}`,
+      `node "/usr/local/lib/lint.js" "${tracker}"`,
+      `node C:/tools/lint.js C:/Users/x/.config/ccusage-tracker/session-end.mjs`,
+      `bash /usr/local/bin/wrap.sh /home/u/.config/ccusage-tracker/session-end.sh`,
+    ]) {
+      const r = applyTrackerHooks({ hooks: { Stop: [matcher(thirdParty)] } });
+      const commands = r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command)) ?? [];
+
+      expect(commands).toEqual([thirdParty, stopCmd]);
+    }
+  });
+
+  it("含空白但只有一條路徑：仍可就地升級", () => {
+    const r = applyTrackerHooks({
+      hooks: { Stop: [matcher("node /Users/Gill Chiang/.config/ccusage-tracker/session-end.mjs --mode=stop")] },
+    });
+
+    expect(r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command))).toEqual([stopCmd]);
+  });
+});

@@ -16,6 +16,7 @@ import {
   readCodexTrustState,
   type CodexGroupIndexes,
   type CodexHooksFile,
+  type CodexTrustState,
 } from "./codex-hooks";
 
 interface HookEntry {
@@ -325,17 +326,16 @@ export function wireTools(
   if (!codexDetected) deps.log("Codex: not detected");
   else if (!result.codexWired) deps.log("Codex: hooks not installed (this server does not provide the Codex script)");
   else {
-    // 信任雜湊算的是 hook 設定身分，內容一改就作廢，所以只有「沒動過且已有紀錄」
-    // 才敢說 trust recorded；其餘一律請使用者跑一次 /hooks。停用是使用者的明示意圖，
-    // 即使這次動過 hooks.json 也照實說，不會改口叫他去信任。
+    // 信任雜湊算的是 hook 設定身分，內容一改就作廢 —— 但只作廢改到的那一條。
+    // 用 codexChanged 一次把兩條都降成 awaiting，會讓「只補裝 SessionEnd」的情況
+    // 誤報未變動且已信任的 Stop。停用是使用者的明示意圖，改過也照實說，不改口叫他去信任。
     const trust = readCodexTrustState(configToml, getCodexHooksPath(), result.codexIndexes);
-    const states = Object.values(trust);
-    const recorded = states.length > 0 && states.every((state) => state === "recorded");
-    const effective = result.codexChanged
-      ? Object.fromEntries(Object.entries(trust).map(([event, state]) => [event, state === "disabled" ? state : "awaiting"]))
-      : trust;
-    if (!result.codexChanged && recorded) deps.log("Codex: hooks already up to date (trust recorded)");
-    else deps.log(formatCodexTrustLine(effective, { forStatus: false }));
+    const stale = (state: CodexTrustState | undefined, changed: boolean): CodexTrustState | undefined =>
+      state === undefined || state === "disabled" || !changed ? state : "awaiting";
+    deps.log(formatCodexTrustLine({
+      stop: stale(trust.stop, result.codexStopChanged),
+      sessionEnd: stale(trust.sessionEnd, result.codexSessionEndChanged),
+    }, { forStatus: false }));
   }
 
   // hooks 沒接上時（舊 server 回 404／410）不能叫人移除 notify：那可能是使用者

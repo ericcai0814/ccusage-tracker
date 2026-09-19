@@ -175,6 +175,33 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
     }
   });
 
+  it("引號外有 shell 運算子（含無空白黏在參數後）：群組原樣保留，tracker append 在尾端", () => {
+    for (const thirdPartyCommand of [
+      `node "${script}" --hook&&false`,
+      `node "${script}" --hook;rm -rf /tmp/x`,
+      `node "${script}" --hook|tee /tmp/x`,
+      `node "${script}" --hook>/tmp/x`,
+      `node "${script}" $(whoami)`,
+    ]) {
+      const group = { hooks: [{ type: "command", command: thirdPartyCommand, timeout: 3 }], note: "keep" };
+
+      const result = applyCodexHooks({ hooks: { Stop: [group] } }, command);
+
+      const stop = result.updated.hooks!.Stop!;
+      expect(stop).toHaveLength(2);
+      expect(JSON.stringify(stop[0])).toBe(JSON.stringify(group));
+      expect(stop[1]).toEqual({ hooks: [{ type: "command", command, timeout: 45 }] });
+    }
+  });
+
+  it("codex-sync.mjs 只接受 node 直譯器：bash 跑 .mjs 視為第三方", () => {
+    const thirdPartyCommand = `bash ${script}`;
+    const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: thirdPartyCommand }] }] } }, command);
+
+    expect(result.updated.hooks!.Stop).toHaveLength(2);
+    expect(result.updated.hooks!.Stop![0].hooks[0].command).toBe(thirdPartyCommand);
+  });
+
   it("標準形狀仍被辨識並就地替換：帶引號、不帶引號、帶引號 node 絕對路徑、--notify", () => {
     for (const existing of [
       `node "${script}" --hook`,
@@ -182,6 +209,7 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
       `"/usr/local/bin/node" "${script}"`,
       `node "${script}" --notify`,
       `node "C:/Users/x/.config/ccusage-tracker/codex-sync.mjs" --hook`,
+      `node /Users/Gill Chiang/.config/ccusage-tracker/codex-sync.mjs --hook`,
     ]) {
       const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: existing, timeout: 3 }] }] } }, command);
 
@@ -271,14 +299,22 @@ describe("formatCodexTrustLine", () => {
   });
 
   it("setup／update 的四種組合逐字符合規格", () => {
+    // 皆 recorded 代表兩條都沒被動過（動過的會先被降成 awaiting），措辭是 trust recorded
+    expect(formatCodexTrustLine(combos.recorded, { forStatus: false }))
+      .toBe("Codex: hooks already up to date (trust recorded)");
     expect(formatCodexTrustLine(combos.awaiting, { forStatus: false }))
       .toBe("Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.");
     expect(formatCodexTrustLine(combos.partial, { forStatus: false }))
       .toBe("Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook.");
     expect(formatCodexTrustLine(combos.disabled, { forStatus: false }))
       .toBe("Codex: hooks installed (Stop disabled in Codex, SessionEnd trusted).");
-    expect(formatCodexTrustLine({ stop: "disabled", sessionEnd: "disabled" }, { forStatus: false }))
-      .toBe("Codex: hooks installed but disabled in Codex");
+  });
+
+  it("兩條皆停用：安裝端與 status 都收斂為單句", () => {
+    const allDisabled = { stop: "disabled", sessionEnd: "disabled" } as const;
+
+    expect(formatCodexTrustLine(allDisabled, { forStatus: false })).toBe("Codex: hooks installed but disabled in Codex");
+    expect(formatCodexTrustLine(allDisabled, { forStatus: true })).toBe("Codex hooks: installed, disabled in Codex");
   });
 
   it("已停用的 hook 不再被要求去信任", () => {
@@ -325,6 +361,10 @@ describe("hasTrackerNotify", () => {
       ["帶行尾註解的標頭", "", '[tui] # theme settings\ntheme = "dark"\n'],
       ["無尾逗號的陣列續行", "pairs = [\n [1, 2],\n [3, 4]\n]\n", '[tui]\npairs = [\n [1, 2],\n [3, 4]\n]\n'],
       ["多行字串內含 table 標頭", 'banner = """\n[tui]\n"""\n', '[tui]\nbanner = """\nx\n"""\n'],
+      // TOML 的多行基本字串同樣吃反斜線跳脫：\""" 不會提前結束字串
+      ["三引號內的跳脫引號", 'banner = """\nquote: \\"""\n[tui]\n"""\n', 'banner = """\n\\"""\nnotify = ["node", "/x/ccusage-tracker/codex-sync.mjs"]\n"""\n[tui]\n'],
+      // literal 字串不吃跳脫：結尾的 ''' 照樣結束字串
+      ["literal 字串不吃跳脫", "path = '''C:\\Users\\x\\'''\n", "[tui]\npath = '''C:\\Users\\x\\'''\n"],
     ];
 
     for (const [name, topLevel, insideTable] of fixtures) {
