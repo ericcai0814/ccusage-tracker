@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.1] - 2026-09-19
+
+CLI 0.2.1。server 需部署此版本，`/api/health` 回 `version: 0.4.1`；CLI 0.2.0 對新 server 相容。
 
 ### Fixed
 

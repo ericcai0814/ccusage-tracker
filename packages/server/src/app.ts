@@ -39,7 +39,7 @@ export function createApp(db?: Database): Hono<AppEnv> {
   });
 
   app.get("/api/health", (c) => {
-    return c.json({ ok: true, version: "0.4.0" });
+    return c.json({ ok: true, version: "0.4.1" });
   });
 
   app.get("/setup.sh", (c) => {
