@@ -18,7 +18,7 @@
 
 ## 4. 跨檔 rollback
 
-- [ ] 4.1 依 design「跨檔 rollback 測試」在 packages/cli/src/commands/update.test.ts 新增：settings.json 與 hooks.json 皆存在且 hooks.json 為 symlink，在 hooks.json 最後一次 rename 注入失敗；斷言 exit 非零、settings.json 內容回到原狀、既有 `.backup` 未被覆蓋、symlink 仍是 symlink、目錄內無 `.tmp`／`.rollback`。若 installFiles 現行實作未通過，修正 packages/cli/src/hooks.ts 的 rollback 順序或 backup 覆蓋條件直到通過。驗證：該案例全綠，既有 rollback 測試全綠。
+- [x] 4.1 依 design「跨檔 rollback 測試」在 packages/cli/src/commands/update.test.ts 新增：settings.json 與 hooks.json 皆存在且 hooks.json 為 symlink，在 hooks.json 最後一次 rename 注入失敗；斷言 exit 非零、settings.json 內容回到原狀、既有 `.backup` 未被覆蓋、symlink 仍是 symlink、目錄內無 `.tmp`／`.rollback`。若 installFiles 現行實作未通過，修正 packages/cli/src/hooks.ts 的 rollback 順序或 backup 覆蓋條件直到通過。驗證：該案例全綠，既有 rollback 測試全綠。
 
 ## 5. 文件與驗證
 

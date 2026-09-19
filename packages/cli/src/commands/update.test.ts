@@ -265,6 +265,48 @@ describe("Node CLI update", () => {
     expect(readdirSync(configDir).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
   });
 
+  // Codex 補審 [low]：既有 rollback 測試在寫 Claude settings 時就注入失敗，且沒有
+  // Codex 設定，因此從未驗證「settings 已經寫進去、hooks.json 的最後一次 rename 才
+  // 失敗」的跨檔回滾 —— 那才是兩端設定同時進交易時真正會踩到的形狀。
+  it("settings 已寫入、hooks.json 最後 rename 失敗：兩份設定、既有備份與 symlink 全部復原", async () => {
+    const config = configure();
+    const old = existingInstall();
+    writeFileSync(join(configDir, "session-end.mjs.backup"), "older backup");
+    const dotfiles = join(home, "dotfiles");
+    mkdirSync(dotfiles, { recursive: true });
+    const realHooks = join(dotfiles, "hooks.json");
+    const hooksRaw = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "echo codex-third-party" }] }] } }, null, 4) + "\n";
+    writeFileSync(realHooks, hooksRaw);
+    writeFileSync(`${realHooks}.backup`, "older hooks backup\n");
+    mkdirSync(join(home, "codex"));
+    const hooksLink = join(home, "codex", "hooks.json");
+    symlinkSync(realHooks, hooksLink);
+    // rename 的目標是解析後的真實路徑（macOS 的 /var 是 → /private/var 的 symlink）
+    const preload = join(home, "fail-install.mjs");
+    writeFileSync(preload, `import fs from 'node:fs';\nimport { syncBuiltinESMExports } from 'node:module';\nconst original = fs.renameSync;\nfs.renameSync = function(from, to) {\n if (to === ${JSON.stringify(realpathSync(realHooks))}) throw new Error('fixture install failure');\n return original(from, to);\n};\nsyncBuiltinESMExports();\n`);
+
+    const result = await cli(["update"], "", preload);
+
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("fixture install failure");
+    expect(result.output).not.toContain("restore failed");
+    // 兩端設定都回到原狀：settings 已經 rename 進去過，必須被 rollback 換回來
+    expect(readFileSync(join(configDir, "config.json"), "utf8")).toBe(config);
+    expect(readFileSync(join(home, ".claude", "settings.json"), "utf8")).toBe(old.raw);
+    expect(readFileSync(realHooks, "utf8")).toBe(hooksRaw);
+    // 既有備份不被這次失敗的交易覆蓋
+    expect(readFileSync(`${realHooks}.backup`, "utf8")).toBe("older hooks backup\n");
+    expect(readFileSync(join(configDir, "session-end.mjs.backup"), "utf8")).toBe("older backup");
+    expect(existsSync(join(home, ".claude", "settings.json.backup"))).toBe(false);
+    expect(lstatSync(hooksLink).isSymbolicLink()).toBe(true);
+    for (const name of ["session-start.mjs", "session-end.mjs", "codex-sync.mjs"]) {
+      expect(readFileSync(join(configDir, name), "utf8")).toBe("// previous " + name);
+    }
+    for (const dir of [configDir, dotfiles, join(home, ".claude"), join(home, "codex")]) {
+      expect(readdirSync(dir).filter((name) => name.endsWith(".tmp") || name.endsWith(".rollback"))).toEqual([]);
+    }
+  });
+
   it("設定檔是 dotfiles 的 symlink：寫穿真實檔案、symlink 保留、backup 在真實檔案旁", async () => {
     configure();
     const dotfiles = join(home, "dotfiles");
