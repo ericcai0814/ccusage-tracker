@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   applyCodexHooks,
   detectCodex,
+  findCodexTrackerIndexes,
+  formatCodexTrustLine,
   getCodexHome,
   getCodexHookCommand,
   getCodexHooksPath,
@@ -190,12 +192,13 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
 
 describe("readCodexTrustState", () => {
   const hooksPath = "/Users/test/.codex/hooks.json";
-  const section = (event: string, index: number) => `[hooks.state."${hooksPath}:${event}:${index}:0"]`;
+  const section = (event: string, group: number, hook = 0) =>
+    `[hooks.state."${hooksPath}:${event}:${group}:${hook}"]`;
 
   it("區段含 trusted_hash → recorded", () => {
     const toml = `model = "gpt-5"\n\n${section("stop", 3)}\ntrusted_hash = "sha256:abc"\n\n${section("session_end", 0)}\ntrusted_hash = "sha256:def"\n`;
 
-    expect(readCodexTrustState(toml, hooksPath, { stop: 3, sessionEnd: 0 })).toEqual({
+    expect(readCodexTrustState(toml, hooksPath, { stop: { group: 3, hook: 0 }, sessionEnd: { group: 0, hook: 0 } })).toEqual({
       stop: "recorded",
       sessionEnd: "recorded",
     });
@@ -204,25 +207,84 @@ describe("readCodexTrustState", () => {
   it("區段含 enabled = false → disabled，即使同時有 trusted_hash", () => {
     const toml = `${section("stop", 0)}\ntrusted_hash = "sha256:abc"\nenabled = false\n`;
 
-    expect(readCodexTrustState(toml, hooksPath, { stop: 0 }).stop).toBe("disabled");
+    expect(readCodexTrustState(toml, hooksPath, { stop: { group: 0, hook: 0 } }).stop).toBe("disabled");
   });
 
   it("缺區段、空字串或索引不符 → awaiting", () => {
     const toml = `${section("stop", 0)}\ntrusted_hash = "sha256:abc"\n`;
 
-    expect(readCodexTrustState(toml, hooksPath, { stop: 1 }).stop).toBe("awaiting");
-    expect(readCodexTrustState("", hooksPath, { stop: 0 }).stop).toBe("awaiting");
-    expect(readCodexTrustState(toml, "/other/hooks.json", { stop: 0 }).stop).toBe("awaiting");
+    expect(readCodexTrustState(toml, hooksPath, { stop: { group: 1, hook: 0 } }).stop).toBe("awaiting");
+    expect(readCodexTrustState("", hooksPath, { stop: { group: 0, hook: 0 } }).stop).toBe("awaiting");
+    expect(readCodexTrustState(toml, "/other/hooks.json", { stop: { group: 0, hook: 0 } }).stop).toBe("awaiting");
   });
 
   it("只認區段標頭到下一個 [ 之前的行，不把別的區段的 trusted_hash 算進來", () => {
     const toml = `${section("stop", 0)}\n\n[other.table]\ntrusted_hash = "sha256:not-ours"\n`;
 
-    expect(readCodexTrustState(toml, hooksPath, { stop: 0 }).stop).toBe("awaiting");
+    expect(readCodexTrustState(toml, hooksPath, { stop: { group: 0, hook: 0 } }).stop).toBe("awaiting");
   });
 
   it("未提供索引的事件不回報狀態", () => {
-    expect(readCodexTrustState("", hooksPath, { stop: 0 }).sessionEnd).toBeUndefined();
+    expect(readCodexTrustState("", hooksPath, { stop: { group: 0, hook: 0 } }).sessionEnd).toBeUndefined();
+  });
+
+  // Codex 補審 [low]：信任 key 的 hook 索引原本寫死 :0，但安裝支援
+  // 「第三方 hook 在前、tracker 在後」的混合群組。tracker 落在 hooks[1] 時，
+  // 寫死的 :0 會去讀第三方那一條的信任或停用紀錄。
+  it("混合群組：索引取實際的 group 與 hook，不讀同群組第一條的紀錄", () => {
+    const tracker = { type: "command", command: getCodexHookCommand() };
+    const file: CodexHooksFile = {
+      hooks: {
+        Stop: [thirdParty("a"), thirdParty("b"), { hooks: [{ type: "command", command: "echo keep" }, tracker] }],
+        SessionEnd: [{ hooks: [tracker] }],
+      },
+    };
+
+    const indexes = findCodexTrackerIndexes(file);
+
+    expect(indexes).toEqual({ stop: { group: 2, hook: 1 }, sessionEnd: { group: 0, hook: 0 } });
+    // 第三方那一條（:stop:2:0）有信任紀錄，tracker（:stop:2:1）沒有 → 不得冒稱已信任
+    const neighbour = `${section("stop", 2, 0)}\ntrusted_hash = "sha256:not-ours"\n`;
+    expect(readCodexTrustState(neighbour, hooksPath, indexes).stop).toBe("awaiting");
+    const ours = `${section("stop", 2, 1)}\ntrusted_hash = "sha256:ours"\n`;
+    expect(readCodexTrustState(ours, hooksPath, indexes).stop).toBe("recorded");
+  });
+});
+
+// Eric 本機的真實情境：Stop 已信任、SessionEnd 還沒（兩條 hook 的信任是分開記的）。
+// 只說「awaiting trust」會讓人以為兩條都要重做，訊息必須逐 hook 講清楚。
+describe("formatCodexTrustLine", () => {
+  const combos = {
+    recorded: { stop: "recorded", sessionEnd: "recorded" },
+    awaiting: { stop: "awaiting", sessionEnd: "awaiting" },
+    partial: { stop: "recorded", sessionEnd: "awaiting" },
+    disabled: { stop: "disabled", sessionEnd: "recorded" },
+  } as const;
+
+  it("status 的四種組合逐字符合規格", () => {
+    expect(formatCodexTrustLine(combos.recorded, { forStatus: true })).toBe("Codex hooks: installed, trust recorded");
+    expect(formatCodexTrustLine(combos.awaiting, { forStatus: true })).toBe("Codex hooks: installed, awaiting trust (open /hooks in Codex)");
+    expect(formatCodexTrustLine(combos.partial, { forStatus: true }))
+      .toBe("Codex hooks: installed, Stop trusted, SessionEnd awaiting trust (open /hooks in Codex)");
+    expect(formatCodexTrustLine(combos.disabled, { forStatus: true }))
+      .toBe("Codex hooks: installed, Stop disabled in Codex, SessionEnd trusted");
+  });
+
+  it("setup／update 的四種組合逐字符合規格", () => {
+    expect(formatCodexTrustLine(combos.awaiting, { forStatus: false }))
+      .toBe("Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.");
+    expect(formatCodexTrustLine(combos.partial, { forStatus: false }))
+      .toBe("Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook.");
+    expect(formatCodexTrustLine(combos.disabled, { forStatus: false }))
+      .toBe("Codex: hooks installed (Stop disabled in Codex, SessionEnd trusted).");
+    expect(formatCodexTrustLine({ stop: "disabled", sessionEnd: "disabled" }, { forStatus: false }))
+      .toBe("Codex: hooks installed but disabled in Codex");
+  });
+
+  it("已停用的 hook 不再被要求去信任", () => {
+    for (const forStatus of [true, false]) {
+      expect(formatCodexTrustLine(combos.disabled, { forStatus })).not.toContain("/hooks");
+    }
   });
 });
 

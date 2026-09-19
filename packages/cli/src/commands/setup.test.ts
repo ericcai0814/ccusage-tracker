@@ -27,6 +27,7 @@ interface MockOptions {
   codexScript?: boolean;
   collector?: (string | null)[];
   configToml?: string | null;
+  codexChanged?: boolean;
   writtenThrough?: { link: string; real: string }[];
 }
 
@@ -55,9 +56,9 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
         claudeChanged: targets.claude,
         codexStopChanged: codexWired,
         codexSessionEndChanged: codexWired,
-        codexChanged: codexWired,
+        codexChanged: codexWired && (options.codexChanged ?? true),
         codexWired,
-        codexIndexes: codexWired ? { stop: 0, sessionEnd: 0 } : {},
+        codexIndexes: codexWired ? { stop: { group: 0, hook: 0 }, sessionEnd: { group: 0, hook: 0 } } : {},
         writtenThrough: options.writtenThrough ?? [],
         backedUp: false,
       };
@@ -208,6 +209,21 @@ describe("setup 逐工具接線", () => {
 
     expect(output(deps)).toContain("Codex: hooks installed but disabled in Codex");
     expect(output(deps)).not.toContain("/hooks");
+  });
+
+  // Eric 本機的真實狀態：Stop 信任了、SessionEnd 沒有。只說「awaiting trust」
+  // 會讓人以為兩條都要重做，訊息必須指名還缺哪一條。
+  it("Stop 已信任、SessionEnd 還沒：結果行逐 hook 說明", async () => {
+    const hooksPath = getCodexHooksPath();
+    const deps = createMockDeps(answers, {
+      codexChanged: false,
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "sha256:a"\n`,
+    });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain(
+      "Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
+    );
   });
 
   it("config.toml 仍留著 tracker 的 notify：提示自行移除，但不編輯 TOML", async () => {

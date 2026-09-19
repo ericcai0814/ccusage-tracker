@@ -22,9 +22,16 @@ export interface CodexHooksFile {
 
 export type CodexTrustState = "recorded" | "awaiting" | "disabled";
 
+// 信任 key 由「群組索引:群組內 hook 索引」組成。安裝支援「第三方在前、tracker 在後」
+// 的混合群組，所以 hook 索引不能寫死 0，否則會讀到隔壁第三方 hook 的信任或停用紀錄。
+export interface CodexHookLocation {
+  group: number;
+  hook: number;
+}
+
 export interface CodexGroupIndexes {
-  stop?: number;
-  sessionEnd?: number;
+  stop?: CodexHookLocation;
+  sessionEnd?: CodexHookLocation;
 }
 
 // 與 Claude hook 相同的 45 秒：codex-sync.mjs 的 worker deadline 是 180s，但 hook
@@ -170,7 +177,7 @@ function upsertCodexGroups(groups: CodexHookGroup[], command: string): { groups:
 export function applyCodexHooks(
   file: CodexHooksFile,
   command = getCodexHookCommand(),
-): { updated: CodexHooksFile; stopChanged: boolean; sessionEndChanged: boolean; anyChanged: boolean } {
+): { updated: CodexHooksFile; stopChanged: boolean; sessionEndChanged: boolean; anyChanged: boolean; indexes: CodexGroupIndexes } {
   if (!file || typeof file !== "object" || Array.isArray(file)) invalid("must contain a JSON object");
   if (file.hooks !== undefined && (!file.hooks || typeof file.hooks !== "object" || Array.isArray(file.hooks))) {
     invalid("hooks must be an object");
@@ -179,25 +186,30 @@ export function applyCodexHooks(
   const stop = upsertCodexGroups(readGroups(file, CODEX_EVENTS.stop), command);
   const sessionEnd = upsertCodexGroups(readGroups(file, CODEX_EVENTS.sessionEnd), command);
   const anyChanged = stop.changed || sessionEnd.changed;
+  const updated = anyChanged
+    ? { ...file, hooks: { ...file.hooks, [CODEX_EVENTS.stop]: stop.groups, [CODEX_EVENTS.sessionEnd]: sessionEnd.groups } }
+    : file;
 
   return {
-    updated: anyChanged
-      ? { ...file, hooks: { ...file.hooks, [CODEX_EVENTS.stop]: stop.groups, [CODEX_EVENTS.sessionEnd]: sessionEnd.groups } }
-      : file,
+    updated,
     stopChanged: stop.changed,
     sessionEndChanged: sessionEnd.changed,
     anyChanged,
+    indexes: findCodexTrackerIndexes(updated),
   };
 }
 
-// hooks.json 中 tracker 群組的索引，信任 key 需要它；找不到回 undefined。
+// hooks.json 中 tracker hook 的群組索引與群組內索引，信任 key 需要兩者；找不到回 undefined。
 export function findCodexTrackerIndexes(file: CodexHooksFile): CodexGroupIndexes {
-  const find = (event: string): number | undefined => {
+  const find = (event: string): CodexHookLocation | undefined => {
     const groups = file.hooks?.[event];
     if (!Array.isArray(groups)) return undefined;
-    const index = groups.findIndex((group) =>
-      Array.isArray(group?.hooks) && group.hooks.some((hook) => isCodexTrackerHook(hook?.command)));
-    return index === -1 ? undefined : index;
+    for (const [group, entry] of groups.entries()) {
+      if (!Array.isArray(entry?.hooks)) continue;
+      const hook = entry.hooks.findIndex((candidate) => isCodexTrackerHook(candidate?.command));
+      if (hook !== -1) return { group, hook };
+    }
+    return undefined;
   };
   const stop = find(CODEX_EVENTS.stop);
   const sessionEnd = find(CODEX_EVENTS.sessionEnd);
@@ -214,8 +226,8 @@ export function readCodexTrustState(
 ): { stop?: CodexTrustState; sessionEnd?: CodexTrustState } {
   const wanted = new Map<string, "stop" | "sessionEnd">();
   for (const event of ["stop", "sessionEnd"] as const) {
-    const index = indexes[event];
-    if (index !== undefined) wanted.set(`${hooksPath}:${TRUST_EVENT_KEYS[event]}:${index}:0`, event);
+    const at = indexes[event];
+    if (at !== undefined) wanted.set(`${hooksPath}:${TRUST_EVENT_KEYS[event]}:${at.group}:${at.hook}`, event);
   }
 
   const state: { stop?: CodexTrustState; sessionEnd?: CodexTrustState } = {};
@@ -235,6 +247,47 @@ export function readCodexTrustState(
     else if (/^trusted_hash\s*=/.test(trimmed) && state[current] !== "disabled") state[current] = "recorded";
   }
   return state;
+}
+
+const CODEX_TRUST_MESSAGE =
+  "Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.";
+
+const CODEX_DISABLED_MESSAGE = "Codex: hooks installed but disabled in Codex";
+
+const TRUST_LABELS: Record<CodexTrustState, string> = {
+  recorded: "trusted",
+  awaiting: "awaiting trust",
+  disabled: "disabled in Codex",
+};
+
+const TRUST_HINT = "open /hooks in Codex";
+
+// 兩條 hook 的信任是分開記的，實際上很容易只信任其中一條（Eric 本機就是這樣）。
+// 籠統一句「awaiting trust」會讓人以為兩條都要重做，所以混合狀態逐 hook 講。
+// setup／update 與 status 共用這個函式，兩邊的措辭才不會各自漂移。
+export function formatCodexTrustLine(
+  states: { stop?: CodexTrustState; sessionEnd?: CodexTrustState },
+  options: { forStatus: boolean },
+): string {
+  const entries = ([["Stop", "stop"], ["SessionEnd", "sessionEnd"]] as const).flatMap(([label, event]) => {
+    const state = states[event];
+    return state === undefined ? [] : [{ label, state }];
+  });
+  const values = entries.map((entry) => entry.state);
+  const uniform = values.length > 0 && values.every((state) => state === values[0]) ? values[0] : null;
+  const detail = entries.map((entry) => `${entry.label} ${TRUST_LABELS[entry.state]}`).join(", ");
+  // 已停用是使用者的明示意圖，不該再被要求去信任
+  const hint = values.includes("awaiting");
+
+  if (options.forStatus) {
+    if (uniform === "recorded") return "Codex hooks: installed, trust recorded";
+    if (uniform === "awaiting") return `Codex hooks: installed, awaiting trust (${TRUST_HINT})`;
+    if (uniform === "disabled") return "Codex hooks: installed, disabled in Codex";
+    return `Codex hooks: installed, ${detail}${hint ? ` (${TRUST_HINT})` : ""}`;
+  }
+  if (uniform === "awaiting") return CODEX_TRUST_MESSAGE;
+  if (uniform === "disabled") return CODEX_DISABLED_MESSAGE;
+  return `Codex: hooks installed (${detail}).${hint ? " Open Codex and run /hooks once to trust the remaining ccusage-tracker hook." : ""}`;
 }
 
 // 唯讀掃描 config.toml 頂層的 notify 陣列。只用來提示使用者自行移除重複觸發的

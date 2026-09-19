@@ -53,7 +53,8 @@ describe("codexHooksLine", () => {
       SessionEnd: [{ hooks: [{ type: "command", command }] }],
     },
   });
-  const section = (event: string, index: number) => `[hooks.state."${hooksPath}:${event}:${index}:0"]`;
+  const section = (event: string, group: number, hook = 0) =>
+    `[hooks.state."${hooksPath}:${event}:${group}:${hook}"]`;
   // tracker 的 Stop 群組落在索引 1，SessionEnd 落在索引 0
   const trusted = `${section("stop", 1)}\ntrusted_hash = "sha256:a"\n${section("session_end", 0)}\ntrusted_hash = "sha256:b"\n`;
 
@@ -73,9 +74,41 @@ describe("codexHooksLine", () => {
     expect(codexHooksLine(installed, moved, hooksPath)).toContain("awaiting trust");
   });
 
-  it("hooks.state 標記 enabled = false → disabled in Codex", () => {
-    expect(codexHooksLine(installed, `${trusted}enabled = false\n`, hooksPath))
-      .toBe("Codex hooks: installed, disabled in Codex");
+  it("兩條都停用 → disabled in Codex", () => {
+    const disabled = `${section("stop", 1)}\nenabled = false\n${section("session_end", 0)}\nenabled = false\n`;
+
+    expect(codexHooksLine(installed, disabled, hooksPath)).toBe("Codex hooks: installed, disabled in Codex");
+  });
+
+  // 兩條 hook 的信任是分開記的，混合狀態只說一句「awaiting trust」會讓人以為兩條都要重做。
+  it("只有一條被信任 → 逐 hook 說明是哪一條", () => {
+    const partial = `${section("stop", 1)}\ntrusted_hash = "sha256:a"\n`;
+
+    expect(codexHooksLine(installed, partial, hooksPath))
+      .toBe("Codex hooks: installed, Stop trusted, SessionEnd awaiting trust (open /hooks in Codex)");
+  });
+
+  it("一條停用一條已信任 → 指名哪一條被停用，且不再要求去信任", () => {
+    const mixed = `${section("stop", 1)}\nenabled = false\n${section("session_end", 0)}\ntrusted_hash = "sha256:b"\n`;
+
+    expect(codexHooksLine(installed, mixed, hooksPath))
+      .toBe("Codex hooks: installed, Stop disabled in Codex, SessionEnd trusted");
+  });
+
+  // Codex 補審 [low]：hook 索引原本寫死 :0，tracker 在混合群組的 hooks[1] 時會讀到隔壁第三方的紀錄。
+  it("混合群組：查 :stop:<group>:1，不讀同群組第一條的信任紀錄", () => {
+    const mixedFile = JSON.stringify({
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: "echo third-party" }] }, { hooks: [{ type: "command", command: "echo other" }, { type: "command", command }] }],
+        SessionEnd: [{ hooks: [{ type: "command", command }] }],
+      },
+    });
+    const neighbour = `${section("stop", 1, 0)}\ntrusted_hash = "sha256:not-ours"\n${section("session_end", 0)}\ntrusted_hash = "sha256:b"\n`;
+    const ours = `${section("stop", 1, 1)}\ntrusted_hash = "sha256:ours"\n${section("session_end", 0)}\ntrusted_hash = "sha256:b"\n`;
+
+    expect(codexHooksLine(mixedFile, neighbour, hooksPath))
+      .toBe("Codex hooks: installed, Stop awaiting trust, SessionEnd trusted (open /hooks in Codex)");
+    expect(codexHooksLine(mixedFile, ours, hooksPath)).toBe("Codex hooks: installed, trust recorded");
   });
 
   it("沒有 hooks.json、內容非法或沒有 tracker 群組 → not installed", () => {

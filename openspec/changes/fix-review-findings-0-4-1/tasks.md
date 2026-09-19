@@ -7,8 +7,8 @@
 
 ## 2. 信任狀態與訊息
 
-- [ ] [P] 2.1 依 design「信任 key 依實際群組與 hook 索引」與「信任訊息逐 hook 說明」、規格「Status command」與「Codex hook installation」先寫失敗測試：混合群組（第三方在 hooks[0]、tracker 在 hooks[1]、群組索引 2）查 `:stop:2:1`；formatCodexTrustLine 對「皆 recorded」「皆 awaiting」「Stop recorded／SessionEnd awaiting」「Stop disabled／SessionEnd recorded」四種組合輸出規格文字；setup／update 的 Codex 結果行與 status 的 `Codex hooks:` 行使用同一函式。驗證：codex-hooks.test.ts、status.test.ts、setup.test.ts、update.test.ts 對應案例先紅。
-- [ ] 2.2 實作 packages/cli/src/codex-hooks.ts 的 codexIndexes（group 與 hook 索引）、readCodexTrustState 依實際索引查詢、新增 formatCodexTrustLine；packages/cli/src/hooks.ts 的 wireTools 與 packages/cli/src/commands/status.ts 改用它。驗證：2.1 全綠。
+- [x] [P] 2.1 依 design「信任 key 依實際群組與 hook 索引」與「信任訊息逐 hook 說明」、規格「Status command」與「Codex hook installation」先寫失敗測試：混合群組（第三方在 hooks[0]、tracker 在 hooks[1]、群組索引 2）查 `:stop:2:1`；formatCodexTrustLine 對「皆 recorded」「皆 awaiting」「Stop recorded／SessionEnd awaiting」「Stop disabled／SessionEnd recorded」四種組合輸出規格文字；setup／update 的 Codex 結果行與 status 的 `Codex hooks:` 行使用同一函式。驗證：codex-hooks.test.ts、status.test.ts、setup.test.ts、update.test.ts 對應案例先紅。
+- [x] 2.2 實作 packages/cli/src/codex-hooks.ts 的 codexIndexes（group 與 hook 索引）、readCodexTrustState 依實際索引查詢、新增 formatCodexTrustLine；packages/cli/src/hooks.ts 的 wireTools 與 packages/cli/src/commands/status.ts 改用它。驗證：2.1 全綠。
 
 ## 3. notify 提示與 TOML 掃描
 

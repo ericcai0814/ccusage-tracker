@@ -7,6 +7,7 @@ import {
   applyCodexHooks,
   detectCodex,
   findCodexTrackerIndexes,
+  formatCodexTrustLine,
   getCodexHome,
   getCodexHooksPath,
   hasTrackerNotify,
@@ -279,11 +280,6 @@ export function installHook(
 export const NO_TOOL_MESSAGE =
   "No supported tool detected (Claude Code or Codex). Install one, then run `tracker update`.";
 
-export const CODEX_TRUST_MESSAGE =
-  "Codex: hooks installed (Stop, SessionEnd). Open Codex and run /hooks once to trust the ccusage-tracker hooks.";
-
-export const CODEX_DISABLED_MESSAGE = "Codex: hooks installed but disabled in Codex";
-
 export interface WiringDeps {
   detectClaude: () => boolean;
   detectCodex: () => boolean;
@@ -330,13 +326,16 @@ export function wireTools(
   else if (!result.codexWired) deps.log("Codex: hooks not installed (this server does not provide the Codex script)");
   else {
     // 信任雜湊算的是 hook 設定身分，內容一改就作廢，所以只有「沒動過且已有紀錄」
-    // 才敢說 trust recorded；其餘一律請使用者跑一次 /hooks。
+    // 才敢說 trust recorded；其餘一律請使用者跑一次 /hooks。停用是使用者的明示意圖，
+    // 即使這次動過 hooks.json 也照實說，不會改口叫他去信任。
     const trust = readCodexTrustState(configToml, getCodexHooksPath(), result.codexIndexes);
     const states = Object.values(trust);
     const recorded = states.length > 0 && states.every((state) => state === "recorded");
-    // 使用者信任後主動停用，不是還沒信任：再叫他去跑 /hooks 是錯的指引（status 判得對，這裡對齊）。
-    if (states.includes("disabled")) deps.log(CODEX_DISABLED_MESSAGE);
-    else deps.log(!result.codexChanged && recorded ? "Codex: hooks already up to date (trust recorded)" : CODEX_TRUST_MESSAGE);
+    const effective = result.codexChanged
+      ? Object.fromEntries(Object.entries(trust).map(([event, state]) => [event, state === "disabled" ? state : "awaiting"]))
+      : trust;
+    if (!result.codexChanged && recorded) deps.log("Codex: hooks already up to date (trust recorded)");
+    else deps.log(formatCodexTrustLine(effective, { forStatus: false }));
   }
 
   if (hasTrackerNotify(configToml)) {

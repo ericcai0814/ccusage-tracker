@@ -554,7 +554,25 @@ describe("Node CLI Codex hook wiring", () => {
     expect((await cli(["status"])).output).toContain("Codex hooks: installed, trust recorded");
 
     writeFileSync(join(home, "codex", "config.toml"), trustToml("stop", 0) + "enabled = false\n" + trustToml("session_end", 0));
-    expect((await cli(["status"])).output).toContain("Codex hooks: installed, disabled in Codex");
+    // 只有 Stop 被停用、SessionEnd 仍信任：要指名是哪一條，不能籠統說整組停用
+    expect((await cli(["status"])).output).toContain("Codex hooks: installed, Stop disabled in Codex, SessionEnd trusted");
+  });
+
+  it("Stop 已信任、SessionEnd 還沒：update 與 status 都指名還缺哪一條", async () => {
+    configure();
+    mkdirSync(join(home, "codex"));
+    expect((await cli(["update"])).code).toBe(0);
+    writeFileSync(join(home, "codex", "config.toml"), trustToml("stop", 0));
+
+    const second = await cli(["update"]);
+
+    expect(second.code).toBe(0);
+    expect(second.output).toContain(
+      "Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
+    );
+    expect((await cli(["status"])).output).toContain(
+      "Codex hooks: installed, Stop trusted, SessionEnd awaiting trust (open /hooks in Codex)"
+    );
   });
 
   it("重跑 update：已信任且未變更時回報 already up to date，不再要求信任", async () => {
