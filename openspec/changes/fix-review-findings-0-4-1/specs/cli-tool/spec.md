@@ -2,7 +2,7 @@
 
 ### Requirement: Tracker hook recognition
 
-The CLI SHALL treat a hook command as a tracker hook only when the whole command matches the canonical shape: an optional `node` executable (bare or quoted absolute path), followed by a bare or double-quoted absolute path ending in `/ccusage-tracker/codex-sync.mjs`, `/ccusage-tracker/session-end.mjs` or `/ccusage-tracker/session-start.mjs` (Claude legacy `.sh` and `.ps1` included), followed only by tracker arguments (`--hook`, `--notify`, `--mode=<value>`). A command that merely contains a tracker script path SHALL be treated as third-party and SHALL be preserved unchanged.
+The CLI SHALL treat a hook command as a tracker hook only when the whole command matches one of the canonical or known historical shapes: an optional interpreter (`node`, `bash`, `sh`, `powershell` or `pwsh`, bare or as an absolute path, and for PowerShell followed by its own switches and `-File`), then the tracker script path — bare, or double-quoted — ending in `/ccusage-tracker/codex-sync.mjs`, `/ccusage-tracker/session-end.mjs` or `/ccusage-tracker/session-start.mjs` (Claude legacy `.sh` and `.ps1` included), then only tracker arguments (`--hook`, `--notify`, `--mode=<value>`). The interpreter SHALL match the script extension: `node` for `.mjs`, `bash`/`sh` for `.sh`, `powershell`/`pwsh` for `.ps1`. A command containing any shell syntax outside double quotes (`&`, `|`, `;`, `<`, `>`, backtick, `$`, parentheses, single quote, or a line break), or one where the tracker path is an argument to another program, SHALL be treated as third-party and SHALL be preserved unchanged, as SHALL any command that merely contains a tracker script path.
 
 #### Scenario: Third-party command references the tracker script
 
@@ -18,6 +18,26 @@ The CLI SHALL treat a hook command as a tracker hook only when the whole command
 
 - **WHEN** a command is `node "<home>/.config/ccusage-tracker/codex-sync.mjs" --hook && echo done`
 - **THEN** the CLI SHALL treat it as third-party and SHALL NOT replace or remove it
+
+#### Scenario: Compound command without whitespace is not recognized
+
+- **WHEN** a command is `node "<home>/.config/ccusage-tracker/codex-sync.mjs" --mode=stop&&false`, `… --hook;rm -rf /tmp/x`, `… --hook|tee /tmp/x`, `… --hook>/tmp/x` or `… $(whoami)`
+- **THEN** the CLI SHALL treat each as third-party and SHALL NOT replace or remove it, even though no whitespace separates the operator from the preceding argument
+
+#### Scenario: Historical installer commands upgrade to exactly one tracker hook
+
+- **WHEN** an event contains one of the commands earlier installers wrote — `bash <home>/.config/ccusage-tracker/session-end.sh`, `node <home>/.config/ccusage-tracker/session-start.mjs`, or `node <home>/.config/ccusage-tracker/session-end.mjs --mode=stop` with an unquoted home directory that contains spaces — or `powershell -NoProfile -ExecutionPolicy Bypass -File "<home>/.config/ccusage-tracker/session-end.ps1"`
+- **THEN** the CLI SHALL recognize it, replace it in place with the canonical command, and leave exactly one tracker hook for that event
+
+#### Scenario: Tracker path passed as an argument to another program
+
+- **WHEN** a command is `node /usr/local/lib/lint.js <home>/.config/ccusage-tracker/session-end.mjs`
+- **THEN** the CLI SHALL treat it as third-party, because the reassembled path would contain a second absolute path start
+
+#### Scenario: Interpreter does not match the script extension
+
+- **WHEN** a command is `bash <home>/.config/ccusage-tracker/session-end.mjs` or `node <home>/.config/ccusage-tracker/session-end.sh`
+- **THEN** the CLI SHALL treat it as third-party
 
 ## MODIFIED Requirements
 
@@ -89,6 +109,11 @@ Setup and update SHALL install tracker hooks into the user-level Codex hooks fil
 - **WHEN** the server returns 404 or 410 for the Codex script and Codex is not detected
 - **THEN** the CLI SHALL print only `Codex: not detected` and SHALL NOT print the Codex compatibility message
 
+#### Scenario: Trust invalidated only for the hook that changed
+
+- **WHEN** the `Stop` tracker hook is already canonical and has a trust record, and only the `SessionEnd` tracker group is installed in this run
+- **THEN** the Codex result line SHALL still report `Stop` as trusted and SHALL ask the user to trust only the remaining hook
+
 #### Scenario: Trust reminder after installation
 
 - **WHEN** Codex hooks are installed or changed and no trust record is found for either of them
@@ -118,6 +143,10 @@ Setup and update SHALL install tracker hooks into the user-level Codex hooks fil
 
 - **WHEN** `config.toml` contains, before the `notify` key, a `[[servers]]` table header, a `[tui] # comment` header, a multi-line top-level array with a continuation line `[3, 4]` without trailing comma, or a string value containing `[`
 - **THEN** the scan SHALL treat `[[servers]]` and `[tui] # comment` as table headers that end the top-level scope, SHALL treat the `[3, 4]` line and the string as part of top-level values, and SHALL print the reminder only when the tracker `notify` key is at top level
+#### Scenario: Escapes inside basic strings
+
+- **WHEN** a multi-line basic string (`"""`) before the `notify` key contains an escaped quote sequence `\"""`
+- **THEN** the scan SHALL NOT end the string there, and a multi-line literal string (`'''`) SHALL NOT treat a backslash as an escape
 
 ### Requirement: Status command
 

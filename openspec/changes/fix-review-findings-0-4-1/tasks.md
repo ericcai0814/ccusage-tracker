@@ -24,3 +24,13 @@
 
 - [x] [P] 5.1 依 design「中文 README 補未實機驗證平台」更新 README.md（架構表或 Codex 章節加「macOS 實測，Windows／Linux 路徑受支援但尚未實機驗證」）；packages/cli/README.md 補「勿手動修改 tracker hook 命令，否則會被視為第三方而另行 append」；CHANGELOG 的 Unreleased 新增 Fixed 條目（辨識收緊、型態檢查、實際索引、notify 提示條件、TOML 掃描、寫穿訊息、rollback 測試、逐 hook 訊息）。驗證：內容審閱，grep README.md 含「尚未實機驗證」。
 - [x] 5.2 完整驗證：pnpm test、pnpm typecheck、pnpm --filter ccusage-tracker build 全綠；Node-built CLI smoke 在暫存 HOME 內以 symlink 設定檔與含 `sha256sum` 第三方命令的 hooks.json 跑 setup 與兩次 update，第三方群組位元組不變、tracker 在尾端、輸出含 `Wrote through symlink`、第二次 update 後 sha256 不變；輸出寫入 openspec/changes/fix-review-findings-0-4-1/verification.md；spectra validate 通過。
+
+## 6. Codex 複審 round 2 補修
+
+- [x] 6.1 依規格 scenario「Compound command without whitespace is not recognized」先寫失敗測試：`--mode=stop&&false`、`--hook;`、`--hook|`、`--hook>`、`$( )`、反引號、`bash -c '…'` 皆視為第三方並原樣保留。實作 packages/cli/src/codex-hooks.ts 的引號外 shell 語法偵測。驗證：hooks.test.ts 與 codex-hooks.test.ts 該組先紅後綠。
+- [x] 6.2 依規格 scenario「Historical installer commands upgrade to exactly one tracker hook」先寫失敗測試，形狀取自 git 史料（db7435a `bash $HOOK_SCRIPT`、f04098e `node $HOOK_SCRIPT`、d758e52 `node $HOOK_SCRIPT --mode=…`，家目錄含空白時未加引號）與 `powershell … -File …ps1`。實作直譯器前綴規則（node/bash/sh/powershell/pwsh，副檔名須相符）與未加引號路徑的重組。驗證：升級後每個事件只剩一條 tracker hook。
+- [x] 6.3 依規格 scenario「Tracker path passed as an argument to another program」與「Interpreter does not match the script extension」補測並實作 `isSinglePath`：重組後的路徑中不得再出現第二個絕對路徑起點；直譯器與副檔名不符一律第三方。驗證：`node /usr/local/lib/lint.js <tracker>` 原樣保留。
+- [x] 6.4 依規格 scenario「Escapes inside basic strings」先寫失敗測試（`"""` 內的 `\"""` 不結束字串；`'''` 不吃跳脫），實作 packages/cli/src/codex-hooks.ts 的 scanLine 跳脫處理。驗證：四個 TOML fixture 的正反案例全綠。
+- [x] 6.5 依規格 scenario「Trust invalidated only for the hook that changed」先寫失敗測試：Stop 未變動且已信任、只補裝 SessionEnd 時只要求信任 SessionEnd；Stop 有變動時不冒稱已信任。實作 packages/cli/src/hooks.ts 依 codexStopChanged／codexSessionEndChanged 分別作廢信任。驗證：setup.test.ts 兩案先紅後綠。
+- [x] 6.6 補 formatCodexTrustLine「皆 recorded」的安裝端分支（`Codex: hooks already up to date (trust recorded)`），並把四組逐字斷言補齊、另立「皆 disabled」案例。驗證：codex-hooks.test.ts 全綠。
+- [x] 6.7 重跑 pnpm test、pnpm typecheck、CLI build 與 Node-built CLI smoke，更新 verification.md 與 REPORT.md。

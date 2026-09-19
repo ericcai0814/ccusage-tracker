@@ -4,8 +4,8 @@
 
 ## 結論
 
-- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
-- 完整測試 **CLI 142 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **370 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 29 項 CLI 測試。
+- Codex 補審的 2 med、4 low 與 subagent 審查對應的 low 全部修完，加上逐 hook 信任訊息與中文 README 平台限制。複審 round 2 的 2 med、3 low 與自審發現的 1 個新洞也已修完（見末節）。0.4.0 已驗證的正常路徑沒有退步：既有 113 個 CLI 測試全部保留且通過。
+- 完整測試 **CLI 156 pass／0 fail、server 228 pass／1 skip／0 fail**，合計 **384 pass**；基線為 CLI 113、server 228 pass／1 skip，新增 43 項 CLI 測試（round 1 新增 29、複審 round 2 再新增 14）。
 - `pnpm typecheck`、`pnpm --filter ccusage-tracker build`、`pnpm build` 全綠；`spectra validate fix-review-findings-0-4-1` 通過；`git diff --check` 無 whitespace error。
 - Node-built CLI smoke：暫存 HOME、兩份設定檔皆為 symlink、hooks.json 含引用 tracker 腳本路徑的第三方 `sha256sum` Stop 群組 —— setup 後該群組位元組不變留在索引 0、tracker 在索引 1、輸出含兩行 `Wrote through symlink`、symlink 保留；兩次 update 後 `hooks.json` 與 `settings.json` 的 sha256 皆不變；混合信任的 setup／update 與 status 訊息逐字符合規格；`config.toml` 位元組不變。
 - 未讀寫真實的 `~/.claude`、`~/.codex`、`~/.config/ccusage-tracker`、`~/dotfiles`；全程未執行真實 `npm install -g`。
@@ -24,9 +24,9 @@
 
 | 檢查 | 結果 |
 |---|---|
-| `pnpm test` | CLI 142 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
+| `pnpm test` | CLI 156 pass／0 fail（基線 113）；server 228 pass／1 skip／0 fail（基線相同） |
 | `pnpm typecheck` | CLI 與 server 均 Done |
-| `pnpm --filter ccusage-tracker build` | Node target 通過；43.77 KB |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；45.69 KB |
 | `pnpm build` | Server Bun target 通過；233.48 KB |
 | `spectra validate fix-review-findings-0-4-1` | `✓ fix-review-findings-0-4-1 — valid` |
 | `spectra analyze fix-review-findings-0-4-1 --json` | 無 Critical／Warning；2 項「scenario 缺 examples」Suggestion（沿自提案時） |
@@ -104,9 +104,65 @@ config.toml 位元組不變                        => OK
 - update 兩次後 `hooks.json`／`settings.json` 的 sha256 與 setup 後完全相同；HOME 內無 `.tmp`／`.rollback` 殘留。
 - 寫入只信任 Stop 的 `hooks.state` 後，update 與 status 的兩行訊息逐字符合規格；`config.toml` 位元組不變。
 
+## Codex 複審 round 2 的補修
+
+複審結論 NEEDS-FIX（2 med、3 low）。全部修完並補測；另在自審時發現修正本身引入的一個新洞，一併修掉。
+
+| 複審 finding | 修法 | 證據 |
+|---|---|---|
+| [med] `--mode=stop&&false` 等無空白複合命令仍被誤收 | 引號外偵測 shell 語法（`& \| ; < > ` $ ( ) '` 與換行）一律第三方；未閉合引號也算 | `packages/cli/src/codex-hooks.ts:71` `containsShellSyntax`；測試 `hooks.test.ts:543`（9 種形狀）、`codex-hooks.test.ts:178` |
+| [med] 辨識收緊造成舊 Claude hook 無法升級，新舊兩條並存 | 受限的遷移規則：可選直譯器（node／bash／sh／powershell／pwsh，副檔名須相符；PowerShell 另剝 `-NoProfile` 等開關至 `-File`），其餘整段重組為腳本路徑 | `packages/cli/src/codex-hooks.ts:88` `INTERPRETERS`、`:152` `isTrackerHookCommand`；測試 `hooks.test.ts:573`（升級後只剩一條）、`:582`（副檔名不符仍第三方） |
+| [low] TOML `"""` 內的 `\"""` 提前結束字串 | scanLine 對 `"` 與 `"""` 都先判反斜線跳脫再判結束符；literal 字串維持不跳脫 | `packages/cli/src/codex-hooks.ts:325`；fixture `codex-hooks.test.ts:365`（三引號跳脫）、`:367`（literal 不吃跳脫），各有正反案例 |
+| [low] 部分更新把未變動 hook 的 recorded 一併降成 awaiting | 依 `codexStopChanged`／`codexSessionEndChanged` 分別作廢 | `packages/cli/src/hooks.ts:333` `stale`；測試 `setup.test.ts:236`（只補裝 SessionEnd）、`:250`（Stop 有變動不冒稱已信任） |
+| [low] formatter 少了「皆 recorded」的安裝端分支與逐字斷言 | 補 `Codex: hooks already up to date (trust recorded)` 分支，四組逐字斷言補齊，「皆 disabled」另立一案 | `packages/cli/src/codex-hooks.ts:288` 附近的 `CODEX_RECORDED_MESSAGE`；測試 `codex-hooks.test.ts:301`、`:313` |
+| 自審發現：重組未加引號路徑會誤收「tracker 路徑當參數」 | `isSinglePath`：重組後的路徑中不得再出現第二個絕對路徑起點；加引號的路徑無此歧義不套用 | `packages/cli/src/codex-hooks.ts:147`；測試 `hooks.test.ts:604`（4 種形狀）、`:618`（含空白單一路徑仍可升級） |
+
+### 遷移規則的史料依據
+
+舊版命令形狀取自 git，不憑印象（`git show <commit>:packages/server/src/scripts.ts`）：
+
+| commit | 實際寫出的命令 |
+|---|---|
+| `db7435a` | `HOOK_CMD="bash $HOOK_SCRIPT"`，`HOOK_SCRIPT="$CONFIG_DIR/session-end.sh"` |
+| `f04098e` | `HOOK_CMD="node $HOOK_SCRIPT"`（未加引號），`.mjs` |
+| `d758e52` | `node $HOOK_SCRIPT --mode=session-end`／`--mode=stop`（未加引號） |
+| `95869d9`→今 | `node "<path>" --mode=…`（加引號） |
+
+`$CONFIG_DIR` 為 `$HOME/.config/ccusage-tracker`，家目錄含空白時這些變數不帶引號展開 —— 這正是收緊後升級不了的形狀。PowerShell 側自 `f04098e` 起一律寫 `node "<正斜線路徑>"`，**本 repo 從未產生過 `powershell … -File …ps1` 的 hook 命令**；該形狀由同一條「直譯器＋副檔名相符」規則涵蓋（規格本就列有 `.ps1`），但不宣稱它有史料依據。
+
+### round 2 後的執行結果
+
+| 檢查 | 結果 |
+|---|---|
+| `pnpm test` | CLI **156 pass／0 fail**（round 1 為 142，基線 113）；server 228 pass／1 skip／0 fail |
+| `pnpm typecheck` | CLI 與 server 均 Done |
+| `pnpm --filter ccusage-tracker build` | Node target 通過；45.69 KB |
+| `pnpm build` | Server Bun target 通過；233.48 KB |
+| `spectra validate fix-review-findings-0-4-1` | `✓ valid`；tasks 19/19 |
+
+### round 2 後的 smoke 增補
+
+同一份 smoke 另外預先在 `settings.json` 放入舊版 hook 與「tracker 路徑當參數」的第三方 hook，並在最後模擬「只補裝 SessionEnd」：
+
+```
+=== Claude 端：舊 hook 升級、第三方保留 ===
+SessionEnd 命令: [ "node /usr/local/lib/lint.js ~/.config/ccusage-tracker/session-end.mjs",
+                  "node \"~/.config/ccusage-tracker/session-end.mjs\" --mode=session-end" ]
+canonical tracker 條數: 1        => 只剩一條 OK
+第三方 lint hook 保留:            OK
+舊的 bash .sh hook 已被取代:      OK
+
+=== 只補裝 SessionEnd（Stop 未變動且已信任）===
+Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook.
+Codex hooks: installed, Stop trusted, SessionEnd awaiting trust (open /hooks in Codex)
+```
+
+第一段同時驗證了兩個 med 修正與自審發現的新洞；第二段是 [low] 部分更新信任狀態的端到端證據（拿掉 SessionEnd 群組後再跑 update，Stop 未變動故其信任仍有效）。
+
 ## 已知限制與範圍外
 
 - **Windows／Linux 未實機驗證**：路徑受支援（`isAbsolutePathToken` 認 `C:/`、UNC，辨識測試含 Windows 形狀），但只在 macOS 實跑。FIFO／socket 案例以 `it.skipIf(process.platform === "win32")` 跳過。中文與英文 README 都已寫明。
 - **`config.toml` 與 status 讀檔未套型態檢查**：本次的 `assertRegularFileTarget` 依規格只涵蓋安裝交易的目標（`settings.json`、`hooks.json`、tracker 腳本）。`defaultWiringDeps.readCodexConfig`（`packages/cli/src/hooks.ts:296`）與 `status.ts:138` 的 `readTextFile` 仍直接 `readFileSync`，若 `config.toml` 是指向無 writer FIFO 的 symlink 會卡住。兩處都只讀不寫、不在本 change 範圍，記錄於此不順手修。
-- **辨識收緊的取捨**：手動改過 tracker hook 命令（加自訂參數、包成複合命令）會被視為第三方而多出一份 tracker hook。已在兩份 README 寫明；重複觸發由 5 分鐘節流與獨立鎖吸收。
+- **辨識收緊的取捨**：手動改過 tracker hook 命令（加自訂參數、包成複合命令）會被視為第三方而多出一份 tracker hook。舊版安裝器寫出的形狀已在 round 2 補上受限的遷移規則，但沒有涵蓋任何自訂改寫。已在兩份 README 寫明；重複觸發由 5 分鐘節流與獨立鎖吸收。
+- **未加引號且含空白的路徑本質上有歧義**：`isSinglePath` 以「重組後不得再出現第二個絕對路徑起點」區分，能擋掉把 tracker 路徑當參數傳給別的腳本的情況，但無法涵蓋第二個參數是相對路徑的假想形狀（例如 `node lint.js <tracker>` —— 該形狀因 `lint.js` 不是絕對路徑而已被擋在前面的絕對路徑檢查）。加引號的路徑沒有這個歧義。
 - 版本號提升、CHANGELOG 的 `[Unreleased]` 定版、npm 發布與 Zeabur 部署都不在本 change，另開 release PR。
