@@ -233,18 +233,21 @@ describe("setup 逐工具接線", () => {
 
   // Codex 複審 round 2 [low]：原本只要任一 Codex hook 有變動，就把兩條的 recorded
   // 全部降成 awaiting。只補裝 SessionEnd 時，已信任且未變動的 Stop 被誤報成待信任。
-  it("Stop 未變動且已信任、只補裝 SessionEnd：只要求信任 SessionEnd", async () => {
+  it("兩條原本都已信任、只補裝 SessionEnd：只有 SessionEnd 降為待信任", async () => {
+    // 起始狀態兩條都 recorded，作廢邏輯若被拿掉，輸出會變成「已是最新」而不是這句。
     const hooksPath = getCodexHooksPath();
     const deps = createMockDeps(answers, {
       codexStopChanged: false,
       codexSessionEndChanged: true,
-      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "sha256:a"\n`,
+      configToml: `[hooks.state."${hooksPath}:stop:0:0"]\ntrusted_hash = "sha256:a"\n` +
+        `[hooks.state."${hooksPath}:session_end:0:0"]\ntrusted_hash = "sha256:b"\n`,
     });
     await setupCommand(deps);
 
     expect(output(deps)).toContain(
       "Codex: hooks installed (Stop trusted, SessionEnd awaiting trust). Open Codex and run /hooks once to trust the remaining ccusage-tracker hook."
     );
+    expect(output(deps)).not.toContain("already up to date");
   });
 
   it("Stop 有變動：即使 config.toml 還留著舊的信任紀錄，也不冒稱已信任", async () => {

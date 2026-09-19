@@ -65,10 +65,16 @@ export function getCodexHookCommand(): string {
 const TRACKER_ARGUMENT = /\s+(?:--hook|--notify|--mode=[^\s"]+)$/;
 
 // 引號外只要出現 shell 語法就不是 tracker 寫的命令。單純用空白切 token 不夠：
-// `--mode=stop&&false` 黏在一起，token 白名單看不出來，整條會被當成 tracker 刪掉後半。
-const SHELL_SYNTAX = /[&|;<>`$()'\n\r]/;
+// `--mode=stop&&false` 黏在一起，token 白名單看不出來，整條會被當成 tracker。
+const SHELL_SYNTAX = /[&|;<>()'\n\r]/;
+
+// 這三種字元不分引號內外都要拒絕：POSIX 的雙引號內 `$` 與反引號照樣展開
+// （`"/tmp/$(printf x)/ccusage-tracker/codex-sync.mjs"` 指向的是別的檔案），
+// `%` 是 cmd.exe 的變數展開。canonical 命令永遠不含這三種字元。
+const EXPANDS_ANYWHERE = /[$`%]/;
 
 function containsShellSyntax(command: string): boolean {
+  if (EXPANDS_ANYWHERE.test(command)) return true;
   let quoted = false;
   for (const character of command) {
     if (character === '"') {
@@ -78,6 +84,14 @@ function containsShellSyntax(command: string): boolean {
     if (!quoted && SHELL_SYNTAX.test(character)) return true;
   }
   return quoted; // 未閉合的引號：形狀不明，一律當第三方
+}
+
+// 反斜線在 POSIX shell 是跳脫字元、在 Windows 是路徑分隔，同一個字串兩種讀法指向
+// 不同檔案：`/tmp/ccusage-tracker\codex-sync.mjs` 在 POSIX 執行的其實是
+// `/tmp/ccusage-trackercodex-sync.mjs`。只有明確是 Windows 路徑（磁碟機或 UNC）
+// 才把反斜線當分隔，其餘含反斜線的路徑一律視為第三方。
+function hasAmbiguousBackslash(path: string): boolean {
+  return path.includes("\\") && !/^(?:[A-Za-z]:\\|\\\\)/.test(path);
 }
 
 // 舊版安裝器實際寫出的命令（git 史料）：db7435a 的 `bash $HOOK_SCRIPT`、
@@ -153,7 +167,7 @@ export function isTrackerHookCommand(command: unknown, script: RegExp): boolean 
   // 可選的直譯器前綴；沒有前綴時（腳本自己可執行）不限定副檔名
   let requiredExtension: string | null = null;
   const interpreter = INTERPRETERS.find((candidate) => candidate.matches.test(basenameOf(first.token)));
-  if (interpreter !== undefined && isExecutablePath(first.token)) {
+  if (interpreter !== undefined && isExecutablePath(first.token) && !hasAmbiguousBackslash(first.token)) {
     requiredExtension = interpreter.extension;
     rest = first.rest;
     if (interpreter.extension === "ps1") {
@@ -176,7 +190,7 @@ export function isTrackerHookCommand(command: unknown, script: RegExp): boolean 
   const scriptPath = peelToken(rest.trim());
   if (scriptPath === null || scriptPath.rest !== "") return false;
   const path = scriptPath.token;
-  if (!isAbsolutePathToken(path) || !script.test(path)) return false;
+  if (!isAbsolutePathToken(path) || hasAmbiguousBackslash(path) || !script.test(path)) return false;
   return requiredExtension === null || extensionOf(path) === requiredExtension;
 }
 

@@ -630,3 +630,44 @@ describe("腳本路徑必須是單一 token，不重組空白", () => {
     expect(r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command))).toEqual([stopCmd]);
   });
 });
+
+// 審查閘 round 4：Codex 實測出的繞過形狀。共通點是「字串長得像 tracker 路徑，
+// 但 shell 實際執行的是別的檔案」—— 認錯就會把第三方 hook 整條刪掉。
+describe("shell 會改寫字面意義的字元一律視為第三方", () => {
+  const T = "/tmp/ccusage-tracker";
+  const cases: [string, string][] = [
+    // POSIX 未加引號時 `\c` 是跳脫，實際執行的是 /tmp/ccusage-trackercodex-sync.mjs
+    ["反斜線當跳脫", `node ${T}\\session-end.mjs --mode=stop`],
+    ["反斜線在引號內", `node "${T}\\session-end.mjs" --mode=stop`],
+    ["正斜線路徑中混入反斜線", `node /tmp/x\\y/ccusage-tracker/session-end.mjs`],
+    // cmd.exe 的 %VAR% 展開：TARGET 若展開成 `lint.js x` 就變成另一支腳本
+    ["cmd 變數展開", `node C:/%TARGET%/ccusage-tracker/session-end.mjs`],
+    ["cmd 變數展開在引號內", `node "C:/%TARGET%/ccusage-tracker/session-end.mjs"`],
+    // POSIX 雙引號內 $、反引號仍會展開
+    ["雙引號內的命令替換", `node "/tmp/$(printf keep)/ccusage-tracker/session-end.mjs" --mode=stop`],
+    ["雙引號內的反引號", "node \"/tmp/`printf keep`/ccusage-tracker/session-end.mjs\" --mode=stop"],
+    ["雙引號內的變數", `node "/tmp/$HOME/ccusage-tracker/session-end.mjs"`],
+  ];
+
+  it("原樣保留，tracker 另行 append", () => {
+    for (const [label, thirdParty] of cases) {
+      const r = applyTrackerHooks({ hooks: { Stop: [matcher(thirdParty)] } });
+      const commands = r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command)) ?? [];
+
+      expect([label, commands]).toEqual([label, [thirdParty, stopCmd]]);
+    }
+  });
+
+  it("Windows 磁碟機與 UNC 的正常路徑仍被辨識", () => {
+    for (const windows of [
+      String.raw`node "C:\Users\Gill Chiang\.config\ccusage-tracker\session-end.mjs" --mode=stop`,
+      String.raw`node C:\Users\x\.config\ccusage-tracker\session-end.mjs --mode=stop`,
+      String.raw`node "\\fileserver\team\.config\ccusage-tracker\session-end.mjs" --mode=stop`,
+      `node "C:/Users/x/.config/ccusage-tracker/session-end.mjs" --mode=stop`,
+    ]) {
+      const r = applyTrackerHooks({ hooks: { Stop: [matcher(windows)] } });
+
+      expect([windows, r.updated.hooks?.Stop?.flatMap((m) => m.hooks.map((h) => h.command))]).toEqual([windows, [stopCmd]]);
+    }
+  });
+});

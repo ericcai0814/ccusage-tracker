@@ -208,6 +208,29 @@ describe("isCodexTrackerHook 只認標準命令形狀", () => {
     }
   });
 
+  // 審查閘 round 4：Codex 實測出的繞過形狀原文。共通點是字串長得像 tracker 路徑，
+  // 但 shell 實際執行的是別的檔案 —— 認錯就會把第三方 hook 整條刪掉。
+  it("shell 會改寫字面意義的字元：反斜線、%VAR%、引號內的 $() 與反引號皆為第三方", () => {
+    const bypasses = [
+      'node "/tmp/ccusage-tracker/codex-sync.mjs --hook',                       // 未閉合引號
+      'node "/tmp/ccusage-tracker/codex-sync.mjs" --hook\necho keep',           // 引號外換行
+      "node /tmp/ccusage-tracker\\codex-sync.mjs --hook",                        // POSIX 會把 \c 當跳脫
+      "node C:/%TARGET%/ccusage-tracker/codex-sync.mjs --hook",                 // cmd.exe 變數展開
+      "node C:/ccusage-tracker^/codex-sync.mjs --hook",                         // cmd.exe 跳脫字元
+      'node "/tmp/$(printf keep)/ccusage-tracker/codex-sync.mjs" --hook',       // 雙引號內仍會展開
+      'node "/tmp/`printf keep`/ccusage-tracker/codex-sync.mjs" --hook',        // 同上，反引號
+    ];
+
+    for (const thirdPartyCommand of bypasses) {
+      const group = { hooks: [{ type: "command", command: thirdPartyCommand }], note: "keep" };
+
+      const result = applyCodexHooks({ hooks: { Stop: [group] } }, command);
+
+      expect([thirdPartyCommand, result.updated.hooks!.Stop!.length]).toEqual([thirdPartyCommand, 2]);
+      expect(JSON.stringify(result.updated.hooks!.Stop![0])).toBe(JSON.stringify(group));
+    }
+  });
+
   it("codex-sync.mjs 只接受 node 直譯器：bash 跑 .mjs 視為第三方", () => {
     const thirdPartyCommand = `bash ${script}`;
     const result = applyCodexHooks({ hooks: { Stop: [{ hooks: [{ type: "command", command: thirdPartyCommand }] }] } }, command);
