@@ -5,7 +5,7 @@
 ## 結論
 
 - tasks.md 的 11 項全部完成並勾選。依變更意圖拆 commit：settings 與 admin API、三個新查詢、儀表板頁面、文件與驗證、座標軸刻度修正。
-- 完整測試 **CLI 171 pass／0 fail、server 287 pass／1 skip／0 fail**，合計 **458 pass**。server 基線是 228 pass／1 skip，本次淨增 59 項（settings 9、settings 表結構 1、admin settings 16、queries 8、dashboard 25），基線的 228 項一項未刪。
+- 完整測試 **CLI 171 pass／0 fail、server 303 pass／1 skip／0 fail**，合計 **474 pass**。server 基線是 228 pass／1 skip，本次淨增 75 項，基線的 228 項一項未刪。
 - `pnpm typecheck`、`pnpm build`、`spectra validate dashboard-v2-overview` 全綠；`git diff --check` 無 whitespace error。
 - 本機起真的 server（暫存 SQLite，非記憶體、非線上）灌 fixture 後取 `/?period=month` HTML 存檔，移除全部 `<script>` 後 `<svg>`、兩條 `class="trend-line"`、42 個 `<title>` 讀數與圖例都還在。
 - **視覺對錯由 Eric 親自確認**，本 session 只保證結構、數字與測試。重現指令見下方「本機啟動與灌 fixture」。
@@ -19,7 +19,7 @@ macOS 26.6 arm64；Bun 1.3.13、Node 24.15.0、pnpm 9.15.9、Spectra 3.0.0。
 
 | 檢查 | 結果 |
 |---|---|
-| `pnpm test` | CLI 171 pass／0 fail；server 287 pass／1 skip／0 fail（基線 228 pass／1 skip） |
+| `pnpm test` | CLI 171 pass／0 fail；server 303 pass／1 skip／0 fail（基線 228 pass／1 skip） |
 | `pnpm typecheck` | CLI 與 server 均 Done |
 | `pnpm build` | Bundled 61 modules；`index.js` 0.27 MB |
 | `spectra validate dashboard-v2-overview` | `✓ dashboard-v2-overview — valid` |
@@ -68,7 +68,7 @@ curl -X PUT -H "Authorization: Bearer demo-admin" -H "Content-Type: application/
 模型名 `"><img src=x onerror=alert(2)>` 灌進記憶體 DB 後取 `/?period=month`，兩段原文都不在輸出中，
 分別渲染成 `&lt;script&gt;alert(1)&lt;/script&gt;` 與 `<td>&quot;&gt;&lt;img src=x onerror=alert(2)&gt;</td>`。
 Hono JSX 的文字與屬性都會跳脫；頁面唯一的 `dangerouslySetInnerHTML` 是十字線 script，內容是原始碼常數
-（`packages/server/src/routes/dashboard.tsx:1081` 的 `TREND_SCRIPT`），不含任何資料庫字串。
+（`packages/server/src/routes/dashboard.tsx:1140` 的 `TREND_SCRIPT`），不含任何資料庫字串。
 
 ## design.md 驗收準則對照
 
@@ -134,6 +134,42 @@ Hono JSX 的文字與屬性都會跳脫；頁面唯一的 `dangerouslySetInnerHT
 另外把十字線 script 裡的 `Infinity` 字面量改成 `-1` 哨兵，這樣「整頁不得出現 NaN／Infinity」可以直接對整份 HTML 斷言，不必先剝掉 `<script>`。
 
 測試：`admin-settings.test.ts` 六個範圍案例（四拒兩收）、`dashboard.test.ts` 的 `Dashboard numeric edge cases` 五個案例（極小預算、非有限推估、極大峰值的 SVG 屬性、溢位後的條寬、KPI 破折號）。
+
+## Codex 審查閘 round 2 的修正
+
+round 1 的修正本身被抓出問題 —— **夾值拿去算比例，把比例洗掉了**。這是我的設計錯誤：
+`MAX_PLOTTABLE_USD`（1e12）原本是給 SVG 座標用的「可繪製」上限，我卻同時拿它當佔比的輸入，
+於是 `3e12` 與 `1e12` 雙雙被夾成 `1e12`，供應商切分顯示 50%／50%（正確是 75%／25%），排行條也全變 100%。
+
+| 問題 | 修正前 | 修正後 |
+|---|---|---|
+| `usedPct` 守的是乘 100 前的比值 | 花費 `1e308`、預算 `1` → `已用 Infinity%` | `已用 —` |
+| 夾值洗掉比例 | `3e12`／`1e12` → 50%／50%，排行雙雙 100% | 75%／25%，排行 100.0%／33.3% |
+| 支出溢位時預算條清空 | `safePct(Infinity, 2000)` 回 0 | 回 100，條子滿格 |
+| 小數位用字串長度判斷 | `1.1 + 2.2`（`3.3000000000000003`）被拒 | 改用浮點容差，接受；`12.345` 仍拒 |
+| 金額沒有顯示上限 | 「月底推估」印出三百多位數 | 絕對值 ≥ 1e15 顯示 `—` |
+| 超範圍的預算只擋在 API | 直接寫表的 `5e-324` → `預算 $0` | 讀取端套同一組範圍，當作未設定 |
+
+改法是把兩種夾值分開：
+
+- `finiteCost` 是**可表示**夾值（NaN／負數 → 0，`+Infinity` → `Number.MAX_VALUE`）。真實金額不可能超過
+  `Number.MAX_VALUE`，所以它不會扭曲任何一筆真的資料。
+- `ratioPct` 先算比值再夾到 `[0,1]`，不先截斷金額。
+- `sharePercents` 先把整組值除以最大值再相加：分子分母同時縮放，比例不變，而正規化後的總和最多等於
+  項目數，不會溢位。供應商切分、成員表的 share 欄都走這條。
+- 趨勢圖的軸改成「級距乘回去會溢位時退成剛好等於峰值」，頂部沒有留白但每個點的相對高度仍然正確；
+  因為 `max` 一定 ≥ 每個資料點，座標天然落在畫布內，不需要再截斷數值。
+- 預算範圍與驗證函式移到 `packages/server/src/settings.ts:28`，admin API 與 `getMonthlyBudgetUsd`
+  共用同一份定義，繞過 API 直接改表也擋得住。
+
+測試補強（round 1 的溢位測試只查「有限且在範圍內」，條寬全 0、格線全疊也會過）：
+現在斷言溢位項目的條寬為 100、另一項小於 100、資料點 y 互異、五條格線 y 互異、頁面不含 20 位以上的連續數字。
+
+`MemberTable` 的 `totalCost` prop 在改用 `sharePercents` 後沒有用了，一併移除。
+
+自我覆審（`bun run` 直接打 `app.request`）另外確認沒有退步：正常 45／15 仍是 75%／25% 與 100.0%／33.3%、
+單一來源 100%、全零走空狀態、負成本不進佔比、三來源含「其他」加總剛好 100、12 人折疊成 10 列加「其他 2 人」、
+數值持平時五條格線仍分開、預算邊界 `1` 與 `1e9` 收、`0.99` 與 `1000000000.01` 拒、金額顯示上限剛好在 1e15 切換。
 
 ## 範圍外的發現（未修）
 

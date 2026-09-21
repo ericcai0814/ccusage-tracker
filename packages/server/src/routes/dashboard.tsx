@@ -23,32 +23,55 @@ dashboard.use("*", dashboardAuth());
 // 直接改寫繞過 admin API 的範圍檢查。算不出可信的數字時寧可顯示破折號，不要印 NaN。
 const NOT_AVAILABLE = "—";
 
-// 折線與長條的幾何上限。超過就畫到頂，真正的數字留在 <title> 與表格裡。
-const MAX_PLOTTABLE_USD = 1e12;
-
-function plotValue(n: number): number {
-  // NaN 先擋掉（NaN <= 0 是 false，會漏過去）；+Infinity 交給 Math.min 壓到上限
+// 「可表示」的夾值，不是「可繪製」的夾值：真實金額不可能超過 Number.MAX_VALUE，
+// 壓到它不會扭曲任何一筆真的資料。夾值只用來擋 NaN 與溢位的 Infinity。
+function finiteCost(n: number): number {
+  // NaN 先擋掉（NaN <= 0 是 false，會漏過去）；+Infinity 交給 Math.min 壓到可表示上限
   if (Number.isNaN(n) || n <= 0) return 0;
-  return Math.min(n, MAX_PLOTTABLE_USD);
+  return Math.min(n, Number.MAX_VALUE);
 }
 
-function safePct(part: number, whole: number): number {
-  if (!Number.isFinite(part) || !Number.isFinite(whole) || whole <= 0) return 0;
-  return Math.min(100, Math.max(0, (part / whole) * 100));
+// 相對於某個上限的比例。先算比值再夾到 [0,1]，不先截斷金額 ——
+// 截斷金額會把比例一起洗掉（3e12 與 1e12 都夾成 1e12 就變成 50%／50%）。
+function ratioPct(value: number, max: number): number {
+  const limit = finiteCost(max);
+  if (!(limit > 0)) return 0;
+  const ratio = finiteCost(value) / limit;
+  return Math.min(1, Math.max(0, ratio)) * 100;
+}
+
+// 一組值各自的佔比。總和可能溢位，所以先全部除以最大值再相加：分子分母同時縮放，
+// 比例不變，而正規化後的總和最多等於項目數，不會溢位。
+function sharePercents(values: number[]): number[] {
+  const clean = values.map(finiteCost);
+  const max = Math.max(...clean, 0);
+  if (!(max > 0)) return clean.map(() => 0);
+  const scaled = clean.map((v) => v / max);
+  const total = scaled.reduce((sum, v) => sum + v, 0);
+  if (!(total > 0)) return clean.map(() => 0);
+  return scaled.map((v) => Math.min(1, Math.max(0, v / total)) * 100);
 }
 
 function formatNumber(n: number): string {
   return Number.isFinite(n) ? n.toLocaleString("en-US") : NOT_AVAILABLE;
 }
 
+// 有限不等於可讀：1e308 印出來是三百多位數，塞爆版面又講不出任何事情。
+// 超過這個量級的金額一律當作壞資料顯示破折號。
+const MAX_DISPLAY_USD = 1e15;
+
+function isDisplayableCost(n: number): boolean {
+  return Number.isFinite(n) && Math.abs(n) < MAX_DISPLAY_USD;
+}
+
 function formatCost(n: number): string {
-  if (!Number.isFinite(n)) return NOT_AVAILABLE;
+  if (!isDisplayableCost(n)) return NOT_AVAILABLE;
   return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // 預算相關的金額都是整數量級，兩位小數只會讓卡片變吵
 function formatUsdRounded(n: number): string {
-  return Number.isFinite(n) ? `$${Math.round(n).toLocaleString("en-US")}` : NOT_AVAILABLE;
+  return isDisplayableCost(n) ? `$${Math.round(n).toLocaleString("en-US")}` : NOT_AVAILABLE;
 }
 
 function formatRelativeTime(isoString: string | null): string {
@@ -925,17 +948,17 @@ function rankColor(index: number): string {
 }
 
 // 峰值乘 1.15 會得到 $87 這種刻度；改成往上取到 1／2／2.5／5 的整齊級距。
-// 峰值先 clamp 到 MAX_PLOTTABLE_USD，否則 1e308 的 step * ticks 會溢位成 Infinity，
-// 刻度值連帶算出 NaN 座標。真的算不出有限值就退回 0 到 ticks 的固定刻度。
+// 級距乘回去可能溢位（峰值 1e308 時 step * ticks 就是 Infinity，刻度連帶算出 NaN），
+// 這種時候退成剛好等於峰值：頂部沒有留白，但每個點的相對高度仍然正確。
 function niceAxisMax(peak: number, ticks: number): number {
-  const capped = plotValue(peak);
-  if (capped <= 0) return ticks;
-  const rough = (capped * 1.05) / ticks;
+  const top = finiteCost(peak);
+  if (top <= 0) return ticks;
+  const rough = (top * 1.05) / ticks;
   const magnitude = Math.pow(10, Math.floor(Math.log10(rough)));
   const normalized = rough / magnitude;
   const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10) * magnitude;
   const max = step * ticks;
-  return Number.isFinite(max) && max > 0 ? max : ticks;
+  return Number.isFinite(max) && max > 0 ? max : top;
 }
 
 // 小數位是級距自己需要的位數，不是跟著最大值猜：級距 20 印 $20、級距 0.25 印 $0.25，
@@ -949,6 +972,7 @@ function axisDecimals(step: number): number {
 }
 
 function formatAxisTick(value: number, step: number): string {
+  if (!isDisplayableCost(value)) return NOT_AVAILABLE;
   const digits = axisDecimals(step);
   return `$${value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
@@ -981,7 +1005,8 @@ function buildBudgetStatus(period: Period, budget: number | null, spent: number,
   const perDay = spent / dayOfMonth;
   const projected = perDay * daysInMonth;
 
-  const usedRatio = spent / budget;
+  // 比值有限不代表百分比有限：花費 1e308 對預算 1，比值 1e308 是有限的，乘 100 才溢位
+  const usedPct = (spent / budget) * 100;
   const level = !Number.isFinite(projected)
     ? null
     : projected > budget * 1.1
@@ -1001,8 +1026,8 @@ function buildBudgetStatus(period: Period, budget: number | null, spent: number,
   return {
     budget,
     spent,
-    usedPct: Number.isFinite(usedRatio) ? Math.round(usedRatio * 100) : null,
-    meterPct: safePct(spent, budget),
+    usedPct: Number.isFinite(usedPct) ? Math.round(usedPct) : null,
+    meterPct: ratioPct(spent, budget),
     perDay,
     projected,
     level,
@@ -1156,7 +1181,7 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
 
   // 單日期間畫兩條橫條 —— 一個點的折線沒有趨勢可言
   if (dates.length === 1) {
-    const maxCost = Math.max(...series.map((s) => plotValue(s.values[0])), 0.0001);
+    const maxCost = Math.max(...series.map((s) => finiteCost(s.values[0])), 0);
     return (
       <section class="panel trend">
         <div class="panel-head">
@@ -1171,7 +1196,7 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
               <div class="trend-bar-track">
                 <div
                   class="trend-bar"
-                  style={`width: ${safePct(plotValue(s.values[0]), maxCost).toFixed(1)}%; background: ${s.color}`}
+                  style={`width: ${ratioPct(s.values[0], maxCost).toFixed(1)}%; background: ${s.color}`}
                   title={`${dates[0]} · ${s.name} ${formatCost(s.values[0])}`}
                 />
               </div>
@@ -1191,16 +1216,16 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
   const B = 32;
   const TICKS = 4;
 
-  const peak = Math.max(...series.flatMap((s) => s.values));
+  const peak = Math.max(...series.flatMap((s) => s.values.map(finiteCost)));
   const max = niceAxisMax(peak, TICKS);
   const n = dates.length;
   const x = (i: number) => L + (i / (n - 1)) * (W - L - R);
   const y = (v: number) => T + (H - T - B) * (1 - v / max);
   // SVG 屬性只接受有限數字，畫不出來的點一律落在 0 軸上
   const finiteY = (raw: number) => (Number.isFinite(raw) ? raw : y(0));
-  // 刻度值本來就在 [0, max] 內，直接映射；資料點才需要先夾到可繪製範圍
+  // max 一定 >= 每個資料點，所以兩者都落在 [T, H-B] 內，不需要再截斷數值
   const yTick = (v: number) => finiteY(y(v)).toFixed(1);
-  const yData = (v: number) => finiteY(y(Math.min(plotValue(v), max))).toFixed(1);
+  const yData = (v: number) => finiteY(y(Math.min(finiteCost(v), max))).toFixed(1);
   const labelStep = Math.max(1, Math.ceil(n / 8));
 
   return (
@@ -1278,7 +1303,7 @@ const MemberRanking: FC<{ members: UsageSummary[] }> = ({ members }) => {
   const ranked = [...members].sort((a, b) => b.total_cost_usd - a.total_cost_usd);
   const shown = ranked.slice(0, RANK_LIMIT);
   const folded = ranked.slice(RANK_LIMIT);
-  const maxCost = Math.max(...ranked.map((m) => plotValue(m.total_cost_usd)), 0.0001);
+  const maxCost = Math.max(...ranked.map((m) => finiteCost(m.total_cost_usd)), 0);
   const foldedCost = folded.reduce((sum, m) => sum + m.total_cost_usd, 0);
 
   const tokensOf = (m: UsageSummary) =>
@@ -1297,7 +1322,7 @@ const MemberRanking: FC<{ members: UsageSummary[] }> = ({ members }) => {
             <div class="rank-track">
               <div
                 class="rank-fill"
-                style={`width: ${safePct(plotValue(m.total_cost_usd), maxCost).toFixed(1)}%; background: ${rankColor(i)}`}
+                style={`width: ${ratioPct(m.total_cost_usd, maxCost).toFixed(1)}%; background: ${rankColor(i)}`}
               />
             </div>
             <span class="rank-val">
@@ -1312,7 +1337,7 @@ const MemberRanking: FC<{ members: UsageSummary[] }> = ({ members }) => {
             <div class="rank-track">
               <div
                 class="rank-fill"
-                style={`width: ${safePct(plotValue(foldedCost), maxCost).toFixed(1)}%; background: ${RANK_COLORS.rest}`}
+                style={`width: ${ratioPct(foldedCost, maxCost).toFixed(1)}%; background: ${RANK_COLORS.rest}`}
               />
             </div>
             <span class="rank-val">
@@ -1332,10 +1357,9 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
     cost: rows.filter((r) => r.source === source).reduce((sum, r) => sum + r.total_cost_usd, 0),
   }));
   const present = bySource.filter((p) => p.cost > 0);
-  // 占比一律用可繪製值算，避免單一來源溢位成 Infinity 時整條比例條變成 NaN
-  const total = present.reduce((sum, p) => sum + plotValue(p.cost), 0);
+  const shares = sharePercents(present.map((p) => p.cost));
 
-  if (total === 0) {
+  if (present.length === 0) {
     return (
       <section class="panel provider">
         <div class="panel-head">
@@ -1355,12 +1379,12 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
         <span class="panel-note">來源即供應商</span>
       </div>
       <div class="stack" role="img" aria-label="各供應商的成本占比">
-        {present.map((p) => (
-          <div style={`width: ${safePct(plotValue(p.cost), total).toFixed(1)}%; background: ${SOURCE_COLOR[p.source]}`} />
+        {present.map((p, i) => (
+          <div style={`width: ${shares[i].toFixed(1)}%; background: ${SOURCE_COLOR[p.source]}`} />
         ))}
       </div>
       <div class={hasOther ? "provider-grid has-other" : "provider-grid"}>
-        {present.map((p) => (
+        {present.map((p, i) => (
           <div class="provider-box">
             <div class="provider-name">
               <span class="provider-swatch" style={`background: ${SOURCE_COLOR[p.source]}`} aria-hidden="true" />
@@ -1368,7 +1392,7 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
             </div>
             <div class="provider-amt">{formatCost(p.cost)}</div>
             <div class="provider-pct">
-              {Math.round(safePct(plotValue(p.cost), total))}% · {SOURCE_LABEL[p.source]}
+              {Math.round(shares[i])}% · {SOURCE_LABEL[p.source]}
             </div>
           </div>
         ))}
@@ -1412,7 +1436,7 @@ const ModelTable: FC<{ models: ModelPresence[] }> = ({ models }) => (
   </section>
 );
 
-const MemberTable: FC<{ members: UsageSummary[]; totalCost: number }> = ({ members, totalCost }) => {
+const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
   if (members.length === 0) {
     return <div class="empty">[ No usage data for this period ]</div>;
   }
@@ -1427,6 +1451,9 @@ const MemberTable: FC<{ members: UsageSummary[]; totalCost: number }> = ({ membe
     }),
     { input_tokens: 0, output_tokens: 0, cache_creation_tokens: 0, cache_read_tokens: 0, total_cost_usd: 0 }
   );
+
+  // 總花費可能溢位成 Infinity，直接相除會得到 NaN；正規化佔比可以保住比例
+  const memberShares = sharePercents(members.map((m) => m.total_cost_usd));
 
   return (
     <div class="table-wrapper">
@@ -1444,8 +1471,8 @@ const MemberTable: FC<{ members: UsageSummary[]; totalCost: number }> = ({ membe
           </tr>
         </thead>
         <tbody>
-          {members.map((m) => {
-            const sharePct = safePct(m.total_cost_usd, totalCost);
+          {members.map((m, i) => {
+            const sharePct = memberShares[i];
             return (
               <tr>
                 <td>{m.member_name}</td>
@@ -1535,7 +1562,7 @@ dashboard.get("/", (c) => {
         </div>
         <ModelTable models={models} />
       </main>
-      <MemberTable members={members} totalCost={totalCost} />
+      <MemberTable members={members} />
     </Layout>
   );
 });

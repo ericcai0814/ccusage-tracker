@@ -2,7 +2,15 @@ import { Hono } from "hono";
 import { nanoid } from "nanoid";
 import { adminAuth } from "../middleware/admin-auth";
 import { insertMember, listMembers, hashApiKey } from "../queries";
-import { listSettings, setSetting, getMonthlyBudgetUsd, MONTHLY_BUDGET_KEY } from "../settings";
+import {
+  listSettings,
+  setSetting,
+  getMonthlyBudgetUsd,
+  isValidBudget,
+  MIN_BUDGET_USD,
+  MAX_BUDGET_USD,
+  MONTHLY_BUDGET_KEY,
+} from "../settings";
 import type { AppEnv } from "../app";
 
 const admin = new Hono<AppEnv>();
@@ -37,20 +45,6 @@ admin.get("/members", (c) => {
   const members = listMembers(c.get("db"));
   return c.json(members);
 });
-
-// 預算會被拿去算百分比與月底推估。沒有上下限的話，1e308 之類的合法有限值會讓
-// 儀表板算出 Infinity；小於 1 美元的預算也一樣。0 保留為「清除」。
-const MIN_BUDGET_USD = 1;
-const MAX_BUDGET_USD = 1_000_000_000;
-
-function isValidBudget(value: unknown): value is number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return false;
-  if (value === 0) return true;
-  if (value < MIN_BUDGET_USD || value > MAX_BUDGET_USD) return false;
-  // 這個區間內 toString() 不會用指數表示法，小數位可以直接數
-  const decimals = value.toString().split(".")[1] ?? "";
-  return decimals.length <= 2;
-}
 
 admin.get("/settings", (c) => {
   const db = c.get("db");

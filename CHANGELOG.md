@@ -7,7 +7,7 @@
 - 儀表板改版為總覽頁：KPI 列（總花費、總 token、活躍成員、Claude 對話回合）、每日成本趨勢、成員排行、供應商切分、模型表，既有成員表保留在最下方。趨勢圖是伺服端繪的 inline SVG，Claude Code 與 Codex 各一條線，每個資料點帶 `<title>` 讀數；期間只有一天時改畫兩條橫條。不引入圖表函式庫或前端框架。
 - 團隊設定：新增 `settings` 表（`key`／`value`／`updated_at`，啟動時 idempotent 建立）與 `GET /api/admin/settings`、`PUT /api/admin/settings/monthly_budget_usd`，都走 `ADMIN_API_KEY`。設定月預算後不必重新部署即可調整。
 - 月預算參考註記：period 為 `month` 且預算大於 0 時，花費卡顯示已用百分比、預算金額、日均與月底推估，並附一條同色系 meter。月底推估超出預算 10% 以上標 critical、0 到 10% 標 warning，一律帶符號與文字，不單靠顏色。
-- 數值邊界防護：`monthly_budget_usd` 限制為 0 或 1 到 1,000,000,000、最多兩位小數；儀表板所有百分比、座標與金額在算不出有限值時顯示 `—` 而不是 `NaN`／`Infinity`，趨勢圖的資料點會夾到可繪製上限，月底推估非有限時不印狀態標籤。`usage_records.total_cost_usd` 是 REAL，兩筆極大值相加就會溢位。
+- 數值邊界防護：`monthly_budget_usd` 限制為 0 或 1 到 1,000,000,000、最多兩位小數（以浮點容差判斷，不會誤殺 `1.1 + 2.2` 這種帶運算尾差的金額）；繞過 API 直接寫進 `settings` 表的超範圍值，讀取時一律當作未設定。儀表板所有百分比、座標與金額在算不出有限值時顯示 `—` 而不是 `NaN`／`Infinity`，絕對值 ≥ 1e15 的金額同樣顯示 `—`（有限但印出來是三百多位數的數字不是資訊），月底推估非有限時不印狀態標籤。占比一律先正規化再相加，不先截斷金額 —— 截斷會把比例一起洗掉。`usage_records.total_cost_usd` 是 REAL，兩筆極大值相加就會溢位。
 - 查詢：`aggregateUsageByDateAndSource`、`sumClaudeTurns`、`aggregateModelPresence`。來源由 `session_id` 判定（`daily` → Claude Code／Anthropic、`codex-daily` → Codex／OpenAI，其餘歸「其他」）。
 
 ### Changed

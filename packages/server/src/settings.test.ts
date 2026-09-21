@@ -75,5 +75,13 @@ describe("Settings", () => {
       setSetting(db, "monthly_budget_usd", "abc");
       expect(getMonthlyBudgetUsd(db)).toBeNull();
     });
+
+    // 有人繞過 admin API 直接改表時，讀取端要套同一組範圍規則
+    ["5e-324", "1e300", "0.001", "1000000001", "-1", "Infinity"].forEach((stored) => {
+      it(`should return null for an out-of-range stored value of ${stored}`, () => {
+        setSetting(db, "monthly_budget_usd", stored);
+        expect(getMonthlyBudgetUsd(db)).toBeNull();
+      });
+    });
   });
 });

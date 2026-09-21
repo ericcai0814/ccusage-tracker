@@ -549,20 +549,38 @@ describe("Dashboard numeric edge cases", () => {
     });
   }
 
-  it("should not print Infinity or NaN for a sub-unit budget written straight to the table", async () => {
-    spend("m1", "2026-06-10", 1);
-    // 繞過 admin API 的範圍檢查，直接寫最小的正浮點數
-    setSetting(db, MONTHLY_BUDGET_KEY, "5e-324");
+    // 繞過 admin API 直接寫進 settings 表的值，也必須套同一組範圍規則
+  ["5e-324", "1e300", "0.001", "1000000001"].forEach((stored) => {
+    it(`should treat a stored budget of ${stored} as unset`, async () => {
+      spend("m1", "2026-06-10", 1);
+      setSetting(db, MONTHLY_BUDGET_KEY, stored);
 
-    const res = await app.request("/?period=month");
-    expect(res.status).toBe(200);
+      const res = await app.request("/?period=month");
+      expect(res.status).toBe(200);
 
-    const html = await res.text();
-    expect(html).not.toMatch(/NaN|Infinity|∞/);
-    // 百分比算不出來就顯示破折號；推估本身有限（花 $1 對上 5e-324 的預算確實超支），
-    // 所以狀態標籤照印，不該被一起吞掉
-    expect(html).toContain("已用 —");
-    expect(html).toContain("budget-status critical");
+      const html = await res.text();
+      expect(html).not.toMatch(/NaN|Infinity|∞/);
+      expect(html).not.toContain("預算");
+    });
+  });
+
+  it("should fill the budget meter when spend overflows against a valid budget", async () => {
+    spend("m1", "2026-06-10", 1e308);
+    spend("m1", "2026-06-11", 1e308);
+    setSetting(db, MONTHLY_BUDGET_KEY, "2000");
+
+    const html = await (await app.request("/?period=month")).text();
+
+    // 無限支出對有限預算，條子該是滿的，不是空的
+    expect(html).toContain('<div class="budget-meter-fill" style="width: 100.0%">');
+  });
+
+  it("should never print an unreadably long amount", async () => {
+    spend("m1", "2026-06-10", 1e308);
+
+    const html = await (await app.request("/?period=month")).text();
+    // 有限但天文數字的金額印出來是三百多位數，塞爆版面又講不出任何事情
+    expect(html).not.toMatch(/\d{20,}/);
   });
 
   it("should drop the status label when the projection itself is not finite", async () => {
@@ -595,6 +613,14 @@ describe("Dashboard numeric edge cases", () => {
     const numbers = [...svg.matchAll(/(?:cx|cy|x1|x2|y1|y2|x|y|width|height|r)="(-?[\d.]+)"/g)].map((m) => Number(m[1]));
     expect(numbers.length).toBeGreaterThan(0);
     expect(numbers.every((n) => Number.isFinite(n))).toBe(true);
+
+    // 全部塌成同一條線也會滿足「有限」，所以要斷言真的分得開
+    const dotYs = [...svg.matchAll(/class="trend-dot" cx="[\d.]+" cy="([\d.]+)"/g)].map((m) => Number(m[1]));
+    expect(new Set(dotYs).size).toBe(2);
+
+    const gridYs = [...svg.matchAll(/class="trend-grid"[^>]*y1="([\d.]+)"/g)].map((m) => Number(m[1]));
+    expect(gridYs.length).toBe(5);
+    expect(new Set(gridYs).size).toBe(5);
   });
 
   it("should keep ranking and provider widths finite when a member total overflows to Infinity", async () => {
@@ -611,6 +637,48 @@ describe("Dashboard numeric edge cases", () => {
     const widths = [...html.matchAll(/style="width: (-?[\d.]+)%/g)].map((m) => Number(m[1]));
     expect(widths.length).toBeGreaterThan(0);
     expect(widths.every((n) => Number.isFinite(n) && n >= 0 && n <= 100)).toBe(true);
+
+    // 溢位的那一位是最大的，條子該滿；另一位不該也跟著滿
+    const section = html.slice(html.indexOf('class="panel ranking"'), html.indexOf('class="panel provider"'));
+    const rankWidths = [...section.matchAll(/class="rank-fill" style="width: ([\d.]+)%/g)].map((m) => Number(m[1]));
+    expect(rankWidths[0]).toBe(100);
+    expect(rankWidths[1]).toBeLessThan(100);
+  });
+
+  it("should drop the used percentage when it overflows past 100%", async () => {
+    // 花費有限、預算也合法，但兩者相除再乘 100 才溢位 —— 守門必須守最終百分比
+    spend("m1", "2026-06-10", 1e308);
+    setSetting(db, MONTHLY_BUDGET_KEY, "1");
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+    expect(html).toContain("已用 —");
+  });
+
+  it("should keep provider shares proportional for amounts above the drawable range", async () => {
+    spend("m1", "2026-06-10", 3e12);
+    spend("m2", "2026-06-11", 1e12, "codex-daily");
+
+    const html = await (await app.request("/?period=month")).text();
+    const section = html.slice(html.indexOf('class="panel provider"'), html.indexOf('class="panel models"'));
+
+    // 夾值是給座標用的，不能拿去算占比，否則 3e12 與 1e12 會雙雙變成 50%
+    expect(section).toContain("75%");
+    expect(section).toContain("25%");
+  });
+
+  it("should keep ranking bars proportional for amounts above the drawable range", async () => {
+    spend("m1", "2026-06-10", 3e12);
+    spend("m2", "2026-06-11", 1e12);
+
+    const html = await (await app.request("/?period=month")).text();
+    const section = html.slice(html.indexOf('class="panel ranking"'), html.indexOf('class="panel provider"'));
+    const widths = [...section.matchAll(/class="rank-fill" style="width: ([\d.]+)%/g)].map((m) => Number(m[1]));
+
+    expect(widths).toEqual([100, 33.3]);
   });
 
   it("should show a dash instead of a broken KPI number when the period total overflows", async () => {

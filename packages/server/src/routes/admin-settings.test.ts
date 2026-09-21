@@ -146,6 +146,20 @@ describe("Admin Settings API", () => {
       });
     });
 
+    it("should reject a genuine third decimal place", async () => {
+      const res = await app.request("/api/admin/settings/monthly_budget_usd", authed({ value: 12.345 }));
+      expect(res.status).toBe(400);
+    });
+
+    it("should accept a float that carries arithmetic drift", async () => {
+      // 1.1 + 2.2 === 3.3000000000000003，用字串數小數位會誤殺這種合法金額
+      const drifted = 1.1 + 2.2;
+      expect(drifted).not.toBe(3.3);
+
+      const res = await app.request("/api/admin/settings/monthly_budget_usd", authed({ value: drifted }));
+      expect(res.status).toBe(200);
+    });
+
     const accepted: [string, number][] = [
       ["1", 1],
       ["999999999.99", 999999999.99],
