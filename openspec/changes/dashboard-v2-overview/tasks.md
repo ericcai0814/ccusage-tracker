@@ -1,9 +1,9 @@
 ## 1. 設定儲存與 admin API（TDD）
 
-- [ ] [P] 1.1 依規格「Settings storage」與 design「月預算存在 settings 表並由 admin API 管理」先寫失敗測試 packages/server/src/settings.test.ts：缺 key 回 null、連寫兩次只留一列且值為最新、updated_at 更新；packages/server/src/db.test.ts 補 settings 表存在。驗證：先紅。
-- [ ] 1.2 實作 packages/server/src/db.ts 的 settings 表與 packages/server/src/settings.ts 的 getSetting／setSetting／getMonthlyBudgetUsd。驗證：1.1 全綠。
-- [ ] [P] 1.3 依規格「Monthly budget admin API」先寫失敗測試 packages/server/src/routes/admin-settings.test.ts：無 Bearer 401；PUT 2000 後 GET 回 2000；PUT -1 與 "abc" 回 400 且值不變；PUT 0 後 GET 回 0。驗證：先紅。
-- [ ] 1.4 在 packages/server/src/routes/admin.ts 實作 GET /settings 與 PUT /settings/monthly_budget_usd，沿用 adminAuth。驗證：1.3 全綠。
+- [x] [P] 1.1 依規格「Settings storage」與 design「月預算存在 settings 表並由 admin API 管理」先寫失敗測試 packages/server/src/settings.test.ts：缺 key 回 null、連寫兩次只留一列且值為最新、updated_at 更新；packages/server/src/db.test.ts 補 settings 表存在。驗證：先紅。
+- [x] 1.2 實作 packages/server/src/db.ts 的 settings 表與 packages/server/src/settings.ts 的 getSetting／setSetting／getMonthlyBudgetUsd。驗證：1.1 全綠。
+- [x] [P] 1.3 依規格「Monthly budget admin API」先寫失敗測試 packages/server/src/routes/admin-settings.test.ts：無 Bearer 401；PUT 2000 後 GET 回 2000；PUT -1 與 "abc" 回 400 且值不變；PUT 0 後 GET 回 0。驗證：先紅。
+- [x] 1.4 在 packages/server/src/routes/admin.ts 實作 GET /settings 與 PUT /settings/monthly_budget_usd，沿用 adminAuth。驗證：1.3 全綠。
 
 ## 2. 新查詢（TDD）
 

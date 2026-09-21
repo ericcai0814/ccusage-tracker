@@ -53,6 +53,12 @@ CREATE TABLE IF NOT EXISTS session_metrics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_metrics_started_at ON session_metrics(started_at);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
 
 export function createDatabase(path: string = "data.db"): Database {
