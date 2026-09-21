@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-09-21
+
+server 0.5.0，只改 server；CLI 維持 0.2.1。`/api/health` 回 `version: 0.5.0`。
 
 ### Added
 
