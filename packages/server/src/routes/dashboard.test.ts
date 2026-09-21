@@ -513,3 +513,112 @@ describe("Dashboard budget note", () => {
     expect(html).not.toContain("預算");
   });
 });
+
+// usage_records.total_cost_usd 是 REAL，兩筆極大值相加就會溢位成 Infinity；
+// 資料庫也可能被直接改寫繞過 admin API 的範圍檢查。頁面不該因此吐出 NaN 或 Infinity。
+describe("Dashboard numeric edge cases", () => {
+  let db: Database;
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => {
+    delete process.env.DASHBOARD_PASSWORD;
+    setSystemTime(FIXED_NOW);
+    db = createDatabase(":memory:");
+    app = createApp(db);
+    insertMember(db, "m1", "Eric", hashApiKey("key1"));
+    insertMember(db, "m2", "Amber", hashApiKey("key2"));
+  });
+
+  afterEach(() => {
+    db.close();
+    setSystemTime();
+    delete process.env.DASHBOARD_PASSWORD;
+  });
+
+  function spend(member: string, date: string, cost: number, sessionId = "daily"): void {
+    insertUsageRecord(db, member, {
+      member_name: member,
+      date,
+      session_id: sessionId,
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      total_cost_usd: cost,
+      models: ["claude-opus-5"],
+    });
+  }
+
+  it("should not print Infinity or NaN for a sub-unit budget written straight to the table", async () => {
+    spend("m1", "2026-06-10", 1);
+    // 繞過 admin API 的範圍檢查，直接寫最小的正浮點數
+    setSetting(db, MONTHLY_BUDGET_KEY, "5e-324");
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+    // 百分比算不出來就顯示破折號；推估本身有限（花 $1 對上 5e-324 的預算確實超支），
+    // 所以狀態標籤照印，不該被一起吞掉
+    expect(html).toContain("已用 —");
+    expect(html).toContain("budget-status critical");
+  });
+
+  it("should drop the status label when the projection itself is not finite", async () => {
+    spend("m1", "2026-06-10", 1e308);
+    spend("m1", "2026-06-11", 1e308);
+    setSetting(db, MONTHLY_BUDGET_KEY, "2000");
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+    expect(html).toContain("已用 —");
+    expect(html).toContain("月底推估 —");
+    expect(html).not.toContain('<div class="budget-status');
+  });
+
+  it("should keep every SVG attribute finite when a single record dwarfs the axis", async () => {
+    spend("m1", "2026-06-10", 1);
+    spend("m1", "2026-06-11", 1e308);
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+
+    const svg = html.match(/<svg[\s\S]*?<\/svg>/)?.[0] ?? "";
+    expect(svg).toContain('class="trend-line"');
+    const numbers = [...svg.matchAll(/(?:cx|cy|x1|x2|y1|y2|x|y|width|height|r)="(-?[\d.]+)"/g)].map((m) => Number(m[1]));
+    expect(numbers.length).toBeGreaterThan(0);
+    expect(numbers.every((n) => Number.isFinite(n))).toBe(true);
+  });
+
+  it("should keep ranking and provider widths finite when a member total overflows to Infinity", async () => {
+    spend("m1", "2026-06-10", 1e308);
+    spend("m1", "2026-06-11", 1e308);
+    spend("m2", "2026-06-11", 5, "codex-daily");
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+
+    const widths = [...html.matchAll(/style="width: (-?[\d.]+)%/g)].map((m) => Number(m[1]));
+    expect(widths.length).toBeGreaterThan(0);
+    expect(widths.every((n) => Number.isFinite(n) && n >= 0 && n <= 100)).toBe(true);
+  });
+
+  it("should show a dash instead of a broken KPI number when the period total overflows", async () => {
+    spend("m1", "2026-06-10", 1e308);
+    spend("m1", "2026-06-11", 1e308);
+
+    const html = await (await app.request("/?period=month")).text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+    expect(html).toContain("—");
+  });
+});

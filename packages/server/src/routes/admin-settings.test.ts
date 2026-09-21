@@ -125,4 +125,42 @@ describe("Admin Settings API", () => {
       expect(res.status).toBe(400);
     });
   });
+  describe("PUT /api/admin/settings/monthly_budget_usd range", () => {
+    // 0 是清除，其餘只收 1 到 1,000,000,000、最多兩位小數的數字
+    const rejected: [string, unknown][] = [
+      ["1e308", 1e308],
+      ["5e-324", 5e-324],
+      ["0.001", 0.001],
+      ["1000000001", 1000000001],
+    ];
+
+    rejected.forEach(([label, value]) => {
+      it(`should reject ${label} with 400 and keep the stored value`, async () => {
+        await app.request("/api/admin/settings/monthly_budget_usd", authed({ value: 2000 }));
+
+        const res = await app.request("/api/admin/settings/monthly_budget_usd", authed({ value }));
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error).toContain("1000000000");
+        expect(getSetting(db, "monthly_budget_usd")).toBe("2000");
+      });
+    });
+
+    const accepted: [string, number][] = [
+      ["1", 1],
+      ["999999999.99", 999999999.99],
+    ];
+
+    accepted.forEach(([label, value]) => {
+      it(`should accept ${label}`, async () => {
+        const res = await app.request("/api/admin/settings/monthly_budget_usd", authed({ value }));
+        expect(res.status).toBe(200);
+
+        const get = await app.request("/api/admin/settings", {
+          headers: { Authorization: `Bearer ${ADMIN_KEY}` },
+        });
+        expect((await get.json()).monthly_budget_usd).toBe(value);
+      });
+    });
+  });
 });

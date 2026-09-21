@@ -338,7 +338,7 @@ curl -X PUT \
   "https://cctracker.erictree.me/api/admin/settings/monthly_budget_usd"
 ```
 
-負數或非數字的 `value` 回 400，既有值不變。
+`value` 只接受 0（清除）或 1 到 1,000,000,000 之間、最多兩位小數的數字。負數、非數字、超出範圍或小數位過多一律回 400，既有值不變 —— 預算會被拿去算百分比與月底推估，沒有上下限的話 `1e308` 這種合法有限值會讓儀表板算出 `Infinity`。
 
 ### 本地開發
 

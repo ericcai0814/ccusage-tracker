@@ -5,7 +5,7 @@
 ## 結論
 
 - tasks.md 的 11 項全部完成並勾選。依變更意圖拆 commit：settings 與 admin API、三個新查詢、儀表板頁面、文件與驗證、座標軸刻度修正。
-- 完整測試 **CLI 171 pass／0 fail、server 276 pass／1 skip／0 fail**，合計 **447 pass**。server 基線是 228 pass／1 skip，本次淨增 48 項（settings 9、settings 表結構 1、admin settings 10、queries 8、dashboard 20），基線的 228 項一項未刪。
+- 完整測試 **CLI 171 pass／0 fail、server 287 pass／1 skip／0 fail**，合計 **458 pass**。server 基線是 228 pass／1 skip，本次淨增 59 項（settings 9、settings 表結構 1、admin settings 16、queries 8、dashboard 25），基線的 228 項一項未刪。
 - `pnpm typecheck`、`pnpm build`、`spectra validate dashboard-v2-overview` 全綠；`git diff --check` 無 whitespace error。
 - 本機起真的 server（暫存 SQLite，非記憶體、非線上）灌 fixture 後取 `/?period=month` HTML 存檔，移除全部 `<script>` 後 `<svg>`、兩條 `class="trend-line"`、42 個 `<title>` 讀數與圖例都還在。
 - **視覺對錯由 Eric 親自確認**，本 session 只保證結構、數字與測試。重現指令見下方「本機啟動與灌 fixture」。
@@ -19,7 +19,7 @@ macOS 26.6 arm64；Bun 1.3.13、Node 24.15.0、pnpm 9.15.9、Spectra 3.0.0。
 
 | 檢查 | 結果 |
 |---|---|
-| `pnpm test` | CLI 171 pass／0 fail；server 276 pass／1 skip／0 fail（基線 228 pass／1 skip） |
+| `pnpm test` | CLI 171 pass／0 fail；server 287 pass／1 skip／0 fail（基線 228 pass／1 skip） |
 | `pnpm typecheck` | CLI 與 server 均 Done |
 | `pnpm build` | Bundled 61 modules；`index.js` 0.27 MB |
 | `spectra validate dashboard-v2-overview` | `✓ dashboard-v2-overview — valid` |
@@ -111,6 +111,29 @@ Hono JSX 的文字與屬性都會跳脫；頁面唯一的 `dangerouslySetInnerHT
 | `should show daily-chart when data exists`（斷言 `class="daily-chart"`、`Daily Usage Trend`） | `should show the trend section when data exists`（斷言 `class="panel trend"`、`每日成本趨勢`） | 區塊改名與改版 |
 | `should not show daily-chart element when no data` | `should not draw any chart mark when no data`（斷言無 `trend-line` 也無 `trend-bar`） | 無資料時改為顯示空狀態而非整段消失 |
 | `should show peak marker when multiple days exist`（斷言 `← peak`） | `should draw a trend line when multiple days exist`（斷言 `class="trend-line"`） | 折線圖沒有 peak 標記；同樣是「多天才成立」的斷言 |
+
+## Codex 審查閘 round 1 的修正
+
+閘門回 NEEDS-FIX，三個 P2 加上閘門摘要另外點名的「排行」。四個我都先自己重現才動手（`bun run` 直接打 `app.request`，輸出見下），修完再以同一支腳本覆驗：
+
+| 問題 | 修正前 | 修正後 |
+|---|---|---|
+| `monthly_budget_usd` 沒有上下限與最小單位 | `1e308`／`5e-324`／`0.001`／`1000000001` 全部回 200 | 全部回 400，訊息帶出可接受範圍；`1` 與 `999999999.99` 仍回 200 |
+| 極小預算讓百分比變 `Infinity` | `已用 Infinity% ／ 預算 $0` | `已用 — ／ 預算 $0`；推估非有限時連狀態標籤一起不印 |
+| 峰值 `1e308` 讓刻度座標變 `NaN` | SVG 內出現 `NaN` 與 `∞` | 峰值先夾到 `MAX_PLOTTABLE_USD`（1e12），座標與刻度全為有限數字 |
+| 成員總和溢位讓排行與供應商條寬變 `NaN` | `width: NaN%`、`NaN% · Claude Code` | `width: 100.0%`、`100% · Claude Code` |
+
+實作是一組共用守門函式而不是四個各別補丁：`plotValue`（夾到可繪製上限）、`safePct`（百分比守門並夾在 0 到 100）、
+以及 `formatNumber`／`formatCost`／`formatUsdRounded` 在非有限值時回傳 `—`
+（`packages/server/src/routes/dashboard.tsx:22`）。驗證規則要求「修完再審一次」，這一輪我自己的修正又被抓出三個洞，都已修掉：
+
+1. `plotValue` 最初把 `+Infinity` 當成 `0`（`!Number.isFinite(n)` 一併吃掉了無限大），排行條寬因此變成 0% 而不是 100%。改成先擋 `NaN`、再讓 `Math.min` 把無限大壓到上限。
+2. 座標軸刻度一開始跟資料點共用同一個夾值函式，`max` 超過 1e12 時三條格線疊在同一個 y。改成刻度走 `yTick`（不夾）、資料點走 `yData`（夾）。
+3. 既有成員表的 share-bar 走同一條溢位路徑，也會印出 `width: NaN%`。一併改用 `safePct`。
+
+另外把十字線 script 裡的 `Infinity` 字面量改成 `-1` 哨兵，這樣「整頁不得出現 NaN／Infinity」可以直接對整份 HTML 斷言，不必先剝掉 `<script>`。
+
+測試：`admin-settings.test.ts` 六個範圍案例（四拒兩收）、`dashboard.test.ts` 的 `Dashboard numeric edge cases` 五個案例（極小預算、非有限推估、極大峰值的 SVG 屬性、溢位後的條寬、KPI 破折號）。
 
 ## 範圍外的發現（未修）
 

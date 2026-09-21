@@ -19,17 +19,36 @@ const dashboard = new Hono<AppEnv>();
 
 dashboard.use("*", dashboardAuth());
 
+// total_cost_usd 是 SQLite 的 REAL，兩筆極大值相加就會溢位成 Infinity；資料庫也可能被
+// 直接改寫繞過 admin API 的範圍檢查。算不出可信的數字時寧可顯示破折號，不要印 NaN。
+const NOT_AVAILABLE = "—";
+
+// 折線與長條的幾何上限。超過就畫到頂，真正的數字留在 <title> 與表格裡。
+const MAX_PLOTTABLE_USD = 1e12;
+
+function plotValue(n: number): number {
+  // NaN 先擋掉（NaN <= 0 是 false，會漏過去）；+Infinity 交給 Math.min 壓到上限
+  if (Number.isNaN(n) || n <= 0) return 0;
+  return Math.min(n, MAX_PLOTTABLE_USD);
+}
+
+function safePct(part: number, whole: number): number {
+  if (!Number.isFinite(part) || !Number.isFinite(whole) || whole <= 0) return 0;
+  return Math.min(100, Math.max(0, (part / whole) * 100));
+}
+
 function formatNumber(n: number): string {
-  return n.toLocaleString("en-US");
+  return Number.isFinite(n) ? n.toLocaleString("en-US") : NOT_AVAILABLE;
 }
 
 function formatCost(n: number): string {
+  if (!Number.isFinite(n)) return NOT_AVAILABLE;
   return `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // 預算相關的金額都是整數量級，兩位小數只會讓卡片變吵
 function formatUsdRounded(n: number): string {
-  return `$${Math.round(n).toLocaleString("en-US")}`;
+  return Number.isFinite(n) ? `$${Math.round(n).toLocaleString("en-US")}` : NOT_AVAILABLE;
 }
 
 function formatRelativeTime(isoString: string | null): string {
@@ -905,14 +924,18 @@ function rankColor(index: number): string {
   return RANK_COLORS.rest;
 }
 
-// 峰值乘 1.15 會得到 $87 這種刻度；改成往上取到 1／2／2.5／5 的整齊級距
+// 峰值乘 1.15 會得到 $87 這種刻度；改成往上取到 1／2／2.5／5 的整齊級距。
+// 峰值先 clamp 到 MAX_PLOTTABLE_USD，否則 1e308 的 step * ticks 會溢位成 Infinity，
+// 刻度值連帶算出 NaN 座標。真的算不出有限值就退回 0 到 ticks 的固定刻度。
 function niceAxisMax(peak: number, ticks: number): number {
-  if (!(peak > 0)) return 1;
-  const rough = (peak * 1.05) / ticks;
+  const capped = plotValue(peak);
+  if (capped <= 0) return ticks;
+  const rough = (capped * 1.05) / ticks;
   const magnitude = Math.pow(10, Math.floor(Math.log10(rough)));
   const normalized = rough / magnitude;
   const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 2.5 ? 2.5 : normalized <= 5 ? 5 : 10) * magnitude;
-  return step * ticks;
+  const max = step * ticks;
+  return Number.isFinite(max) && max > 0 ? max : ticks;
 }
 
 // 小數位是級距自己需要的位數，不是跟著最大值猜：級距 20 印 $20、級距 0.25 印 $0.25，
@@ -938,11 +961,12 @@ function formatDateShort(dateStr: string): string {
 interface BudgetStatus {
   budget: number;
   spent: number;
-  usedPct: number;
+  usedPct: number | null;
   meterPct: number;
   perDay: number;
   projected: number;
-  level: "ok" | "warning" | "critical";
+  // 推估算不出有限值時為 null，此時不印任何狀態標籤 —— 沒有結論比錯的結論好
+  level: "ok" | "warning" | "critical" | null;
   icon: string;
   text: string;
 }
@@ -957,7 +981,14 @@ function buildBudgetStatus(period: Period, budget: number | null, spent: number,
   const perDay = spent / dayOfMonth;
   const projected = perDay * daysInMonth;
 
-  const level = projected > budget * 1.1 ? "critical" : projected > budget ? "warning" : "ok";
+  const usedRatio = spent / budget;
+  const level = !Number.isFinite(projected)
+    ? null
+    : projected > budget * 1.1
+      ? "critical"
+      : projected > budget
+        ? "warning"
+        : "ok";
   const over = projected - budget;
   const icon = level === "critical" ? "!" : level === "warning" ? "△" : "✓";
   const text =
@@ -970,8 +1001,8 @@ function buildBudgetStatus(period: Period, budget: number | null, spent: number,
   return {
     budget,
     spent,
-    usedPct: Math.round((spent / budget) * 100),
-    meterPct: Math.min(100, (spent / budget) * 100),
+    usedPct: Number.isFinite(usedRatio) ? Math.round(usedRatio * 100) : null,
+    meterPct: safePct(spent, budget),
     perDay,
     projected,
     level,
@@ -983,14 +1014,15 @@ function buildBudgetStatus(period: Period, budget: number | null, spent: number,
 const BudgetNote: FC<{ status: BudgetStatus }> = ({ status }) => (
   <div class="budget">
     <div class="budget-line">
-      已用 {status.usedPct}% ／ 預算 {formatUsdRounded(status.budget)}
+      已用 {status.usedPct === null ? NOT_AVAILABLE : `${status.usedPct}%`} ／ 預算{" "}
+      {formatUsdRounded(status.budget)}
     </div>
     <div
       class="budget-meter"
       role="meter"
       aria-valuemin={0}
       aria-valuemax={status.budget}
-      aria-valuenow={Math.round(status.spent)}
+      aria-valuenow={Number.isFinite(status.spent) ? Math.round(status.spent) : 0}
       aria-label="本月預算消耗"
     >
       <div class="budget-meter-fill" style={`width: ${status.meterPct.toFixed(1)}%`} />
@@ -998,12 +1030,14 @@ const BudgetNote: FC<{ status: BudgetStatus }> = ({ status }) => (
     <div class="budget-line">
       日均 {formatCost(status.perDay)}，月底推估 {formatUsdRounded(status.projected)}
     </div>
-    <div class={`budget-status ${status.level}`}>
-      <span class="budget-icon" aria-hidden="true">
-        {status.icon}
-      </span>
-      {status.text}
-    </div>
+    {status.level === null ? null : (
+      <div class={`budget-status ${status.level}`}>
+        <span class="budget-icon" aria-hidden="true">
+          {status.icon}
+        </span>
+        {status.text}
+      </div>
+    )}
   </div>
 );
 
@@ -1097,8 +1131,8 @@ const TREND_SCRIPT = `(function(){
   hit.addEventListener('mousemove',function(ev){
     var r=svg.getBoundingClientRect();
     if(!r.width)return;
-    var px=((ev.clientX-r.left)/r.width)*vw,best=order[0],bd=Infinity;
-    order.forEach(function(d){var dist=Math.abs(byDate[d].x-px);if(dist<bd){bd=dist;best=d;}});
+    var px=((ev.clientX-r.left)/r.width)*vw,best=order[0],bd=-1;
+    order.forEach(function(d){var dist=Math.abs(byDate[d].x-px);if(bd<0||dist<bd){bd=dist;best=d;}});
     xh.setAttribute('x1',byDate[best].x);xh.setAttribute('x2',byDate[best].x);
     xh.style.opacity='1';
     out.textContent=best+' · '+byDate[best].rows.join('  ');
@@ -1122,7 +1156,7 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
 
   // 單日期間畫兩條橫條 —— 一個點的折線沒有趨勢可言
   if (dates.length === 1) {
-    const maxCost = Math.max(...series.map((s) => s.values[0]), 0.0001);
+    const maxCost = Math.max(...series.map((s) => plotValue(s.values[0])), 0.0001);
     return (
       <section class="panel trend">
         <div class="panel-head">
@@ -1137,7 +1171,7 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
               <div class="trend-bar-track">
                 <div
                   class="trend-bar"
-                  style={`width: ${((s.values[0] / maxCost) * 100).toFixed(1)}%; background: ${s.color}`}
+                  style={`width: ${safePct(plotValue(s.values[0]), maxCost).toFixed(1)}%; background: ${s.color}`}
                   title={`${dates[0]} · ${s.name} ${formatCost(s.values[0])}`}
                 />
               </div>
@@ -1162,6 +1196,11 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
   const n = dates.length;
   const x = (i: number) => L + (i / (n - 1)) * (W - L - R);
   const y = (v: number) => T + (H - T - B) * (1 - v / max);
+  // SVG 屬性只接受有限數字，畫不出來的點一律落在 0 軸上
+  const finiteY = (raw: number) => (Number.isFinite(raw) ? raw : y(0));
+  // 刻度值本來就在 [0, max] 內，直接映射；資料點才需要先夾到可繪製範圍
+  const yTick = (v: number) => finiteY(y(v)).toFixed(1);
+  const yData = (v: number) => finiteY(y(Math.min(plotValue(v), max))).toFixed(1);
   const labelStep = Math.max(1, Math.ceil(n / 8));
 
   return (
@@ -1173,13 +1212,13 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="每日成本折線圖，每個來源一條線">
         {Array.from({ length: TICKS + 1 }, (_, i) => (max / TICKS) * i).map((v) => (
           <g>
-            <line class="trend-grid" x1={L} x2={W - R} y1={y(v).toFixed(1)} y2={y(v).toFixed(1)} />
-            <text x={L - 6} y={(y(v) + 4).toFixed(1)} text-anchor="end">
+            <line class="trend-grid" x1={L} x2={W - R} y1={yTick(v)} y2={yTick(v)} />
+            <text x={L - 6} y={(Number(yTick(v)) + 4).toFixed(1)} text-anchor="end">
               {formatAxisTick(v, max / TICKS)}
             </text>
           </g>
         ))}
-        <line class="trend-axis" x1={L} x2={W - R} y1={y(0).toFixed(1)} y2={y(0).toFixed(1)} />
+        <line class="trend-axis" x1={L} x2={W - R} y1={yTick(0)} y2={yTick(0)} />
         {dates.map((date, i) =>
           i % labelStep === 0 || i === n - 1 ? (
             <text x={x(i).toFixed(1)} y={H - 8} text-anchor="middle">
@@ -1192,13 +1231,13 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
             <path
               class="trend-line"
               stroke={s.color}
-              d={s.values.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ")}
+              d={s.values.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${yData(v)}`).join(" ")}
             />
             {s.values.map((v, i) => (
               <circle
                 class="trend-dot"
                 cx={x(i).toFixed(1)}
-                cy={y(v).toFixed(1)}
+                cy={yData(v)}
                 r={i === n - 1 ? 4 : 2.5}
                 fill={s.color}
                 data-date={dates[i]}
@@ -1208,12 +1247,12 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
                 <title>{`${dates[i]} · ${s.name} ${formatCost(v)}`}</title>
               </circle>
             ))}
-            <text class="trend-end-label" x={(x(n - 1) + 10).toFixed(1)} y={(y(s.values[n - 1]) + 4).toFixed(1)}>
+            <text class="trend-end-label" x={(x(n - 1) + 10).toFixed(1)} y={(Number(yData(s.values[n - 1])) + 4).toFixed(1)}>
               {s.name}
             </text>
           </g>
         ))}
-        <line class="trend-crosshair" x1="0" x2="0" y1={T} y2={y(0).toFixed(1)} />
+        <line class="trend-crosshair" x1="0" x2="0" y1={T} y2={yTick(0)} />
         <rect class="trend-hit" x={L} y={T} width={W - L - R} height={H - T - B} fill="transparent" />
       </svg>
       <div class="trend-readout">
@@ -1239,7 +1278,7 @@ const MemberRanking: FC<{ members: UsageSummary[] }> = ({ members }) => {
   const ranked = [...members].sort((a, b) => b.total_cost_usd - a.total_cost_usd);
   const shown = ranked.slice(0, RANK_LIMIT);
   const folded = ranked.slice(RANK_LIMIT);
-  const maxCost = Math.max(...ranked.map((m) => m.total_cost_usd), 0.0001);
+  const maxCost = Math.max(...ranked.map((m) => plotValue(m.total_cost_usd)), 0.0001);
   const foldedCost = folded.reduce((sum, m) => sum + m.total_cost_usd, 0);
 
   const tokensOf = (m: UsageSummary) =>
@@ -1258,7 +1297,7 @@ const MemberRanking: FC<{ members: UsageSummary[] }> = ({ members }) => {
             <div class="rank-track">
               <div
                 class="rank-fill"
-                style={`width: ${((m.total_cost_usd / maxCost) * 100).toFixed(1)}%; background: ${rankColor(i)}`}
+                style={`width: ${safePct(plotValue(m.total_cost_usd), maxCost).toFixed(1)}%; background: ${rankColor(i)}`}
               />
             </div>
             <span class="rank-val">
@@ -1273,7 +1312,7 @@ const MemberRanking: FC<{ members: UsageSummary[] }> = ({ members }) => {
             <div class="rank-track">
               <div
                 class="rank-fill"
-                style={`width: ${((foldedCost / maxCost) * 100).toFixed(1)}%; background: ${RANK_COLORS.rest}`}
+                style={`width: ${safePct(plotValue(foldedCost), maxCost).toFixed(1)}%; background: ${RANK_COLORS.rest}`}
               />
             </div>
             <span class="rank-val">
@@ -1293,7 +1332,8 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
     cost: rows.filter((r) => r.source === source).reduce((sum, r) => sum + r.total_cost_usd, 0),
   }));
   const present = bySource.filter((p) => p.cost > 0);
-  const total = present.reduce((sum, p) => sum + p.cost, 0);
+  // 占比一律用可繪製值算，避免單一來源溢位成 Infinity 時整條比例條變成 NaN
+  const total = present.reduce((sum, p) => sum + plotValue(p.cost), 0);
 
   if (total === 0) {
     return (
@@ -1316,7 +1356,7 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
       </div>
       <div class="stack" role="img" aria-label="各供應商的成本占比">
         {present.map((p) => (
-          <div style={`width: ${((p.cost / total) * 100).toFixed(1)}%; background: ${SOURCE_COLOR[p.source]}`} />
+          <div style={`width: ${safePct(plotValue(p.cost), total).toFixed(1)}%; background: ${SOURCE_COLOR[p.source]}`} />
         ))}
       </div>
       <div class={hasOther ? "provider-grid has-other" : "provider-grid"}>
@@ -1328,7 +1368,7 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
             </div>
             <div class="provider-amt">{formatCost(p.cost)}</div>
             <div class="provider-pct">
-              {Math.round((p.cost / total) * 100)}% · {SOURCE_LABEL[p.source]}
+              {Math.round(safePct(plotValue(p.cost), total))}% · {SOURCE_LABEL[p.source]}
             </div>
           </div>
         ))}
@@ -1405,7 +1445,7 @@ const MemberTable: FC<{ members: UsageSummary[]; totalCost: number }> = ({ membe
         </thead>
         <tbody>
           {members.map((m) => {
-            const sharePct = totalCost > 0 ? (m.total_cost_usd / totalCost) * 100 : 0;
+            const sharePct = safePct(m.total_cost_usd, totalCost);
             return (
               <tr>
                 <td>{m.member_name}</td>

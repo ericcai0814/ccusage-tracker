@@ -38,6 +38,20 @@ admin.get("/members", (c) => {
   return c.json(members);
 });
 
+// 預算會被拿去算百分比與月底推估。沒有上下限的話，1e308 之類的合法有限值會讓
+// 儀表板算出 Infinity；小於 1 美元的預算也一樣。0 保留為「清除」。
+const MIN_BUDGET_USD = 1;
+const MAX_BUDGET_USD = 1_000_000_000;
+
+function isValidBudget(value: unknown): value is number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  if (value === 0) return true;
+  if (value < MIN_BUDGET_USD || value > MAX_BUDGET_USD) return false;
+  // 這個區間內 toString() 不會用指數表示法，小數位可以直接數
+  const decimals = value.toString().split(".")[1] ?? "";
+  return decimals.length <= 2;
+}
+
 admin.get("/settings", (c) => {
   const db = c.get("db");
   return c.json({ ...listSettings(db), [MONTHLY_BUDGET_KEY]: getMonthlyBudgetUsd(db) });
@@ -52,8 +66,11 @@ admin.put("/settings/monthly_budget_usd", async (c) => {
   }
 
   const value = body?.value;
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    return c.json({ error: "value must be a number >= 0" }, 400);
+  if (!isValidBudget(value)) {
+    return c.json(
+      { error: `value must be 0 (clears the budget) or a number between ${MIN_BUDGET_USD} and ${MAX_BUDGET_USD} with at most 2 decimal places` },
+      400
+    );
   }
 
   setSetting(c.get("db"), MONTHLY_BUDGET_KEY, String(value));
