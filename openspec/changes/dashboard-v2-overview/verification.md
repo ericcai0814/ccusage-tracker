@@ -4,7 +4,7 @@
 
 ## 結論
 
-- tasks.md 的 11 項全部完成並勾選。五段 commit：settings 與 admin API、三個新查詢、儀表板頁面、文件與驗證、座標軸刻度修正。
+- tasks.md 的 11 項全部完成並勾選。依變更意圖拆 commit：settings 與 admin API、三個新查詢、儀表板頁面、文件與驗證、座標軸刻度修正。
 - 完整測試 **CLI 171 pass／0 fail、server 276 pass／1 skip／0 fail**，合計 **447 pass**。server 基線是 228 pass／1 skip，本次淨增 48 項（settings 9、settings 表結構 1、admin settings 10、queries 8、dashboard 20），基線的 228 項一項未刪。
 - `pnpm typecheck`、`pnpm build`、`spectra validate dashboard-v2-overview` 全綠；`git diff --check` 無 whitespace error。
 - 本機起真的 server（暫存 SQLite，非記憶體、非線上）灌 fixture 後取 `/?period=month` HTML 存檔，移除全部 `<script>` 後 `<svg>`、兩條 `class="trend-line"`、42 個 `<title>` 讀數與圖例都還在。
