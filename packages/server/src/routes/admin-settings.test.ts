@@ -160,6 +160,31 @@ describe("Admin Settings API", () => {
       expect(res.status).toBe(200);
     });
 
+    // 固定容差不隨量級縮放：300000000.03 乘 100 後的浮點誤差約 3.81e-6，
+    // 用 1e-6 會把這個完全合法的金額擋掉。整個量級區間都要收得住。
+    const acrossMagnitudes = [
+      1.01, 12.34, 999.99, 12345.67, 1234567.89, 300000000.03, 599999999.95, 987654321.01, 999999999.99,
+    ];
+
+    acrossMagnitudes.forEach((value) => {
+      it(`should accept ${value} across the allowed magnitude range`, async () => {
+        const res = await app.request("/api/admin/settings/monthly_budget_usd", authed({ value }));
+        expect(res.status).toBe(200);
+
+        const get = await app.request("/api/admin/settings", {
+          headers: { Authorization: `Bearer ${ADMIN_KEY}` },
+        });
+        expect((await get.json()).monthly_budget_usd).toBe(value);
+      });
+    });
+
+    [1.001, 12.345, 999.999, 1234567.891, 300000000.031, 999999999.995, 123456789.123].forEach((value) => {
+      it(`should still reject ${value} for a genuine third decimal`, async () => {
+        const res = await app.request("/api/admin/settings/monthly_budget_usd", authed({ value }));
+        expect(res.status).toBe(400);
+      });
+    });
+
     const accepted: [string, number][] = [
       ["1", 1],
       ["999999999.99", 999999999.99],

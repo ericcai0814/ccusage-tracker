@@ -527,6 +527,7 @@ describe("Dashboard numeric edge cases", () => {
     app = createApp(db);
     insertMember(db, "m1", "Eric", hashApiKey("key1"));
     insertMember(db, "m2", "Amber", hashApiKey("key2"));
+    insertMember(db, "m3", "Ben", hashApiKey("key3"));
   });
 
   afterEach(() => {
@@ -575,12 +576,31 @@ describe("Dashboard numeric edge cases", () => {
     expect(html).toContain('<div class="budget-meter-fill" style="width: 100.0%">');
   });
 
-  it("should never print an unreadably long amount", async () => {
+  it("should show a dash instead of an unreadably long amount", async () => {
     spend("m1", "2026-06-10", 1e308);
 
     const html = await (await app.request("/?period=month")).text();
-    // 有限但天文數字的金額印出來是三百多位數，塞爆版面又講不出任何事情
-    expect(html).not.toMatch(/\d{20,}/);
+    // 舊版會印三百多位數，但帶千分位逗號，所以只查連續數字抓不到 —— 直接斷言金額欄
+    expect(html).toContain('<div class="card-value">—</div>');
+    expect(html).not.toMatch(/\$[\d,]{25,}/);
+  });
+
+  it("should still print an amount just below the display ceiling", async () => {
+    // 999999999999999.99 不是可表示的 double，會捨入成剛好 1e15 而落在上限之上，
+    // 所以邊界下緣要用真的小於 1e15 的值
+    const justBelow = 999999999999998.9;
+    expect(justBelow).toBeLessThan(1e15);
+    spend("m1", "2026-06-10", justBelow);
+
+    const html = await (await app.request("/?period=month")).text();
+    expect(html).toContain('<div class="card-value">$999,999,999,999,998.90</div>');
+  });
+
+  it("should switch to a dash exactly at the display ceiling", async () => {
+    spend("m1", "2026-06-10", 1e15);
+
+    const html = await (await app.request("/?period=month")).text();
+    expect(html).toContain('<div class="card-value">—</div>');
   });
 
   it("should drop the status label when the projection itself is not finite", async () => {
@@ -596,6 +616,25 @@ describe("Dashboard numeric edge cases", () => {
     expect(html).toContain("已用 —");
     expect(html).toContain("月底推估 —");
     expect(html).not.toContain('<div class="budget-status');
+  });
+
+  it("should place data points by their real ratio above the old clamp ceiling", async () => {
+    // 兩筆都超過舊的 1e12 夾值：舊版會把兩點夾成等高，新版必須維持 3:1
+    spend("m1", "2026-06-10", 3e12);
+    spend("m1", "2026-06-11", 1e12);
+
+    const html = await (await app.request("/?period=month")).text();
+    const svg = html.match(/<svg[\s\S]*?<\/svg>/)?.[0] ?? "";
+    const dots = [...svg.matchAll(/class="trend-dot" cx="[\d.]+" cy="([\d.]+)"/g)].map((m) => Number(m[1]));
+    expect(dots).toHaveLength(2);
+
+    // y 軸往下為正，所以 3e12 的點必須比 1e12 的點高（cy 較小）
+    const [first, second] = dots;
+    expect(first).toBeLessThan(second);
+
+    const axis = Number(/class="trend-axis"[^>]*y1="([\d.]+)"/.exec(svg)?.[1]);
+    const ratio = (axis - first) / (axis - second);
+    expect(ratio).toBeCloseTo(3, 1);
   });
 
   it("should keep every SVG attribute finite when a single record dwarfs the axis", async () => {
@@ -656,6 +695,34 @@ describe("Dashboard numeric edge cases", () => {
     const html = await res.text();
     expect(html).not.toMatch(/NaN|Infinity|∞/);
     expect(html).toContain("已用 —");
+  });
+
+  it("should make three equal provider shares add up to 100%", async () => {
+    spend("m1", "2026-06-10", 1);
+    spend("m2", "2026-06-10", 1, "codex-daily");
+    spend("m3", "2026-06-10", 1, "manual-import");
+
+    const html = await (await app.request("/?period=month")).text();
+    const section = html.slice(html.indexOf('class="panel provider"'), html.indexOf('class="panel models"'));
+    const pcts = [...section.matchAll(/<div class="provider-pct">(\d+)%/g)].map((m) => Number(m[1]));
+
+    // 各自四捨五入會得到 33+33+33 = 99
+    expect(pcts).toHaveLength(3);
+    expect(pcts.reduce((sum, n) => sum + n, 0)).toBe(100);
+  });
+
+  it("should make uneven provider shares add up to 100%", async () => {
+    spend("m1", "2026-06-10", 1);
+    spend("m2", "2026-06-10", 1, "codex-daily");
+    spend("m3", "2026-06-10", 4, "manual-import");
+
+    const html = await (await app.request("/?period=month")).text();
+    const section = html.slice(html.indexOf('class="panel provider"'), html.indexOf('class="panel models"'));
+    const pcts = [...section.matchAll(/<div class="provider-pct">(\d+)%/g)].map((m) => Number(m[1]));
+
+    // 各自四捨五入會得到 17+17+67 = 101
+    expect(pcts).toHaveLength(3);
+    expect(pcts.reduce((sum, n) => sum + n, 0)).toBe(100);
   });
 
   it("should keep provider shares proportional for amounts above the drawable range", async () => {

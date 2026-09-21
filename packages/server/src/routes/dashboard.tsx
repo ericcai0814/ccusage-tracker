@@ -52,6 +52,24 @@ function sharePercents(values: number[]): number[] {
   return scaled.map((v) => Math.min(1, Math.max(0, v / total)) * 100);
 }
 
+// 各自四捨五入會讓整數百分比加總變成 99% 或 101%（三個等份就是 33+33+33）。
+// 最大餘數法：先取整數部分，再把剩下的名額按小數部分由大到小補回去，加總保證是 100。
+function roundSharesTo100(shares: number[]): number[] {
+  const floors = shares.map((v) => Math.floor(v));
+  const used = floors.reduce((sum, v) => sum + v, 0);
+  const remainder = Math.round(shares.reduce((sum, v) => sum + v, 0)) - used;
+  if (remainder <= 0) return floors;
+
+  const bump = new Set(
+    shares
+      .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+      .sort((a, b) => b.frac - a.frac || a.i - b.i)
+      .slice(0, remainder)
+      .map((o) => o.i)
+  );
+  return floors.map((v, i) => (bump.has(i) ? v + 1 : v));
+}
+
 function formatNumber(n: number): string {
   return Number.isFinite(n) ? n.toLocaleString("en-US") : NOT_AVAILABLE;
 }
@@ -1358,6 +1376,7 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
   }));
   const present = bySource.filter((p) => p.cost > 0);
   const shares = sharePercents(present.map((p) => p.cost));
+  const wholeShares = roundSharesTo100(shares);
 
   if (present.length === 0) {
     return (
@@ -1392,7 +1411,7 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
             </div>
             <div class="provider-amt">{formatCost(p.cost)}</div>
             <div class="provider-pct">
-              {Math.round(shares[i])}% · {SOURCE_LABEL[p.source]}
+              {wholeShares[i]}% · {SOURCE_LABEL[p.source]}
             </div>
           </div>
         ))}
@@ -1454,6 +1473,7 @@ const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
 
   // 總花費可能溢位成 Infinity，直接相除會得到 NaN；正規化佔比可以保住比例
   const memberShares = sharePercents(members.map((m) => m.total_cost_usd));
+  const memberWholeShares = roundSharesTo100(memberShares);
 
   return (
     <div class="table-wrapper">
@@ -1489,7 +1509,7 @@ const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
                     <div class="share-bar-track">
                       <div class="share-bar-fill" style={`width: ${sharePct}%`} />
                     </div>
-                    <span class="share-bar-pct">{sharePct.toFixed(0)}%</span>
+                    <span class="share-bar-pct">{memberWholeShares[i]}%</span>
                   </div>
                 </td>
               </tr>

@@ -76,8 +76,18 @@ describe("Settings", () => {
       expect(getMonthlyBudgetUsd(db)).toBeNull();
     });
 
+    // 讀取端與 API 共用驗證，所以驗證只要誤拒，既存的合法預算就會整個消失
+    [1.01, 12.34, 999.99, 12345.67, 1234567.89, 300000000.03, 599999999.95, 987654321.01, 999999999.99].forEach(
+      (value) => {
+        it(`should read back a stored budget of ${value}`, () => {
+          setSetting(db, "monthly_budget_usd", String(value));
+          expect(getMonthlyBudgetUsd(db)).toBe(value);
+        });
+      }
+    );
+
     // 有人繞過 admin API 直接改表時，讀取端要套同一組範圍規則
-    ["5e-324", "1e300", "0.001", "1000000001", "-1", "Infinity"].forEach((stored) => {
+    ["5e-324", "1e300", "0.001", "1000000001", "-1", "Infinity", "999999999.995"].forEach((stored) => {
       it(`should return null for an out-of-range stored value of ${stored}`, () => {
         setSetting(db, "monthly_budget_usd", stored);
         expect(getMonthlyBudgetUsd(db)).toBeNull();

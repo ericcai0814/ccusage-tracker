@@ -32,9 +32,12 @@ export function isValidBudget(value: unknown): value is number {
   if (typeof value !== "number" || !Number.isFinite(value)) return false;
   if (value === 0) return true;
   if (value < MIN_BUDGET_USD || value > MAX_BUDGET_USD) return false;
-  // 只收到分：用浮點容差判斷，才不會誤殺 1.1 + 2.2 這種帶運算尾差的合法金額
+  // 只收到分。用浮點容差判斷才不會誤殺 1.1 + 2.2 這種帶運算尾差的金額，但容差必須
+  // 隨量級縮放：300000000.03 乘 100 後的誤差約 3.81e-6，固定 1e-6 會把它整個擋掉。
+  // 真正的三位小數在分的尺度上差 0.1 以上，遠大於任何量級的浮點間距，不會被放過。
   const cents = value * 100;
-  return Math.abs(cents - Math.round(cents)) < 1e-6;
+  const tolerance = Math.max(1e-6, Math.abs(cents) * Number.EPSILON * 4);
+  return Math.abs(cents - Math.round(cents)) <= tolerance;
 }
 
 // 設定值是 TEXT，寫入端可能是舊版或手改的資料庫 —— 解析不出數字、或不在 API 允許的
