@@ -19,6 +19,9 @@ import {
   getSessionDistribution,
   getProjectActivity,
   getSessionLog,
+  aggregateUsageByDateAndSource,
+  sumClaudeTurns,
+  aggregateModelPresence,
 } from "./queries";
 import type { Database } from "bun:sqlite";
 
@@ -809,4 +812,164 @@ describe("Query Helpers", () => {
     });
 
   });
+
+  describe("Overview queries", () => {
+    // 兩位成員、兩個來源、三天的固定 fixture，加上期間外的兩天用來驗證邊界
+    const RANGE = { from: "2026-06-01", to: "2026-06-03" };
+
+    function seedOverviewFixture(): void {
+      insertMember(db, "m1", "Eric", hashApiKey("key1"));
+      insertMember(db, "m2", "Amber", hashApiKey("key2"));
+
+      const rows = [
+        { member: "m1", date: "2026-06-01", session_id: "daily", cost: 10, tokens: [100, 50, 10, 40], models: ["claude-opus-5"] },
+        { member: "m2", date: "2026-06-01", session_id: "daily", cost: 5, tokens: [60, 20, 10, 10], models: ["claude-opus-5"] },
+        { member: "m1", date: "2026-06-01", session_id: "codex-daily", cost: 3, tokens: [30, 10, 10, 10], models: ["gpt-5.4"] },
+        { member: "m1", date: "2026-06-02", session_id: "daily", cost: 20, tokens: [200, 100, 50, 50], models: ["claude-opus-5", "claude-sonnet-5"] },
+        { member: "m2", date: "2026-06-02", session_id: "codex-daily", cost: 7, tokens: [70, 30, 20, 20], models: ["gpt-5.4"] },
+        { member: "m1", date: "2026-06-03", session_id: "daily", cost: 1, tokens: [10, 5, 3, 2], models: ["claude-opus-5"] },
+        // 期間外，任何查詢都不該看到
+        { member: "m1", date: "2026-05-31", session_id: "daily", cost: 999, tokens: [1, 1, 1, 1], models: ["claude-haiku-4-5"] },
+        { member: "m1", date: "2026-06-04", session_id: "daily", cost: 888, tokens: [1, 1, 1, 1], models: ["claude-haiku-4-5"] },
+      ];
+
+      rows.forEach((r) => {
+        insertUsageRecord(db, r.member, {
+          member_name: r.member,
+          date: r.date,
+          session_id: r.session_id,
+          input_tokens: r.tokens[0],
+          output_tokens: r.tokens[1],
+          cache_creation_tokens: r.tokens[2],
+          cache_read_tokens: r.tokens[3],
+          total_cost_usd: r.cost,
+          models: r.models,
+        });
+      });
+    }
+
+    describe("aggregateUsageByDateAndSource", () => {
+      it("should return exact cost and tokens per date and source", () => {
+        seedOverviewFixture();
+
+        const result = aggregateUsageByDateAndSource(db, RANGE);
+
+        expect(result).toEqual([
+          { date: "2026-06-01", source: "claude", total_cost_usd: 15, total_tokens: 300 },
+          { date: "2026-06-01", source: "codex", total_cost_usd: 3, total_tokens: 60 },
+          { date: "2026-06-02", source: "claude", total_cost_usd: 20, total_tokens: 400 },
+          { date: "2026-06-02", source: "codex", total_cost_usd: 7, total_tokens: 140 },
+          { date: "2026-06-03", source: "claude", total_cost_usd: 1, total_tokens: 20 },
+        ]);
+      });
+
+      it("should map unknown session ids to the other source", () => {
+        insertMember(db, "m1", "Eric", hashApiKey("key1"));
+        insertUsageRecord(db, "m1", {
+          member_name: "Eric",
+          date: "2026-06-01",
+          session_id: "manual-import",
+          input_tokens: 10,
+          output_tokens: 10,
+          cache_creation_tokens: 0,
+          cache_read_tokens: 0,
+          total_cost_usd: 2,
+          models: [],
+        });
+
+        const result = aggregateUsageByDateAndSource(db, RANGE);
+        expect(result).toEqual([
+          { date: "2026-06-01", source: "other", total_cost_usd: 2, total_tokens: 20 },
+        ]);
+      });
+
+      it("should return an empty array when no records exist", () => {
+        expect(aggregateUsageByDateAndSource(db, RANGE)).toEqual([]);
+      });
+    });
+
+    describe("sumClaudeTurns", () => {
+      it("should sum only session_metrics turns inside the period", () => {
+        insertMember(db, "m1", "Eric", hashApiKey("key1"));
+
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "s-before",
+          started_at: "2026-05-31T23:00:00Z",
+          ended_at: "2026-05-31T23:30:00Z",
+          turns: 100,
+        });
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "s-first-day",
+          started_at: "2026-06-01T00:10:00Z",
+          ended_at: "2026-06-01T01:00:00Z",
+          turns: 12,
+        });
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "s-last-day",
+          started_at: "2026-06-03T23:45:00Z",
+          ended_at: "2026-06-03T23:59:00Z",
+          turns: 8,
+        });
+        insertSessionMetrics(db, "m1", {
+          member_name: "Eric",
+          session_id: "s-after",
+          started_at: "2026-06-04T00:05:00Z",
+          ended_at: "2026-06-04T01:00:00Z",
+          turns: 500,
+        });
+
+        expect(sumClaudeTurns(db, RANGE)).toBe(20);
+      });
+
+      it("should return 0 when no sessions exist", () => {
+        expect(sumClaudeTurns(db, RANGE)).toBe(0);
+      });
+    });
+
+    describe("aggregateModelPresence", () => {
+      it("should count distinct days and members per model, sorted by days", () => {
+        seedOverviewFixture();
+
+        const result = aggregateModelPresence(db, RANGE);
+
+        expect(result).toEqual([
+          { model: "claude-opus-5", source: "claude", days: 3, members: 2 },
+          { model: "gpt-5.4", source: "codex", days: 2, members: 2 },
+          { model: "claude-sonnet-5", source: "claude", days: 1, members: 1 },
+        ]);
+      });
+
+      it("should skip records whose models column is not a JSON array", () => {
+        insertMember(db, "m1", "Eric", hashApiKey("key1"));
+        insertUsageRecord(db, "m1", {
+          member_name: "Eric",
+          date: "2026-06-01",
+          session_id: "daily",
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_tokens: 0,
+          cache_read_tokens: 0,
+          total_cost_usd: 1,
+          models: ["claude-opus-5"],
+        });
+        db.run(
+          "INSERT INTO usage_records (member_id, date, session_id, total_cost_usd, models) VALUES ('m1', '2026-06-02', 'daily', 1, 'not-json')"
+        );
+        db.run(
+          "INSERT INTO usage_records (member_id, date, session_id, total_cost_usd, models) VALUES ('m1', '2026-06-03', 'daily', 1, '\"claude-opus-5\"')"
+        );
+
+        const result = aggregateModelPresence(db, RANGE);
+        expect(result).toEqual([{ model: "claude-opus-5", source: "claude", days: 1, members: 1 }]);
+      });
+
+      it("should return an empty array when no records exist", () => {
+        expect(aggregateModelPresence(db, RANGE)).toEqual([]);
+      });
+    });
+  });
+
 });

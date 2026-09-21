@@ -45,6 +45,18 @@ describe("Database Schema", () => {
     expect(columnNames).toContain("models");
   });
 
+  it("should create settings table with correct columns", () => {
+    const columns = db
+      .query("PRAGMA table_info(settings)")
+      .all() as Array<{ name: string; type: string; pk: number }>;
+
+    const columnNames = columns.map((c) => c.name);
+    expect(columnNames).toContain("key");
+    expect(columnNames).toContain("value");
+    expect(columnNames).toContain("updated_at");
+    expect(columns.find((c) => c.name === "key")?.pk).toBe(1);
+  });
+
   it("should enforce unique constraint on members.name", () => {
     db.run("INSERT INTO members (id, name, api_key_hash) VALUES ('1', 'eric', 'hash1')");
     expect(() => {

@@ -1,7 +1,8 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, setSystemTime } from "bun:test";
 import { createApp } from "../app";
 import { createDatabase } from "../db";
-import { insertMember, hashApiKey, insertUsageRecord } from "../queries";
+import { insertMember, hashApiKey, insertUsageRecord, insertSessionMetrics } from "../queries";
+import { setSetting, MONTHLY_BUDGET_KEY } from "../settings";
 import type { Database } from "bun:sqlite";
 
 describe("Dashboard", () => {
@@ -78,25 +79,26 @@ describe("Dashboard", () => {
     expect(html).toContain("Share");
   });
 
-  it("should show daily-chart when data exists", async () => {
+  it("should show the trend section when data exists", async () => {
     const res = await app.request("/");
     const html = await res.text();
-    expect(html).toContain('class="daily-chart"');
-    expect(html).toContain("Daily Usage Trend");
+    expect(html).toContain('class="panel trend"');
+    expect(html).toContain("每日成本趨勢");
   });
 
-  it("should not show daily-chart element when no data", async () => {
+  it("should not draw any chart mark when no data", async () => {
     const emptyDb = createDatabase(":memory:");
     const emptyApp = createApp(emptyDb);
 
     const res = await emptyApp.request("/?period=today");
     const html = await res.text();
-    expect(html).not.toContain('class="daily-chart"');
+    expect(html).not.toContain('class="trend-line"');
+    expect(html).not.toContain('class="trend-bar"');
 
     emptyDb.close();
   });
 
-  it("should show peak marker when multiple days exist", async () => {
+  it("should draw a trend line when multiple days exist", async () => {
     insertUsageRecord(db, "m1", {
       member_name: "Eric",
       date: (() => {
@@ -115,7 +117,7 @@ describe("Dashboard", () => {
 
     const res = await app.request("/?period=month");
     const html = await res.text();
-    expect(html).toContain("← peak");
+    expect(html).toContain('class="trend-line"');
   });
 
   it("should require auth when DASHBOARD_PASSWORD is set", async () => {
@@ -166,5 +168,592 @@ describe("Dashboard", () => {
     const html = await res.text();
     expect(html).toContain("Never");
     expect(html).toContain("stale-warn");
+  });
+});
+
+// 期間全部由 new Date() 推導，月初跑測試會讓「三天」的 fixture 落到範圍外，
+// 所以整段把系統時間釘在月中，斷言才是固定的。
+const FIXED_NOW = new Date("2026-06-15T12:00:00Z");
+
+describe("Dashboard overview", () => {
+  let db: Database;
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => {
+    delete process.env.DASHBOARD_PASSWORD;
+    setSystemTime(FIXED_NOW);
+    db = createDatabase(":memory:");
+    app = createApp(db);
+
+    insertMember(db, "m1", "Eric", hashApiKey("key1"));
+    insertMember(db, "m2", "Amber", hashApiKey("key2"));
+    insertMember(db, "m3", "Ben", hashApiKey("key3"));
+
+    // Eric 30／Amber 20／Ben 10，Claude 45 對 Codex 15 剛好 75%／25%，
+    // claude-opus-5 橫跨三天兩人
+    const rows = [
+      { member: "m1", date: "2026-06-10", session_id: "daily", cost: 30, models: ["claude-opus-5"] },
+      { member: "m2", date: "2026-06-11", session_id: "daily", cost: 10, models: ["claude-opus-5"] },
+      { member: "m2", date: "2026-06-12", session_id: "daily", cost: 5, models: ["claude-opus-5"] },
+      { member: "m2", date: "2026-06-11", session_id: "codex-daily", cost: 5, models: ["gpt-5.4"] },
+      { member: "m3", date: "2026-06-12", session_id: "codex-daily", cost: 10, models: ["gpt-5.4"] },
+    ];
+    rows.forEach((r) => {
+      insertUsageRecord(db, r.member, {
+        member_name: r.member,
+        date: r.date,
+        session_id: r.session_id,
+        input_tokens: 1000,
+        output_tokens: 500,
+        cache_creation_tokens: 300,
+        cache_read_tokens: 200,
+        total_cost_usd: r.cost,
+        models: r.models,
+      });
+    });
+
+    insertSessionMetrics(db, "m1", {
+      member_name: "Eric",
+      session_id: "s-june",
+      started_at: "2026-06-11T10:00:00Z",
+      ended_at: "2026-06-11T11:00:00Z",
+      turns: 42,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    setSystemTime();
+    delete process.env.DASHBOARD_PASSWORD;
+  });
+
+  describe("KPI row", () => {
+    it("should show four KPI cards with period figures", async () => {
+      const html = await (await app.request("/?period=month")).text();
+
+      expect(html).toContain("總花費");
+      expect(html).toContain("總 token");
+      expect(html).toContain("活躍成員");
+      expect(html).toContain("Claude 對話回合");
+      expect(html).toContain("$60.00");
+      expect(html).toContain("10,000");
+      expect(html).toContain("42");
+    });
+
+    it("should note that turns cover Claude Code only", async () => {
+      const html = await (await app.request("/?period=month")).text();
+      expect(html).toContain("只含 Claude Code");
+    });
+  });
+
+  describe("Trend chart", () => {
+    it("should draw one line per source with a legend and end labels", async () => {
+      const html = await (await app.request("/?period=month")).text();
+
+      expect(html).toContain("<svg");
+      expect(html.match(/class="trend-line"/g)).toHaveLength(2);
+      expect(html).toContain("Claude Code");
+      expect(html).toContain("Codex");
+      expect(html).toContain('class="trend-legend"');
+    });
+
+    it("should give every data point a title for hover readout", async () => {
+      const html = await (await app.request("/?period=month")).text();
+      expect(html).toContain("<title>2026-06-10 · Claude Code $30.00</title>");
+      expect(html).toContain("<title>2026-06-12 · Codex $10.00</title>");
+    });
+
+    it("should stay complete after every script is removed", async () => {
+      const html = await (await app.request("/?period=month")).text();
+      const withoutScript = html.replace(/<script[\s\S]*?<\/script>/g, "");
+
+      expect(withoutScript).toContain("<svg");
+      expect(withoutScript.match(/class="trend-line"/g)).toHaveLength(2);
+      expect(withoutScript).toContain("<title>2026-06-10 · Claude Code $30.00</title>");
+      expect(withoutScript).toContain('class="trend-legend"');
+    });
+
+    it("should render two bars instead of lines for a single-day period", async () => {
+      insertUsageRecord(db, "m1", {
+        member_name: "Eric",
+        date: "2026-06-15",
+        session_id: "daily",
+        input_tokens: 10,
+        output_tokens: 10,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+        total_cost_usd: 4,
+        models: ["claude-opus-5"],
+      });
+      insertUsageRecord(db, "m1", {
+        member_name: "Eric",
+        date: "2026-06-15",
+        session_id: "codex-daily",
+        input_tokens: 10,
+        output_tokens: 10,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+        total_cost_usd: 1,
+        models: ["gpt-5.4"],
+      });
+
+      const html = await (await app.request("/?period=today")).text();
+
+      expect(html).not.toContain('class="trend-line"');
+      expect(html.match(/class="trend-bar"/g)).toHaveLength(2);
+      expect(html).toContain("Claude Code");
+      expect(html).toContain("Codex");
+    });
+  });
+
+  describe("Member ranking", () => {
+    it("should list members by cost descending", async () => {
+      const html = await (await app.request("/?period=month")).text();
+      const section = html.slice(html.indexOf('class="panel ranking"'), html.indexOf('class="panel provider"'));
+
+      expect(section.indexOf("Eric")).toBeGreaterThan(-1);
+      expect(section.indexOf("Eric")).toBeLessThan(section.indexOf("Amber"));
+      expect(section.indexOf("Amber")).toBeLessThan(section.indexOf("Ben"));
+      expect(section).toContain("$30.00");
+      expect(section).toContain("$20.00");
+      expect(section).toContain("$10.00");
+    });
+
+    it("should size bars proportionally to cost", async () => {
+      const html = await (await app.request("/?period=month")).text();
+      const section = html.slice(html.indexOf('class="panel ranking"'), html.indexOf('class="panel provider"'));
+      const widths = [...section.matchAll(/class="rank-fill" style="width: ([\d.]+)%/g)].map((m) => Number(m[1]));
+
+      expect(widths).toEqual([100, 66.7, 33.3]);
+    });
+
+    it("should fold members beyond the tenth into one row", async () => {
+      for (let i = 4; i <= 15; i++) {
+        insertMember(db, `m${i}`, `Member${i}`, hashApiKey(`key${i}`));
+        insertUsageRecord(db, `m${i}`, {
+          member_name: `Member${i}`,
+          date: "2026-06-13",
+          session_id: "daily",
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_creation_tokens: 0,
+          cache_read_tokens: 0,
+          total_cost_usd: 100 + i,
+          models: ["claude-opus-5"],
+        });
+      }
+
+      const html = await (await app.request("/?period=month")).text();
+      const section = html.slice(html.indexOf('class="panel ranking"'), html.indexOf('class="panel provider"'));
+
+      expect(section.match(/class="rank-row"/g)).toHaveLength(10);
+      expect(section).toContain("其他 5 人");
+    });
+  });
+
+  describe("Provider split", () => {
+    it("should show Anthropic and OpenAI shares", async () => {
+      const html = await (await app.request("/?period=month")).text();
+      const section = html.slice(html.indexOf('class="panel provider"'), html.indexOf('class="panel models"'));
+
+      expect(section).toContain("Anthropic");
+      expect(section).toContain("OpenAI");
+      expect(section).toContain("75%");
+      expect(section).toContain("25%");
+      expect(section).toContain("$45.00");
+      expect(section).toContain("$15.00");
+    });
+  });
+
+  describe("Model table", () => {
+    it("should list distinct days and members per model", async () => {
+      const html = await (await app.request("/?period=month")).text();
+      const section = html.slice(html.indexOf('class="panel models"'), html.indexOf("</main>"));
+
+      expect(section).toContain("出現天數");
+      expect(section).toContain("使用人數");
+      expect(section).toContain("claude-opus-5");
+      expect(section).toMatch(/claude-opus-5<\/td>\s*<td[^>]*>Claude Code<\/td>\s*<td[^>]*>3<\/td>\s*<td[^>]*>2<\/td>/);
+    });
+
+    it("should skip records whose models column is not a JSON array", async () => {
+      db.run(
+        "INSERT INTO usage_records (member_id, date, session_id, total_cost_usd, models) VALUES ('m1', '2026-06-14', 'daily', 1, 'not-json')"
+      );
+
+      const res = await app.request("/?period=month");
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("claude-opus-5");
+    });
+  });
+
+  describe("Member table", () => {
+    it("should keep the existing per-member table", async () => {
+      const html = await (await app.request("/?period=month")).text();
+
+      expect(html).toContain("Cache Create");
+      expect(html).toContain("Cache Read");
+      expect(html).toContain("Last Report");
+      expect(html).toContain("share-bar");
+    });
+  });
+
+  describe("Empty database", () => {
+    it("should return 200 with an empty state per section", async () => {
+      const emptyDb = createDatabase(":memory:");
+      const emptyApp = createApp(emptyDb);
+
+      const res = await emptyApp.request("/?period=month");
+      expect(res.status).toBe(200);
+
+      const html = await res.text();
+      expect(html).toContain("No trend data");
+      expect(html).toContain("No member activity");
+      expect(html).toContain("No provider data");
+      expect(html).toContain("No model data");
+      expect(html).toContain("No usage data");
+
+      emptyDb.close();
+    });
+  });
+});
+
+describe("Dashboard budget note", () => {
+  let db: Database;
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => {
+    delete process.env.DASHBOARD_PASSWORD;
+    setSystemTime(FIXED_NOW);
+    db = createDatabase(":memory:");
+    app = createApp(db);
+    insertMember(db, "m1", "Eric", hashApiKey("key1"));
+  });
+
+  afterEach(() => {
+    db.close();
+    setSystemTime();
+    delete process.env.DASHBOARD_PASSWORD;
+  });
+
+  // 2026-06-15 是第 15 天、6 月有 30 天，所以月底推估剛好是已用金額的兩倍
+  function spend(cost: number): void {
+    insertUsageRecord(db, "m1", {
+      member_name: "Eric",
+      date: "2026-06-10",
+      session_id: "daily",
+      input_tokens: 10,
+      output_tokens: 10,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      total_cost_usd: cost,
+      models: ["claude-opus-5"],
+    });
+  }
+
+  it("should show budget, used share and projection when on track", async () => {
+    spend(750);
+    setSetting(db, MONTHLY_BUDGET_KEY, "2000");
+
+    const html = await (await app.request("/?period=month")).text();
+
+    expect(html).toContain("預算");
+    expect(html).toContain("已用");
+    expect(html).toContain("月底推估");
+    expect(html).toContain("$2,000");
+    expect(html).toContain("38%");
+    expect(html).toContain("$1,500");
+    expect(html).not.toContain("budget-status critical");
+    expect(html).not.toContain("budget-status warning");
+  });
+
+  it("should carry a critical label and symbol when the projection is over budget by more than 10%", async () => {
+    spend(600);
+    setSetting(db, MONTHLY_BUDGET_KEY, "1000");
+
+    const html = await (await app.request("/?period=month")).text();
+
+    expect(html).toContain("budget-status critical");
+    expect(html).toContain("超出預算");
+    expect(html).toContain("!");
+  });
+
+  it("should carry a warning label when the projection is 0 to 10% over budget", async () => {
+    spend(525);
+    setSetting(db, MONTHLY_BUDGET_KEY, "1000");
+
+    const html = await (await app.request("/?period=month")).text();
+
+    expect(html).toContain("budget-status warning");
+    expect(html).toContain("略超預算");
+    expect(html).toContain("△");
+  });
+
+  it("should not show budget text when no budget is stored", async () => {
+    spend(750);
+
+    const html = await (await app.request("/?period=month")).text();
+    expect(html).not.toContain("預算");
+  });
+
+  it("should treat a budget of 0 as unset", async () => {
+    spend(750);
+    setSetting(db, MONTHLY_BUDGET_KEY, "0");
+
+    const html = await (await app.request("/?period=month")).text();
+    expect(html).not.toContain("預算");
+  });
+
+  it("should not show budget text outside the month period", async () => {
+    spend(750);
+    setSetting(db, MONTHLY_BUDGET_KEY, "2000");
+
+    const html = await (await app.request("/?period=week")).text();
+    expect(html).not.toContain("預算");
+  });
+});
+
+// usage_records.total_cost_usd 是 REAL，兩筆極大值相加就會溢位成 Infinity；
+// 資料庫也可能被直接改寫繞過 admin API 的範圍檢查。頁面不該因此吐出 NaN 或 Infinity。
+describe("Dashboard numeric edge cases", () => {
+  let db: Database;
+  let app: ReturnType<typeof createApp>;
+
+  beforeEach(() => {
+    delete process.env.DASHBOARD_PASSWORD;
+    setSystemTime(FIXED_NOW);
+    db = createDatabase(":memory:");
+    app = createApp(db);
+    insertMember(db, "m1", "Eric", hashApiKey("key1"));
+    insertMember(db, "m2", "Amber", hashApiKey("key2"));
+    insertMember(db, "m3", "Ben", hashApiKey("key3"));
+  });
+
+  afterEach(() => {
+    db.close();
+    setSystemTime();
+    delete process.env.DASHBOARD_PASSWORD;
+  });
+
+  function spend(member: string, date: string, cost: number, sessionId = "daily"): void {
+    insertUsageRecord(db, member, {
+      member_name: member,
+      date,
+      session_id: sessionId,
+      input_tokens: 1,
+      output_tokens: 1,
+      cache_creation_tokens: 0,
+      cache_read_tokens: 0,
+      total_cost_usd: cost,
+      models: ["claude-opus-5"],
+    });
+  }
+
+    // 繞過 admin API 直接寫進 settings 表的值，也必須套同一組範圍規則
+  ["5e-324", "1e300", "0.001", "1000000001"].forEach((stored) => {
+    it(`should treat a stored budget of ${stored} as unset`, async () => {
+      spend("m1", "2026-06-10", 1);
+      setSetting(db, MONTHLY_BUDGET_KEY, stored);
+
+      const res = await app.request("/?period=month");
+      expect(res.status).toBe(200);
+
+      const html = await res.text();
+      expect(html).not.toMatch(/NaN|Infinity|∞/);
+      expect(html).not.toContain("預算");
+    });
+  });
+
+  it("should fill the budget meter when spend overflows against a valid budget", async () => {
+    spend("m1", "2026-06-10", 1e308);
+    spend("m1", "2026-06-11", 1e308);
+    setSetting(db, MONTHLY_BUDGET_KEY, "2000");
+
+    const html = await (await app.request("/?period=month")).text();
+
+    // 無限支出對有限預算，條子該是滿的，不是空的
+    expect(html).toContain('<div class="budget-meter-fill" style="width: 100.0%">');
+  });
+
+  it("should show a dash instead of an unreadably long amount", async () => {
+    spend("m1", "2026-06-10", 1e308);
+
+    const html = await (await app.request("/?period=month")).text();
+    // 舊版會印三百多位數，但帶千分位逗號，所以只查連續數字抓不到 —— 直接斷言金額欄
+    expect(html).toContain('<div class="card-value">—</div>');
+    expect(html).not.toMatch(/\$[\d,]{25,}/);
+  });
+
+  it("should still print an amount just below the display ceiling", async () => {
+    // 999999999999999.99 不是可表示的 double，會捨入成剛好 1e15 而落在上限之上，
+    // 所以邊界下緣要用真的小於 1e15 的值
+    const justBelow = 999999999999998.9;
+    expect(justBelow).toBeLessThan(1e15);
+    spend("m1", "2026-06-10", justBelow);
+
+    const html = await (await app.request("/?period=month")).text();
+    expect(html).toContain('<div class="card-value">$999,999,999,999,998.90</div>');
+  });
+
+  it("should switch to a dash exactly at the display ceiling", async () => {
+    spend("m1", "2026-06-10", 1e15);
+
+    const html = await (await app.request("/?period=month")).text();
+    expect(html).toContain('<div class="card-value">—</div>');
+  });
+
+  it("should drop the status label when the projection itself is not finite", async () => {
+    spend("m1", "2026-06-10", 1e308);
+    spend("m1", "2026-06-11", 1e308);
+    setSetting(db, MONTHLY_BUDGET_KEY, "2000");
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+    expect(html).toContain("已用 —");
+    expect(html).toContain("月底推估 —");
+    expect(html).not.toContain('<div class="budget-status');
+  });
+
+  it("should place data points by their real ratio above the old clamp ceiling", async () => {
+    // 兩筆都超過舊的 1e12 夾值：舊版會把兩點夾成等高，新版必須維持 3:1
+    spend("m1", "2026-06-10", 3e12);
+    spend("m1", "2026-06-11", 1e12);
+
+    const html = await (await app.request("/?period=month")).text();
+    const svg = html.match(/<svg[\s\S]*?<\/svg>/)?.[0] ?? "";
+    const dots = [...svg.matchAll(/class="trend-dot" cx="[\d.]+" cy="([\d.]+)"/g)].map((m) => Number(m[1]));
+    expect(dots).toHaveLength(2);
+
+    // y 軸往下為正，所以 3e12 的點必須比 1e12 的點高（cy 較小）
+    const [first, second] = dots;
+    expect(first).toBeLessThan(second);
+
+    const axis = Number(/class="trend-axis"[^>]*y1="([\d.]+)"/.exec(svg)?.[1]);
+    const ratio = (axis - first) / (axis - second);
+    expect(ratio).toBeCloseTo(3, 1);
+  });
+
+  it("should keep every SVG attribute finite when a single record dwarfs the axis", async () => {
+    spend("m1", "2026-06-10", 1);
+    spend("m1", "2026-06-11", 1e308);
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+
+    const svg = html.match(/<svg[\s\S]*?<\/svg>/)?.[0] ?? "";
+    expect(svg).toContain('class="trend-line"');
+    const numbers = [...svg.matchAll(/(?:cx|cy|x1|x2|y1|y2|x|y|width|height|r)="(-?[\d.]+)"/g)].map((m) => Number(m[1]));
+    expect(numbers.length).toBeGreaterThan(0);
+    expect(numbers.every((n) => Number.isFinite(n))).toBe(true);
+
+    // 全部塌成同一條線也會滿足「有限」，所以要斷言真的分得開
+    const dotYs = [...svg.matchAll(/class="trend-dot" cx="[\d.]+" cy="([\d.]+)"/g)].map((m) => Number(m[1]));
+    expect(new Set(dotYs).size).toBe(2);
+
+    const gridYs = [...svg.matchAll(/class="trend-grid"[^>]*y1="([\d.]+)"/g)].map((m) => Number(m[1]));
+    expect(gridYs.length).toBe(5);
+    expect(new Set(gridYs).size).toBe(5);
+  });
+
+  it("should keep ranking and provider widths finite when a member total overflows to Infinity", async () => {
+    spend("m1", "2026-06-10", 1e308);
+    spend("m1", "2026-06-11", 1e308);
+    spend("m2", "2026-06-11", 5, "codex-daily");
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+
+    const widths = [...html.matchAll(/style="width: (-?[\d.]+)%/g)].map((m) => Number(m[1]));
+    expect(widths.length).toBeGreaterThan(0);
+    expect(widths.every((n) => Number.isFinite(n) && n >= 0 && n <= 100)).toBe(true);
+
+    // 溢位的那一位是最大的，條子該滿；另一位不該也跟著滿
+    const section = html.slice(html.indexOf('class="panel ranking"'), html.indexOf('class="panel provider"'));
+    const rankWidths = [...section.matchAll(/class="rank-fill" style="width: ([\d.]+)%/g)].map((m) => Number(m[1]));
+    expect(rankWidths[0]).toBe(100);
+    expect(rankWidths[1]).toBeLessThan(100);
+  });
+
+  it("should drop the used percentage when it overflows past 100%", async () => {
+    // 花費有限、預算也合法，但兩者相除再乘 100 才溢位 —— 守門必須守最終百分比
+    spend("m1", "2026-06-10", 1e308);
+    setSetting(db, MONTHLY_BUDGET_KEY, "1");
+
+    const res = await app.request("/?period=month");
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+    expect(html).toContain("已用 —");
+  });
+
+  it("should make three equal provider shares add up to 100%", async () => {
+    spend("m1", "2026-06-10", 1);
+    spend("m2", "2026-06-10", 1, "codex-daily");
+    spend("m3", "2026-06-10", 1, "manual-import");
+
+    const html = await (await app.request("/?period=month")).text();
+    const section = html.slice(html.indexOf('class="panel provider"'), html.indexOf('class="panel models"'));
+    const pcts = [...section.matchAll(/<div class="provider-pct">(\d+)%/g)].map((m) => Number(m[1]));
+
+    // 各自四捨五入會得到 33+33+33 = 99
+    expect(pcts).toHaveLength(3);
+    expect(pcts.reduce((sum, n) => sum + n, 0)).toBe(100);
+  });
+
+  it("should make uneven provider shares add up to 100%", async () => {
+    spend("m1", "2026-06-10", 1);
+    spend("m2", "2026-06-10", 1, "codex-daily");
+    spend("m3", "2026-06-10", 4, "manual-import");
+
+    const html = await (await app.request("/?period=month")).text();
+    const section = html.slice(html.indexOf('class="panel provider"'), html.indexOf('class="panel models"'));
+    const pcts = [...section.matchAll(/<div class="provider-pct">(\d+)%/g)].map((m) => Number(m[1]));
+
+    // 各自四捨五入會得到 17+17+67 = 101
+    expect(pcts).toHaveLength(3);
+    expect(pcts.reduce((sum, n) => sum + n, 0)).toBe(100);
+  });
+
+  it("should keep provider shares proportional for amounts above the drawable range", async () => {
+    spend("m1", "2026-06-10", 3e12);
+    spend("m2", "2026-06-11", 1e12, "codex-daily");
+
+    const html = await (await app.request("/?period=month")).text();
+    const section = html.slice(html.indexOf('class="panel provider"'), html.indexOf('class="panel models"'));
+
+    // 夾值是給座標用的，不能拿去算占比，否則 3e12 與 1e12 會雙雙變成 50%
+    expect(section).toContain("75%");
+    expect(section).toContain("25%");
+  });
+
+  it("should keep ranking bars proportional for amounts above the drawable range", async () => {
+    spend("m1", "2026-06-10", 3e12);
+    spend("m2", "2026-06-11", 1e12);
+
+    const html = await (await app.request("/?period=month")).text();
+    const section = html.slice(html.indexOf('class="panel ranking"'), html.indexOf('class="panel provider"'));
+    const widths = [...section.matchAll(/class="rank-fill" style="width: ([\d.]+)%/g)].map((m) => Number(m[1]));
+
+    expect(widths).toEqual([100, 33.3]);
+  });
+
+  it("should show a dash instead of a broken KPI number when the period total overflows", async () => {
+    spend("m1", "2026-06-10", 1e308);
+    spend("m1", "2026-06-11", 1e308);
+
+    const html = await (await app.request("/?period=month")).text();
+    expect(html).not.toMatch(/NaN|Infinity|∞/);
+    expect(html).toContain("—");
   });
 });

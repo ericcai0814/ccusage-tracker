@@ -2,6 +2,15 @@ import { Hono } from "hono";
 import { nanoid } from "nanoid";
 import { adminAuth } from "../middleware/admin-auth";
 import { insertMember, listMembers, hashApiKey } from "../queries";
+import {
+  listSettings,
+  setSetting,
+  getMonthlyBudgetUsd,
+  isValidBudget,
+  MIN_BUDGET_USD,
+  MAX_BUDGET_USD,
+  MONTHLY_BUDGET_KEY,
+} from "../settings";
 import type { AppEnv } from "../app";
 
 const admin = new Hono<AppEnv>();
@@ -35,6 +44,31 @@ admin.post("/members", async (c) => {
 admin.get("/members", (c) => {
   const members = listMembers(c.get("db"));
   return c.json(members);
+});
+
+admin.get("/settings", (c) => {
+  const db = c.get("db");
+  return c.json({ ...listSettings(db), [MONTHLY_BUDGET_KEY]: getMonthlyBudgetUsd(db) });
+});
+
+admin.put("/settings/monthly_budget_usd", async (c) => {
+  let body: { value?: unknown };
+  try {
+    body = await c.req.json<{ value?: unknown }>();
+  } catch {
+    return c.json({ error: "invalid JSON body" }, 400);
+  }
+
+  const value = body?.value;
+  if (!isValidBudget(value)) {
+    return c.json(
+      { error: `value must be 0 (clears the budget) or a number between ${MIN_BUDGET_USD} and ${MAX_BUDGET_USD} with at most 2 decimal places` },
+      400
+    );
+  }
+
+  setSetting(c.get("db"), MONTHLY_BUDGET_KEY, String(value));
+  return c.json({ [MONTHLY_BUDGET_KEY]: value });
 });
 
 export default admin;

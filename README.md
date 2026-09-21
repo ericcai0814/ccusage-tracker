@@ -251,10 +251,16 @@ curl -fsSL https://cctracker.erictree.me/uninstall.sh | bash
 https://cctracker.erictree.me
 ```
 
-支援 Today / Week / Month 切換。Dashboard 包含：
-- 摘要卡片：總成本、總 token、活躍成員數
-- 每日走勢圖
-- 成員用量表格（含 Last Report 欄位與 stale 警告）
+支援 Today / Week / Month 切換。Dashboard 由上而下包含：
+
+- **KPI 列**：總花費（估算）、總 token、活躍成員、Claude 對話回合。回合數只含 Claude Code，Codex 的收集器不提供這個數字。
+- **每日成本趨勢**：Claude Code 與 Codex 各一條線的 inline SVG 折線圖，每個點的 hover 讀數走原生 `<title>`。期間只有一天時（Today）改畫兩條橫條。
+- **成員排行**：依花費排序的單色橫條，最多十列，其餘折疊成「其他 N 人」。
+- **供應商切分**：來源即供應商，`daily` 對到 Anthropic、`codex-daily` 對到 OpenAI，一條兩段堆疊比例條加兩格金額與百分比。
+- **模型表**：每個模型的來源、出現天數與使用人數。每模型成本留待下一期（需要 hook 多送欄位）。
+- **成員用量表格**（含 Last Report 欄位與 stale 警告）。
+
+設定月預算後（見下方 admin API），period 為 `month` 時花費卡會多出「已用 X% ／ 預算 $B」、一條 meter 與「日均 $d，月底推估 $p」。月底推估超出預算 10% 以上標 critical、0 到 10% 標 warning，一律帶符號與文字。未設定預算或 period 不是 `month` 時完全不顯示預算相關內容。
 
 ### API
 
@@ -308,6 +314,34 @@ npx ccusage-tracker@latest status
 | `DASHBOARD_PASSWORD` | 否 | Dashboard Basic Auth 密碼（不設則公開） |
 | `ADMIN_API_KEY` | 否 | 管理員 API（用於手動建立成員） |
 
+### 團隊設定 API
+
+需要 `ADMIN_API_KEY`。月預算存在資料庫的 `settings` 表，改數字不必重新部署。
+
+```bash
+# 讀取全部設定（monthly_budget_usd 為數字，未設定時是 null）
+curl -H "Authorization: Bearer <ADMIN_API_KEY>" \
+  "https://cctracker.erictree.me/api/admin/settings"
+
+# 設定月預算（USD）
+curl -X PUT \
+  -H "Authorization: Bearer <ADMIN_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"value": 2000}' \
+  "https://cctracker.erictree.me/api/admin/settings/monthly_budget_usd"
+
+# 清除月預算（送 0，儀表板就不再顯示預算）
+curl -X PUT \
+  -H "Authorization: Bearer <ADMIN_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"value": 0}' \
+  "https://cctracker.erictree.me/api/admin/settings/monthly_budget_usd"
+```
+
+`value` 只接受 0（清除）或 1 到 1,000,000,000 之間、最多兩位小數的數字。負數、非數字、超出範圍或小數位過多一律回 400，既有值不變 —— 預算會被拿去算百分比與月底推估，沒有上下限的話 `1e308` 這種合法有限值會讓儀表板算出 `Infinity`，`5e-324` 則會被格式化成 `$0`。
+
+直接改 `settings` 表繞過這道檢查也沒用：儀表板讀取時套同一組範圍，超範圍的值一律當作未設定，整段預算不顯示。
+
 ### 本地開發
 
 ```bash
@@ -328,6 +362,7 @@ ccusage-tracker/
         app.ts               # 路由定義
         db.ts                # SQLite schema + migration
         queries.ts           # typed query helpers
+        settings.ts          # 團隊設定讀寫（月預算）
         scripts.ts           # setup.sh/.ps1 + session-end.sh/.mjs 產生器
         middleware/
           team-auth.ts       # TEAM_KEY 認證
@@ -336,7 +371,7 @@ ccusage-tracker/
         routes/
           ingest.ts          # POST /api/ingest
           report.ts          # GET /api/report/*
-          admin.ts           # POST/GET /api/admin/members
+          admin.ts           # /api/admin/members 與 /api/admin/settings
           dashboard.tsx      # GET / (Hono JSX SSR)
     cli/                     # CLI 工具（setup/update/sync codex/report/status）
   Dockerfile                 # Bun + Alpine
