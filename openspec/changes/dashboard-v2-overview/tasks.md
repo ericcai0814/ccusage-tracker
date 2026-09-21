@@ -7,8 +7,8 @@
 
 ## 2. 新查詢（TDD）
 
-- [ ] [P] 2.1 依 design「總覽頁的五個區塊與資料來源」「趨勢圖以 inline SVG 伺服端繪製」「模型表只列出現天數與使用人數」先在 packages/server/src/queries.test.ts 寫失敗測試：aggregateUsageByDateAndSource 對兩成員兩來源三天 fixture 回精確每日每來源 cost 與 tokens；sumClaudeTurns 只加總期間內 session_metrics.turns；aggregateModelPresence 回每模型的來源、出現天數、使用人數，且 models 欄為非法 JSON 的列被略過。驗證：先紅。
-- [ ] 2.2 在 packages/server/src/queries.ts 實作三個查詢，來源判定依 session_id（daily → claude、codex-daily → codex、其他 → other）。驗證：2.1 全綠，既有 queries.test.ts 全綠。
+- [x] [P] 2.1 依 design「總覽頁的五個區塊與資料來源」「趨勢圖以 inline SVG 伺服端繪製」「模型表只列出現天數與使用人數」先在 packages/server/src/queries.test.ts 寫失敗測試：aggregateUsageByDateAndSource 對兩成員兩來源三天 fixture 回精確每日每來源 cost 與 tokens；sumClaudeTurns 只加總期間內 session_metrics.turns；aggregateModelPresence 回每模型的來源、出現天數、使用人數，且 models 欄為非法 JSON 的列被略過。驗證：先紅。
+- [x] 2.2 在 packages/server/src/queries.ts 實作三個查詢，來源判定依 session_id（daily → claude、codex-daily → codex、其他 → other）。驗證：2.1 全綠，既有 queries.test.ts 全綠。
 
 ## 3. 儀表板頁面
 

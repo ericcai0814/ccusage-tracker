@@ -625,3 +625,153 @@ export function getSessionLog(
     .all(from, to) as SessionLogEntry[];
 }
 
+
+// --- Overview Queries (dashboard v2) ---
+
+// 沒有 source 欄位，來源只能從 session_id 反推：hook 送 `daily`、codex-sync 送 `codex-daily`。
+// 其他值目前不會出現，但手動灌的資料可能有，所以歸到 other 而不是丟掉。
+export type UsageSource = "claude" | "codex" | "other";
+
+const SOURCE_CASE_SQL = `CASE session_id
+  WHEN 'daily' THEN 'claude'
+  WHEN 'codex-daily' THEN 'codex'
+  ELSE 'other'
+END`;
+
+export function resolveSource(sessionId: string | null): UsageSource {
+  if (sessionId === "daily") return "claude";
+  if (sessionId === "codex-daily") return "codex";
+  return "other";
+}
+
+export interface DailySourceUsage {
+  date: string;
+  source: UsageSource;
+  total_cost_usd: number;
+  total_tokens: number;
+}
+
+export function aggregateUsageByDateAndSource(
+  db: Database,
+  options: { from?: string; to?: string }
+): DailySourceUsage[] {
+  const conditions: string[] = [];
+  const params: string[] = [];
+
+  if (options.from) {
+    conditions.push("date >= ?");
+    params.push(options.from);
+  }
+  if (options.to) {
+    conditions.push("date <= ?");
+    params.push(options.to);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  return db
+    .query(
+      `SELECT
+        date,
+        ${SOURCE_CASE_SQL} as source,
+        SUM(total_cost_usd) as total_cost_usd,
+        SUM(input_tokens + output_tokens + cache_creation_tokens + cache_read_tokens) as total_tokens
+      FROM usage_records
+      ${where}
+      GROUP BY date, source
+      ORDER BY date ASC, source ASC`
+    )
+    .all(...params) as DailySourceUsage[];
+}
+
+// session_metrics 只有 Claude Code 的 session-end hook 會寫，Codex 的收集器不送回合數，
+// 所以這個總和就是「Claude 對話回合」，卡片副標必須寫清楚。
+export function sumClaudeTurns(db: Database, options: { from?: string; to?: string }): number {
+  const conditions: string[] = [];
+  const params: string[] = [];
+
+  if (options.from) {
+    conditions.push("started_at >= ?");
+    params.push(options.from);
+  }
+  if (options.to) {
+    // started_at 是完整時間戳，to 是日期 —— 要包含當天就得比到隔天零點
+    conditions.push("started_at < date(?, '+1 day')");
+    params.push(options.to);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const row = db
+    .query(`SELECT COALESCE(SUM(turns), 0) as total FROM session_metrics ${where}`)
+    .get(...params) as { total: number };
+
+  return row.total;
+}
+
+export interface ModelPresence {
+  model: string;
+  source: UsageSource;
+  days: number;
+  members: number;
+}
+
+// models 欄的歷史格式不保證是 JSON 陣列（舊版可能存字串），在 SQL 裡用 json_each 會直接爆，
+// 所以拉回 TS 解析，壞掉的列略過就好，不該連累整頁。
+export function aggregateModelPresence(
+  db: Database,
+  options: { from?: string; to?: string }
+): ModelPresence[] {
+  const conditions: string[] = [];
+  const params: string[] = [];
+
+  if (options.from) {
+    conditions.push("date >= ?");
+    params.push(options.from);
+  }
+  if (options.to) {
+    conditions.push("date <= ?");
+    params.push(options.to);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const rows = db
+    .query(`SELECT member_id, date, session_id, models FROM usage_records ${where}`)
+    .all(...params) as Pick<UsageRecord, "member_id" | "date" | "session_id" | "models">[];
+
+  const acc = new Map<string, { source: UsageSource; days: Set<string>; members: Set<string> }>();
+
+  for (const row of rows) {
+    const models = parseModels(row.models);
+    if (models === null) continue;
+
+    const source = resolveSource(row.session_id);
+    for (const model of models) {
+      const key = `${model}\u0000${source}`;
+      const entry = acc.get(key) ?? { source, days: new Set<string>(), members: new Set<string>() };
+      entry.days.add(row.date);
+      entry.members.add(row.member_id);
+      acc.set(key, entry);
+    }
+  }
+
+  return Array.from(acc.entries())
+    .map(([key, entry]) => ({
+      model: key.split("\u0000")[0],
+      source: entry.source,
+      days: entry.days.size,
+      members: entry.members.size,
+    }))
+    .sort((a, b) => b.days - a.days || b.members - a.members || a.model.localeCompare(b.model));
+}
+
+function parseModels(raw: string): string[] | null {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    return parsed.filter((m): m is string => typeof m === "string" && m.length > 0);
+  } catch {
+    return null;
+  }
+}
