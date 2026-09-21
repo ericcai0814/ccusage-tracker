@@ -12,9 +12,9 @@
 
 ## 3. 儀表板頁面
 
-- [ ] 3.1 依規格「Dashboard data display」「Overview trend chart」「Rankings and provider split」「Budget reference」先在 packages/server/src/routes/dashboard.test.ts 寫失敗測試：month 期間含四張 KPI 文字、`<svg>` 內兩條 `<path>` 與圖例 Claude Code／Codex、成員排行順序 30／20／10、供應商 75%／25%、模型表 days 3 members 2、既有成員表；有預算時含「預算」「已用」「月底推估」，推估超過 10% 含 critical 標籤；無預算不含「預算」；today 期間不含折線 `<path>`；空資料庫回 200 且各區塊空狀態。驗證：先紅。
-- [ ] 3.2 依 design「版面與樣式沿用 S29」「成員排行與供應商切分」「預算只做參考不做儀表」在 packages/server/src/routes/dashboard.tsx 實作 KpiRow、TrendChart（inline SVG，資料色 Claude #3987e5、Codex #d95926，每點 `<title>`，單一 y 軸，today 改兩條橫條）、MemberRanking（單色序列 #6da7ec／#3987e5／#256abf，最多 10 列加其他）、ProviderSplit（兩段堆疊條 2px 間隙）、ModelTable、BudgetNote（同色系 meter、critical／warning 帶符號與文字），保留 Layout 與 MemberTable；手機寬度 KPI 兩欄其餘單欄，表格外層 overflow-x auto。驗證：3.1 全綠，既有 dashboard.test.ts 全綠。
-- [ ] 3.3 可選的原生 script 十字線：若加入，必須在 script 不執行時圖表仍完整（`<title>` 讀數仍在），且 dashboard.test.ts 不依賴 script。驗證：以 app.request 取得 HTML 後移除 `<script>` 再斷言圖表元素仍存在。
+- [x] 3.1 依規格「Dashboard data display」「Overview trend chart」「Rankings and provider split」「Budget reference」先在 packages/server/src/routes/dashboard.test.ts 寫失敗測試：month 期間含四張 KPI 文字、`<svg>` 內兩條 `<path>` 與圖例 Claude Code／Codex、成員排行順序 30／20／10、供應商 75%／25%、模型表 days 3 members 2、既有成員表；有預算時含「預算」「已用」「月底推估」，推估超過 10% 含 critical 標籤；無預算不含「預算」；today 期間不含折線 `<path>`；空資料庫回 200 且各區塊空狀態。驗證：先紅。
+- [x] 3.2 依 design「版面與樣式沿用 S29」「成員排行與供應商切分」「預算只做參考不做儀表」在 packages/server/src/routes/dashboard.tsx 實作 KpiRow、TrendChart（inline SVG，資料色 Claude #3987e5、Codex #d95926，每點 `<title>`，單一 y 軸，today 改兩條橫條）、MemberRanking（單色序列 #6da7ec／#3987e5／#256abf，最多 10 列加其他）、ProviderSplit（兩段堆疊條 2px 間隙）、ModelTable、BudgetNote（同色系 meter、critical／warning 帶符號與文字），保留 Layout 與 MemberTable；手機寬度 KPI 兩欄其餘單欄，表格外層 overflow-x auto。驗證：3.1 全綠，既有 dashboard.test.ts 全綠。
+- [x] 3.3 可選的原生 script 十字線：若加入，必須在 script 不執行時圖表仍完整（`<title>` 讀數仍在），且 dashboard.test.ts 不依賴 script。驗證：以 app.request 取得 HTML 後移除 `<script>` 再斷言圖表元素仍存在。
 
 ## 4. 文件與驗證
 
