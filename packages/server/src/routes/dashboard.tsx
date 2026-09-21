@@ -915,9 +915,19 @@ function niceAxisMax(peak: number, ticks: number): number {
   return step * ticks;
 }
 
-function formatAxisTick(value: number, max: number): string {
-  const digits = max < 1 ? 2 : max < 10 ? 1 : 0;
-  return `$${value.toFixed(digits)}`;
+// 小數位是級距自己需要的位數，不是跟著最大值猜：級距 20 印 $20、級距 0.25 印 $0.25，
+// 兩邊都不會出現 $0.3 這種讓刻度看起來不等距的四捨五入。
+function axisDecimals(step: number): number {
+  for (let digits = 0; digits <= 4; digits++) {
+    const scaled = step * Math.pow(10, digits);
+    if (Math.abs(scaled - Math.round(scaled)) < 1e-9) return digits;
+  }
+  return 4;
+}
+
+function formatAxisTick(value: number, step: number): string {
+  const digits = axisDecimals(step);
+  return `$${value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
 }
 
 function formatDateShort(dateStr: string): string {
@@ -1165,7 +1175,7 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
           <g>
             <line class="trend-grid" x1={L} x2={W - R} y1={y(v).toFixed(1)} y2={y(v).toFixed(1)} />
             <text x={L - 6} y={(y(v) + 4).toFixed(1)} text-anchor="end">
-              {formatAxisTick(v, max)}
+              {formatAxisTick(v, max / TICKS)}
             </text>
           </g>
         ))}
