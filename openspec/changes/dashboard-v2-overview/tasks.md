@@ -18,5 +18,5 @@
 
 ## 4. 文件與驗證
 
-- [ ] [P] 4.1 更新 README.md 的儀表板段落（五個區塊、預算參考的顯示條件）與 admin API 段落（兩個 settings 端點與 curl 範例），CHANGELOG 加 Unreleased 條目。驗證：內容審閱，README 含 `monthly_budget_usd`。
-- [ ] 4.2 完整驗證：`bun test`（server）、`pnpm typecheck`、`pnpm build` 全綠；以本機 `DASHBOARD_PASSWORD` 與記憶體或暫存 SQLite 啟動 server，灌入 fixture 後以 curl 取得 `/?period=month` HTML 並存檔；把啟動指令、fixture 灌入指令與 HTML 路徑寫進 openspec/changes/dashboard-v2-overview/verification.md，明寫「視覺由 Eric 確認」；`spectra validate` 通過。
+- [x] [P] 4.1 更新 README.md 的儀表板段落（五個區塊、預算參考的顯示條件）與 admin API 段落（兩個 settings 端點與 curl 範例），CHANGELOG 加 Unreleased 條目。驗證：內容審閱，README 含 `monthly_budget_usd`。
+- [x] 4.2 完整驗證：`bun test`（server）、`pnpm typecheck`、`pnpm build` 全綠；以本機 `DASHBOARD_PASSWORD` 與記憶體或暫存 SQLite 啟動 server，灌入 fixture 後以 curl 取得 `/?period=month` HTML 並存檔；把啟動指令、fixture 灌入指令與 HTML 路徑寫進 openspec/changes/dashboard-v2-overview/verification.md，明寫「視覺由 Eric 確認」；`spectra validate` 通過。
