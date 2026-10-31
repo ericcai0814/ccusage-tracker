@@ -27,20 +27,26 @@ Changes can be parked（暫存）— temporarily moved out of `openspec/changes/
 
 <!-- SPECTRA:END -->
 
-## Zeabur Deployment
+## Deployment
 
-部署於 Linode Seattle dedicated server（`server-6a1796f42bd255f07b151f36`）。
+自架 VM，以 Docker Compose 執行，對外經 Cloudflare Tunnel（`cctracker.erictree.me`）。VM 不開任何對外 port。2026-11-01 由 Zeabur 遷入（Zeabur 2026-12 停止營運）。主機位置與連線方式記在維護者的私人筆記，不入庫。
 
-- Project ID: `6a1799b43efa5e8474b88042`（專案名 `ccusage-tracker`）
-- Service ID: `6a1799c842ba884e012a607c`
-- Environment ID: `6a1799b4453d7bd5cef43956`
+VM 上 `/opt/apps/` 結構：
 
-Redeploy（更新程式碼，務必帶 `--service-id` 否則會建出重複 service）:
-
-```bash
-npx zeabur@latest deploy --project-id 6a1799b43efa5e8474b88042 --service-id 6a1799c842ba884e012a607c --json
+```
+compose.yml          # cctracker（本 repo）、blog、cloudflared
+ccusage-tracker/     # 本 repo 的 clone，compose 從這裡 build
+secrets/cctracker.env
+cloudflared/         # config.yml（ingress）＋ creds.json（tunnel 憑證）
+data/cctracker/      # SQLite，掛進容器 /data
 ```
 
-環境變數（值不入庫）：`TEAM_KEY`（成員 hook 回報用，沿用舊值不可改）、`DB_PATH=/data/ccusage-tracker.db`、`DASHBOARD_PASSWORD`、`ADMIN_API_KEY`。資料庫為 SQLite，存於 `/data` persistent volume。
+更新程式碼：
 
-> 舊部署：project `cctracker`（`68635832390ecceb60605ec8`，AWS Tokyo 共享區），2026-05 遷移至此後可停用。
+```bash
+cd /opt/apps/ccusage-tracker && git pull && cd .. && docker compose up -d --build cctracker
+```
+
+環境變數（值不入庫）：`TEAM_KEY`（成員 hook 回報用，沿用舊值不可改）、`DB_PATH=/data/ccusage-tracker.db`、`DASHBOARD_PASSWORD`、`ADMIN_API_KEY`、`SERVER_URL`、`PORT=3000`。
+
+Cloudflare DNS 指向 tunnel 時，`cloudflared tunnel route dns` 要加 `--config /dev/null` 並直接寫 tunnel UUID；否則本機 `~/.cloudflared/config.yml` 裡的 `tunnel:` 會蓋過參數，把網域接到別條 tunnel。
