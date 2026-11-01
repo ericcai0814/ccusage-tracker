@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-11-01 — server 部署遷移
+
+只換部署環境，沒有程式變更：server 維持 0.5.0（`/api/health` 回 `version: 0.5.0`），CLI 維持 0.2.1。
+
+### Changed
+
+- server 從 Zeabur 搬到自架主機，以 Docker Compose 執行，對外改走 Cloudflare Tunnel，主機不開放任何對外 port。原因是 Zeabur 公告 2026-12 停止營運。
+- 網址 `https://cctracker.erictree.me` 不變，`TEAM_KEY`、`DASHBOARD_PASSWORD`、`ADMIN_API_KEY` 照舊沿用。成員端的 hook 與 `config.json` 都不用改，也不需要重跑 `setup`。
+- 資料搬移：用 SQLite `VACUUM INTO` 做一致快照搬到新主機。快照之後、DNS 切換完成之前仍寫到舊主機的資料，以三方比對（快照、舊主機最終版、新主機）補回：兩邊都改過的同一筆，保留數值較新的新主機版本。
+- 部署說明（`CLAUDE.md`）改寫為新架構。
+
+### Known issues
+
+- 2026-11-01 00:40–00:42（UTC+8）DNS 誤指到另一條 tunnel，約兩分鐘內的回報請求收到 404。用量是每日累計值，之後的回報會補上；若某個 session 的最後一次回報剛好落在這兩分鐘內，那筆 session 統計會停在前一次回報的數字。
+
 ## [0.5.0] - 2026-09-21
 
 server 0.5.0，只改 server；CLI 維持 0.2.1。`/api/health` 回 `version: 0.5.0`。
