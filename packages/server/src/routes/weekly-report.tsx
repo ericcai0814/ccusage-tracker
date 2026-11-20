@@ -19,6 +19,7 @@ import {
   type WeeklyCost,
 } from "../queries";
 import type { AppEnv } from "../app";
+import { THEME_CSS, WEEKLY_CSS, FONT_LINKS } from "./ui-theme";
 
 const WEEK_REGEX = /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/;
 
@@ -56,292 +57,6 @@ function getCurrentWeek(): string {
 }
 
 
-const CSS = `
-  @import url('https://fonts.googleapis.com/css2?family=Teko:wght@400;500;600;700&family=Michroma&family=Share+Tech+Mono&display=swap');
-
-  :root {
-    --bg-primary: #050505;
-    --bg-secondary: #020202;
-    --bg-card: #0a0a0a;
-    --brand-primary: #dc2626;
-    --brand-glow: rgba(220, 38, 38, 0.7);
-    --brand-glow-soft: rgba(220, 38, 38, 0.15);
-    --brand-glow-faint: rgba(220, 38, 38, 0.05);
-    --text-primary: #ffffff;
-    --text-secondary: #888888;
-    --text-dim: #555555;
-    --border-glow: rgba(220, 38, 38, 0.3);
-    --border-dim: rgba(255, 255, 255, 0.06);
-    --neon-shadow: 0 0 15px var(--brand-glow);
-    --font-display: 'Teko', sans-serif;
-    --font-body: 'Michroma', sans-serif;
-    --font-mono: 'Share Tech Mono', monospace;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    *, *::before, *::after {
-      animation-duration: 0.01ms !important;
-      transition-duration: 0.01ms !important;
-    }
-  }
-
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-
-  body {
-    font-family: var(--font-body);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    min-height: 100vh;
-    position: relative;
-    overflow-x: hidden;
-    line-height: 1.6;
-  }
-
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.15) 2px, rgba(0,0,0,0.15) 4px);
-    pointer-events: none;
-    z-index: 9999;
-  }
-
-  body::after {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.015) 1px, transparent 0);
-    background-size: 4px 4px;
-    pointer-events: none;
-    z-index: 1;
-  }
-
-  .container {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 2rem 1.5rem;
-    position: relative;
-    z-index: 2;
-  }
-
-  h1 {
-    font-family: var(--font-display);
-    font-size: 2.25rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-bottom: 0.25rem;
-  }
-
-  h1 span { color: var(--brand-primary); text-shadow: var(--neon-shadow); }
-
-  .subtitle {
-    font-family: var(--font-mono);
-    color: var(--text-dim);
-    font-size: 0.7rem;
-    letter-spacing: 0.12em;
-    margin-bottom: 2rem;
-  }
-
-  .section {
-    background: var(--bg-card);
-    border: 1px solid var(--border-dim);
-    padding: 1.5rem;
-    margin-bottom: 1.5rem;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .section::before {
-    content: '';
-    position: absolute;
-    top: -1px;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, var(--brand-primary), transparent 60%);
-    box-shadow: var(--neon-shadow);
-  }
-
-  .section h2 {
-    font-family: var(--font-display);
-    font-size: 1.4rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--brand-primary);
-    text-shadow: 0 0 8px var(--brand-glow);
-    margin-bottom: 1rem;
-  }
-
-  table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
-
-  th {
-    font-family: var(--font-mono);
-    font-size: 0.6rem;
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
-    color: var(--text-dim);
-    text-align: left;
-    padding: 0.6rem 0.8rem;
-    border-bottom: 1px solid var(--border-glow);
-  }
-
-  td {
-    font-family: var(--font-mono);
-    padding: 0.5rem 0.8rem;
-    border-bottom: 1px solid var(--border-dim);
-    color: var(--text-secondary);
-  }
-
-  tr:hover td { background: var(--brand-glow-faint); }
-
-  .report-nav {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    margin-bottom: 1.5rem;
-    font-family: var(--font-mono);
-    font-size: 0.6rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-  }
-
-  .report-nav a {
-    color: var(--text-dim);
-    text-decoration: none;
-    transition: color 0.2s ease;
-  }
-
-  .report-nav a:hover {
-    color: var(--brand-primary);
-    text-shadow: 0 0 8px var(--brand-glow);
-  }
-
-  .report-nav .nav-sep {
-    color: var(--border-glow);
-  }
-
-  .report-nav .nav-current {
-    color: var(--brand-primary);
-    text-shadow: 0 0 8px var(--brand-glow);
-  }
-
-  .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 1px;
-    background: var(--border-dim);
-    border: 1px solid var(--border-glow);
-    margin-bottom: 1rem;
-  }
-
-  .stat-card {
-    background: var(--bg-card);
-    text-align: center;
-    padding: 1.25rem;
-    position: relative;
-  }
-
-  .stat-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; width: 100%; height: 100%;
-    background: linear-gradient(135deg, var(--brand-glow-faint), transparent 40%);
-    pointer-events: none;
-  }
-
-  .stat-value {
-    font-family: var(--font-display);
-    font-size: 2rem;
-    font-weight: 700;
-    color: var(--text-primary);
-    line-height: 1;
-  }
-
-  .stat-label {
-    font-family: var(--font-mono);
-    font-size: 0.55rem;
-    text-transform: uppercase;
-    letter-spacing: 0.2em;
-    color: var(--text-dim);
-    margin-top: 0.5rem;
-  }
-
-  .empty-state {
-    font-family: var(--font-mono);
-    color: var(--text-dim);
-    text-align: center;
-    padding: 2rem;
-    font-size: 0.75rem;
-    letter-spacing: 0.1em;
-  }
-
-  .dist-bar { display: flex; height: 24px; margin: 0.75rem 0; overflow: hidden; border: 1px solid var(--border-dim); }
-  .dist-seg { display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-primary); min-width: 2px; }
-  .dist-quick { background: #166534; }
-  .dist-medium { background: #1e40af; }
-  .dist-deep { background: #7c2d12; }
-  .dist-marathon { background: #dc2626; box-shadow: inset 0 0 10px var(--brand-glow); }
-
-  .dist-legend { display: flex; gap: 1rem; font-family: var(--font-mono); font-size: 0.6rem; color: var(--text-secondary); flex-wrap: wrap; }
-  .dist-legend-item { display: flex; align-items: center; gap: 0.35rem; }
-  .dist-dot { width: 8px; height: 8px; }
-
-  .highlights { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-dim); }
-  .highlight-item { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-secondary); padding: 0.25rem 0; }
-  .highlight-value { color: var(--text-primary); }
-
-  .ctx-warn { color: var(--brand-primary); text-shadow: 0 0 6px var(--brand-glow); }
-
-  .skill-rank { font-family: var(--font-display); font-size: 1.2rem; color: var(--text-dim); margin-right: 0.5rem; }
-  .unused-list { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
-  .unused-tag { font-family: var(--font-mono); font-size: 0.65rem; padding: 0.2rem 0.6rem; border: 1px solid var(--border-dim); color: var(--text-dim); }
-
-  .report-footer {
-    margin-top: 2rem;
-    padding: 1.25rem 1.5rem;
-    border: 1px solid var(--border-dim);
-    background: var(--bg-card);
-    font-family: var(--font-mono);
-    font-size: 0.6rem;
-    color: var(--text-dim);
-    letter-spacing: 0.1em;
-  }
-
-  .report-footer .footer-title {
-    text-transform: uppercase;
-    letter-spacing: 0.15em;
-    color: var(--text-secondary);
-    margin-bottom: 0.4rem;
-  }
-
-  .report-footer code {
-    color: var(--brand-primary);
-    font-size: 0.65rem;
-  }
-
-  .cost-link {
-    font-family: var(--font-mono);
-    font-size: 0.5rem;
-    color: var(--text-dim);
-    text-decoration: none;
-    display: block;
-    margin-top: 0.3rem;
-    transition: color 0.2s ease;
-  }
-
-  .cost-link:hover {
-    color: var(--brand-primary);
-    text-shadow: 0 0 8px var(--brand-glow);
-  }
-
-  @media (max-width: 768px) {
-    .stat-grid { grid-template-columns: repeat(2, 1fr); }
-    .report-nav { flex-wrap: wrap; }
-  }
-`;
-
 // --- Section Components ---
 
 function formatCost(n: number): string {
@@ -365,7 +80,7 @@ const OverviewSection: FC<{
   const pct = (n: number) => (total > 0 ? `${((n / total) * 100).toFixed(0)}%` : "0%");
 
   return (
-    <div class="section">
+    <section class="panel section">
       <h2>Overview</h2>
       <div class="stat-grid">
         <div class="stat-card">
@@ -383,7 +98,12 @@ const OverviewSection: FC<{
         <div class="stat-card">
           <div class="stat-value">{cost.total_cost > 0 ? formatCost(cost.total_cost) : "\u2014"}</div>
           <div class="stat-label">Cost ({formatTokensShort(cost.total_tokens)} tokens)</div>
-          {cost.total_cost > 0 && <a href="/" class="cost-link">{"\u2192"} Dashboard</a>}
+          {cost.total_cost > 0 && (
+            <a href="/" class="cost-link">
+              看明細
+              <span class="icon icon-arrow-right" aria-hidden="true" />
+            </a>
+          )}
         </div>
       </div>
 
@@ -412,10 +132,10 @@ const OverviewSection: FC<{
             )}
           </div>
           <div class="dist-legend">
-            <div class="dist-legend-item"><div class="dist-dot dist-quick" />&lt;15m Quick</div>
-            <div class="dist-legend-item"><div class="dist-dot dist-medium" />15-59m Medium</div>
-            <div class="dist-legend-item"><div class="dist-dot dist-deep" />60-179m Deep</div>
-            <div class="dist-legend-item"><div class="dist-dot dist-marathon" />&gt;=180m Marathon</div>
+            <div class="dist-legend-item"><div class="dist-dot dist-quick" />Quick <span class="mono">&lt;15m</span></div>
+            <div class="dist-legend-item"><div class="dist-dot dist-medium" />Medium <span class="mono">15–59m</span></div>
+            <div class="dist-legend-item"><div class="dist-dot dist-deep" />Deep <span class="mono">60–179m</span></div>
+            <div class="dist-legend-item"><div class="dist-dot dist-marathon" />Marathon <span class="mono">≥180m</span></div>
           </div>
         </>
       )}
@@ -443,17 +163,17 @@ const OverviewSection: FC<{
           </div>
         )}
       </div>
-    </div>
+    </section>
   );
 };
 
 const ProjectActivitySection: FC<{ entries: ProjectActivityEntry[] }> = ({ entries }) => {
   if (entries.length === 0) {
     return (
-      <div class="section">
+      <section class="panel section">
         <h2>Project Activity</h2>
-        <p class="empty-state">No project data for this week.</p>
-      </div>
+        <p class="empty-state">No project data for this week</p>
+      </section>
     );
   }
 
@@ -469,33 +189,34 @@ const ProjectActivitySection: FC<{ entries: ProjectActivityEntry[] }> = ({ entri
     const sorted = [...projects.values()].sort((a, b) => b.session_count - a.session_count);
 
     return (
-      <div class="section">
+      <section class="panel section">
         <h2>Project Activity</h2>
+        <div class="table-wrapper">
         <table>
           <thead>
             <tr>
               <th>Project</th>
-              <th>Sessions</th>
-              <th>Turns</th>
-              <th>Edited</th>
-              <th>Written</th>
-              <th>Commits</th>
+              <th class="num">Sessions</th>
+              <th class="num">Turns</th>
+              <th class="num">Edited</th>
+              <th class="num">Written</th>
+              <th class="num">Commits</th>
             </tr>
           </thead>
           <tbody>
             {sorted.map((p) => (
               <tr>
                 <td>{p.project}</td>
-                <td>{p.session_count}</td>
-                <td>{p.turns}</td>
-                <td>{p.files_edited}</td>
-                <td>{p.files_written}</td>
-                <td>{p.commit_count}</td>
+                <td class="num">{p.session_count}</td>
+                <td class="num">{p.turns}</td>
+                <td class="num">{p.files_edited}</td>
+                <td class="num">{p.files_written}</td>
+                <td class="num">{p.commit_count}</td>
               </tr>
             ))}
           </tbody>
-        </table>
-      </div>
+        </table></div>
+      </section>
     );
   }
 
@@ -509,14 +230,15 @@ const ProjectActivitySection: FC<{ entries: ProjectActivityEntry[] }> = ({ entri
   const projectsSorted = [...projectTotals.entries()].sort((a, b) => b[1] - a[1]);
 
   return (
-    <div class="section">
+    <section class="panel section">
       <h2>Project Activity</h2>
+      <div class="table-wrapper">
       <table>
         <thead>
           <tr>
             <th>Project</th>
-            {memberNames.map((m) => <th>{m}</th>)}
-            <th>Total</th>
+            {memberNames.map((m) => <th class="num">{m}</th>)}
+            <th class="num">Total</th>
           </tr>
         </thead>
         <tbody>
@@ -524,33 +246,34 @@ const ProjectActivitySection: FC<{ entries: ProjectActivityEntry[] }> = ({ entri
             <tr>
               <td>{project}</td>
               {memberNames.map((m) => (
-                <td>{lookup.get(`${project}:${m}`) ?? 0}</td>
+                <td class="num">{lookup.get(`${project}:${m}`) ?? 0}</td>
               ))}
-              <td>{total}</td>
+              <td class="num">{total}</td>
             </tr>
           ))}
         </tbody>
-      </table>
-    </div>
+      </table></div>
+    </section>
   );
 };
 
 const SessionLogSection: FC<{ sessions: SessionLogEntry[] }> = ({ sessions }) => (
-  <div class="section">
+  <section class="panel section">
     <h2>Session Log</h2>
     {sessions.length === 0 ? (
-      <p class="empty-state">No sessions recorded this week.</p>
+      <p class="empty-state">No sessions recorded this week</p>
     ) : (
+      <div class="table-wrapper">
       <table>
         <thead>
           <tr>
             <th>Member</th>
             <th>Session</th>
             <th>Project</th>
-            <th>Duration</th>
-            <th>Turns</th>
+            <th class="num">Duration</th>
+            <th class="num">Turns</th>
             <th>Model</th>
-            <th>Context %</th>
+            <th class="num">Context %</th>
           </tr>
         </thead>
         <tbody>
@@ -559,57 +282,56 @@ const SessionLogSection: FC<{ sessions: SessionLogEntry[] }> = ({ sessions }) =>
               <td>{s.member_name}</td>
               <td>{s.session_name || "(unnamed)"}</td>
               <td>{s.project || "-"}</td>
-              <td>{s.duration_minutes}m</td>
-              <td>{s.turns}</td>
+              <td class="num">{s.duration_minutes}m</td>
+              <td class="num">{s.turns}</td>
               <td>{s.model || "-"}</td>
-              <td class={s.context_estimate_pct >= 70 ? "ctx-warn" : ""}>
+              <td class={s.context_estimate_pct >= 70 ? "num ctx-warn" : "num"}>
                 {s.context_estimate_pct === 0 ? "\u2014" : `${s.context_estimate_pct}%`}
               </td>
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     )}
-  </div>
+  </section>
 );
 
 const SkillSection: FC<{ skills: SkillUsageEntry[]; unusedSkills: string[] }> = ({ skills, unusedSkills }) => (
-  <div class="section">
+  <section class="panel section">
     <h2>Skill Usage</h2>
     {skills.length === 0 && unusedSkills.length === 0 ? (
-      <p class="empty-state">No skill data available.</p>
+      <p class="empty-state">No skill data available</p>
     ) : (
       <>
         {skills.length > 0 && (
+          <div class="table-wrapper">
           <table>
             <thead>
               <tr>
-                <th>#</th>
+                <th class="rank-col">#</th>
                 <th>Skill</th>
-                <th>Sessions</th>
+                <th class="num">Sessions</th>
                 <th>Used By</th>
               </tr>
             </thead>
             <tbody>
               {skills.map((s, i) => (
                 <tr>
-                  <td><span class="skill-rank">{i + 1}</span></td>
+                  <td><span class="skill-rank">{String(i + 1).padStart(2, "0")}</span></td>
                   <td>{s.skill_name}</td>
-                  <td>{s.session_count}</td>
+                  <td class="num">{s.session_count}</td>
                   <td>{s.members}</td>
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
         {skills.length === 0 && (
-          <p class="empty-state">No skills were used this week.</p>
+          <p class="empty-state">No skills were used this week</p>
         )}
         {unusedSkills.length > 0 && (
-          <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border-dim);">
-            <div style="font-family: var(--font-mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.15em; color: var(--text-dim); margin-bottom: 0.5rem;">
-              Unused Skills
-            </div>
+          <div class="unused">
+            <div class="unused-title">Unused Skills</div>
             <div class="unused-list">
               {unusedSkills.map((s) => (
                 <span class="unused-tag">{s}</span>
@@ -619,16 +341,16 @@ const SkillSection: FC<{ skills: SkillUsageEntry[]; unusedSkills: string[] }> = 
         )}
       </>
     )}
-  </div>
+  </section>
 );
 
 // --- Main Layout ---
 
 const ReportFooter: FC = () => (
-  <div class="report-footer">
-    <div class="footer-title">Deeper Analysis</div>
+  <aside class="report-footer">
+    <div class="footer-title">Deeper analysis</div>
     <div>Token cost attribution, cache efficiency, subagent breakdown: run <code>/session-report</code> in Claude Code</div>
-  </div>
+  </aside>
 );
 
 const WeeklyReportPage: FC<{
@@ -644,24 +366,48 @@ const WeeklyReportPage: FC<{
   skills: SkillUsageEntry[];
   unusedSkills: string[];
 }> = ({ week, fromDate, toDate, overview, distribution, highlights, cost, projectActivity, sessionLog, skills, unusedSkills }) => (
-  <html>
+  <html lang="zh-Hant">
     <head>
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
       <title>Weekly Report — {week}</title>
-      <style>{CSS}</style>
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
+      {FONT_LINKS.map((href) => (
+        <link rel="stylesheet" href={href} />
+      ))}
+      <style dangerouslySetInnerHTML={{ __html: THEME_CSS + WEEKLY_CSS }} />
     </head>
     <body>
       <div class="container">
-        <nav class="report-nav">
-          <a href="/">{"\u2190"} Dashboard</a>
-          <span class="nav-sep">/</span>
-          <span class="nav-current">Weekly Report</span>
-        </nav>
-        <h1>Weekly <span>Report</span></h1>
-        <p class="subtitle">{week} ({fromDate} ~ {toDate})</p>
+        <header class="topbar">
+          <a class="wordmark" href="/">
+            <span class="icon icon-terminal" aria-hidden="true" />
+            ccusage tracker
+            <span class="wordmark-sub">Claude Code ＋ Codex</span>
+          </a>
+          <nav class="report-nav" aria-label="Pages">
+            <a href="/">
+              <span class="icon icon-arrow-left" aria-hidden="true" />
+              Dashboard
+            </a>
+            <span class="nav-sep">/</span>
+            <span class="nav-current" aria-current="page">Weekly Report</span>
+          </nav>
+        </header>
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">
+              <span class="week-badge">{week}</span> 週報
+            </h1>
+            <p class="page-meta">
+              <span class="icon icon-calendar" aria-hidden="true" />
+              {fromDate} → {toDate} · 週一到週日
+            </p>
+          </div>
+        </div>
         {overview.total_sessions === 0 ? (
-          <p class="empty-state">No data available for this week.</p>
+          <p class="empty-state panel">No data available for this week</p>
         ) : (
           <>
             <OverviewSection data={overview} distribution={distribution} highlights={highlights} cost={cost} />
