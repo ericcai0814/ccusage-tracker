@@ -320,7 +320,7 @@ const SkillSection: FC<{ skills: SkillUsageEntry[]; unusedSkills: string[] }> = 
                   <td><span class="skill-rank">{String(i + 1).padStart(2, "0")}</span></td>
                   <td>{s.skill_name}</td>
                   <td class="num">{s.session_count}</td>
-                  <td>{s.members}</td>
+                  <td class="used-by">{s.members.replace(/,\s*/g, ", ")}</td>
                 </tr>
               ))}
             </tbody>
@@ -391,7 +391,6 @@ const WeeklyReportPage: FC<{
               <span class="icon icon-arrow-left" aria-hidden="true" />
               Dashboard
             </a>
-            <span class="nav-sep">/</span>
             <span class="nav-current" aria-current="page">Weekly Report</span>
           </nav>
         </header>

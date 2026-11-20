@@ -4,9 +4,11 @@
 // 注意：這份字串會原樣出現在 HTML 裡，測試會掃整頁的負向字串，註解只寫英文。
 
 // 資料色：同一組值給 CSS 的 --chart-1/2 與 dashboard 的 SOURCE_COLOR
+// 在 --card #101413 上：Claude #f5b25d 對比 10.00:1（L=0.519）、Codex #3e789e 對比 3.91:1（L=0.173），
+// 兩色自身亮度對比 2.56:1，灰階與色盲下皆可清楚區辨。
 export const DATA_COLOR = {
-  claude: "#e59a52",
-  codex: "#63a0c6",
+  claude: "#f5b25d",
+  codex: "#3e789e",
   other: "#8b9490",
 } as const;
 
@@ -117,7 +119,6 @@ export const THEME_CSS = `
   }
   .report-nav a:hover { color: var(--foreground); background: var(--muted); }
   .report-nav .nav-current { color: var(--foreground); background: var(--muted); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05); }
-  .report-nav .nav-sep { display: none; }
 
   /* Page head */
   .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
@@ -221,18 +222,21 @@ export const DASHBOARD_CSS = `
   .period-nav a.active kbd, .period-nav a.active .key-label { color: var(--primary-foreground); }
 
   /* KPI */
-  .cards { display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .cards { display: grid; grid-template-columns: 1.3fr 1.15fr 0.85fr 1fr; gap: 12px; margin-bottom: 12px; }
+  .cards.has-budget { grid-template-columns: 1.95fr 1.08fr 0.92fr 1.1fr; }
+  .card-main { min-width: 0; }
+  .card.has-budget { display: grid; grid-template-columns: minmax(152px, auto) 1fr; gap: 16px; align-items: center; }
   .card-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
-  .kpi-label { font-size: 13px; color: var(--secondary-foreground); }
+  .kpi-label { font-size: 13px; color: var(--secondary-foreground); white-space: nowrap; }
   .card-label { font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--muted-foreground); white-space: nowrap; }
   .card-value { font-family: var(--font-mono); font-size: 30px; line-height: 32px; font-weight: 500; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--foreground); }
   .card-unit { margin-top: 8px; font-size: 12px; line-height: 16px; color: var(--muted-foreground); }
 
-  .budget { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .budget { min-width: 0; padding-left: 16px; border-left: 1px solid var(--border); }
   .budget-line { font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--secondary-foreground); font-variant-numeric: tabular-nums; }
   .budget-meter { height: 4px; margin: 8px 0; background: var(--muted); border-radius: 2px; overflow: hidden; }
   .budget-meter-fill { height: 100%; background: var(--primary); }
-  .budget-status { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; line-height: 16px; }
+  .budget-status { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; line-height: 16px; }
   .budget-status .budget-icon {
     display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
     border-radius: 4px; font-family: var(--font-mono); font-size: 11px; font-weight: 500;
@@ -284,7 +288,6 @@ export const DASHBOARD_CSS = `
   .panel-row { display: grid; grid-template-columns: 1.5fr 1fr; gap: 12px; margin-bottom: 12px; }
   .rank-list { display: grid; gap: 4px; }
   .rank-row { display: grid; grid-template-columns: 24px 96px 1fr 112px; gap: 12px; align-items: center; height: 36px; }
-  .rank-row.others { grid-template-columns: 24px 96px 1fr 112px; }
   .rank-idx { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
   .rank-name { font-size: 13px; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rank-track { height: 6px; background: var(--muted); border-radius: 2px; overflow: hidden; }
@@ -295,7 +298,6 @@ export const DASHBOARD_CSS = `
   .stack { display: flex; gap: 2px; height: 8px; border-radius: 2px; overflow: hidden; }
   .stack div { height: 100%; }
   .provider-grid { display: grid; grid-template-columns: 1fr; gap: 0; margin-top: 16px; }
-  .provider-grid.has-other { grid-template-columns: 1fr; }
   .provider-box { display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 4px 12px; padding: 12px 0; border-top: 1px solid var(--border); }
   .provider-box:first-child { border-top: none; }
   .provider-name { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--secondary-foreground); }
@@ -316,22 +318,24 @@ export const DASHBOARD_CSS = `
   .share-bar-pct { min-width: 3em; text-align: right; font-size: 12px; color: var(--secondary-foreground); }
 
   @media (max-width: 1024px) {
-    .cards { grid-template-columns: 1fr 1fr; }
+    .cards, .cards.has-budget { grid-template-columns: 1fr 1fr; }
     .cards .card:first-child, .cards .card:last-child { grid-column: 1 / -1; }
   }
 
   @media (max-width: 768px) {
     .period-nav { width: 100%; }
     .period-nav a { flex: 1; }
+    .card.has-budget { grid-template-columns: 1fr; gap: 16px; }
+    .budget { padding-left: 0; border-left: none; padding-top: 16px; border-top: 1px solid var(--border); }
     .card-value { font-size: 22px; line-height: 28px; }
     .card-label { display: none; }
     .panel.trend { padding: 16px; }
     .panel-row { grid-template-columns: 1fr; }
-    .rank-row, .rank-row.others { grid-template-columns: 20px 72px 1fr 88px; gap: 8px; }
+    .rank-row { grid-template-columns: 20px 72px 1fr 88px; gap: 8px; }
     .trend-bar-row { grid-template-columns: 88px 1fr 80px; }
-    /* chart text is in viewBox units: scale up so it stays >= 11px on a phone */
-    .trend-chart text { font-size: 24px; }
-    .trend-chart .trend-ytick { stroke-width: 8px; }
+    /* mobile viewBox shrinks to 420x260: 15.5 units renders at ~12px (>= 11px) */
+    .trend-chart text { font-size: 15.5px; }
+    .trend-chart .trend-ytick { stroke-width: 5px; }
     .trend-chart .trend-xtick[data-alt] { display: none; }
     .trend-chart .trend-end-label { display: none; }
     .trend-readout::before { content: "$ "; }
@@ -374,9 +378,10 @@ export const WEEKLY_CSS = `
 
   .section th, .section td { text-align: left; font-family: var(--font-sans); }
   .section th.num, .section td.num { text-align: right; font-family: var(--font-mono); }
+  .section th.rank-col { width: 48px; }
+  .section td.used-by { white-space: normal; line-height: 20px; padding-top: 8px; padding-bottom: 8px; }
   .section td:first-child { color: var(--foreground); }
-  .ctx-warn { color: var(--warning); }
-  td.ctx-warn { color: var(--warning); }
+  .section .ctx-warn { color: var(--warning); }
 
   .skill-rank { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); }
   .unused { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }

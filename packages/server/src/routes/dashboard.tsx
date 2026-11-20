@@ -149,14 +149,12 @@ const PROVIDER_LABEL = (source: UsageSource): string => sourceInfo(source).provi
 
 // 成員排行是同一個量的排序，用單色序列而不是分類色
 // 第一名用 ramp 最亮的一階，其餘退成同一階中性灰：顏色留給來源，不給排名
-const RANK_COLORS = { first: "var(--bar-lead)", top: "var(--bar-rest)", rest: "var(--bar-rest)" };
+const RANK_COLORS = { first: "var(--bar-lead)", rest: "var(--bar-rest)" };
 
 const RANK_LIMIT = 10;
 
 function rankColor(index: number): string {
-  if (index === 0) return RANK_COLORS.first;
-  if (index < 3) return RANK_COLORS.top;
-  return RANK_COLORS.rest;
+  return index === 0 ? RANK_COLORS.first : RANK_COLORS.rest;
 }
 
 // 峰值乘 1.15 會得到 $87 這種刻度；改成往上取到 1／2／2.5／5 的整齊級距。
@@ -285,13 +283,15 @@ const KpiCard: FC<{ zh: string; en: string; value: string; unit: string; childre
   unit,
   children,
 }) => (
-  <div class="card">
-    <div class="card-top">
-      <div class="kpi-label">{zh}</div>
-      <div class="card-label">{en}</div>
+  <div class={children ? "card has-budget" : "card"}>
+    <div class="card-main">
+      <div class="card-top">
+        <div class="kpi-label">{zh}</div>
+        <div class="card-label">{en}</div>
+      </div>
+      <div class="card-value">{value}</div>
+      <div class="card-unit">{unit}</div>
     </div>
-    <div class="card-value">{value}</div>
-    <div class="card-unit">{unit}</div>
     {children}
   </div>
 );
@@ -303,7 +303,7 @@ const KpiRow: FC<{
   claudeTurns: number;
   budget: BudgetStatus | null;
 }> = ({ totalCost, totalTokens, activeMembers, claudeTurns, budget }) => (
-  <div class="cards">
+  <div class={budget ? "cards has-budget" : "cards"}>
     <KpiCard zh="總花費（估算）" en="Total Cost" value={formatCost(totalCost)} unit="USD，估算值">
       {budget ? <BudgetNote status={budget} /> : null}
     </KpiCard>
@@ -363,6 +363,7 @@ const TrendLegend: FC<{ series: TrendSeries[] }> = ({ series }) => {
 };
 
 // 十字線只是加分項：script 不執行時，每個點的 <title> 仍然讀得到數字。
+// 手機寬度（<=768px）末端標籤已隱藏，將橫軸壓縮到 420×260，拿掉右側留白並把趨勢圖高度拉到約 200px。
 const TREND_SCRIPT = `(function(){
   var root=document.querySelector('[data-trend]');
   if(!root)return;
@@ -372,6 +373,20 @@ const TREND_SCRIPT = `(function(){
   var vw=Number(root.getAttribute('data-vw'))||0;
   var dots=[].slice.call(root.querySelectorAll('.trend-dot'));
   if(!vw||!dots.length)return;
+  if(window.innerWidth<=768){
+    var mw=420,span=mw-12,origSpan=vw-80;
+    var mx=function(v){return(4+(Number(v)-4)*(span/origSpan)).toFixed(1);};
+    svg.setAttribute('viewBox','0 0 '+mw+' 260');
+    vw=mw;
+    [].forEach.call(svg.querySelectorAll('.trend-grid,.trend-axis'),function(el){el.setAttribute('x2',String(mw-8));});
+    [].forEach.call(svg.querySelectorAll('.trend-xtick'),function(el){el.setAttribute('x',mx(el.getAttribute('x')));});
+    dots.forEach(function(el){el.setAttribute('cx',mx(el.getAttribute('cx')));});
+    [].forEach.call(svg.querySelectorAll('.trend-line,.trend-area'),function(el){
+      var d=el.getAttribute('d')||'';
+      el.setAttribute('d',d.replace(/(-?\\d+(?:\\.\\d+)?),(-?\\d+(?:\\.\\d+)?)/g,function(_,x,y){return mx(x)+','+y;}));
+    });
+    hit.setAttribute('width',String(span));
+  }
   var byDate={},order=[];
   dots.forEach(function(p){
     var d=p.getAttribute('data-date');
@@ -475,7 +490,7 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
   const L = 4;
   const R = 76;
   const T = 18;
-  const B = 22;
+  const B = 24;
   const TICKS = 4;
 
   const peak = Math.max(...series.flatMap((s) => s.values.map(finiteCost)));
@@ -490,9 +505,14 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
   const yData = (v: number) => finiteY(y(Math.min(finiteCost(v), max))).toFixed(1);
   const labelStep = Math.max(1, Math.ceil(n / 8));
   const lead = dominantIndex(series);
+  const leadColor = series[lead]?.color ?? DATA_COLOR.claude;
   // 主線畫在最上層：安靜的那條先畫
   const drawOrder = series.map((s, i) => ({ s, i })).sort((a, b) => (a.i === lead ? 1 : 0) - (b.i === lead ? 1 : 0));
-  const shownLabels = dates.map((_, i) => i).filter((i) => i % labelStep === 0 || i === n - 1);
+  const rawLabels = dates.map((_, i) => i).filter((i) => i % labelStep === 0 || i === n - 1);
+  const shownLabels =
+    rawLabels.length >= 3 && n - 1 - rawLabels[rawLabels.length - 2] < Math.ceil(labelStep * 0.6)
+      ? [...rawLabels.slice(0, -2), rawLabels[rawLabels.length - 1]]
+      : rawLabels;
 
   return (
     <section class="panel trend trend-chart" data-trend="1" data-vw={W}>
@@ -504,26 +524,34 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
       </div>
       <TrendLegend series={series} />
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="每日成本折線圖，每個來源一條線">
+        <defs>
+          <linearGradient id="trend-lead-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color={leadColor} stop-opacity="0.14" />
+            <stop offset="72%" stop-color={leadColor} stop-opacity="0.02" />
+            <stop offset="100%" stop-color={leadColor} stop-opacity="0" />
+          </linearGradient>
+        </defs>
         {Array.from({ length: TICKS + 1 }, (_, i) => (max / TICKS) * i).map((v) => (
-          <g>
-            <line class="trend-grid" x1={L} x2={W - R} y1={yTick(v)} y2={yTick(v)} vector-effect="non-scaling-stroke" />
-            <text class="trend-ytick" x={L} y={(Number(yTick(v)) - 5).toFixed(1)} text-anchor="start">
-              {formatAxisTick(v, max / TICKS)}
-            </text>
-          </g>
+          <line class="trend-grid" x1={L} x2={W - R} y1={yTick(v)} y2={yTick(v)} vector-effect="non-scaling-stroke" />
         ))}
         <line class="trend-axis" x1={L} x2={W - R} y1={yTick(0)} y2={yTick(0)} vector-effect="non-scaling-stroke" />
-        {shownLabels.map((i, k) => (
-          <text
-            class="trend-xtick"
-            x={x(i).toFixed(1)}
-            y={H - 4}
-            text-anchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
-            data-alt={k % 2 === 1 && i !== n - 1 ? "1" : undefined}
-          >
-            {formatDateShort(dates[i])}
-          </text>
-        ))}
+        {shownLabels.map((i, k) => {
+          const isMobileAlt =
+            i !== 0 &&
+            i !== n - 1 &&
+            (k % 2 === 1 || (shownLabels.length % 2 === 0 && k === shownLabels.length - 2));
+          return (
+            <text
+              class="trend-xtick"
+              x={x(i).toFixed(1)}
+              y={H - 4}
+              text-anchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
+              data-alt={isMobileAlt ? "1" : undefined}
+            >
+              {formatDateShort(dates[i])}
+            </text>
+          );
+        })}
         {drawOrder.map(({ s, i: si }) => {
           const isLead = si === lead;
           const pts = s.values.map((v, i) => [x(i), Number(yData(v))] as [number, number]);
@@ -533,8 +561,7 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
               {isLead ? (
                 <path
                   class="trend-area"
-                  fill={s.color}
-                  fill-opacity="0.07"
+                  fill="url(#trend-lead-fill)"
                   d={`${line} L${x(n - 1).toFixed(1)},${yTick(0)} L${x(0).toFixed(1)},${yTick(0)} Z`}
                 />
               ) : null}
@@ -566,6 +593,11 @@ const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
             </g>
           );
         })}
+        {Array.from({ length: TICKS + 1 }, (_, i) => (max / TICKS) * i).map((v) => (
+          <text class="trend-ytick" x={L} y={(Number(yTick(v)) - 5).toFixed(1)} text-anchor="start">
+            {formatAxisTick(v, max / TICKS)}
+          </text>
+        ))}
         <line class="trend-crosshair" x1="0" x2="0" y1={T} y2={yTick(0)} vector-effect="non-scaling-stroke" />
         <rect class="trend-hit" x={L} y={T} width={W - L - R} height={H - T - B} fill="transparent" />
       </svg>
@@ -662,9 +694,6 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
     );
   }
 
-  // has-other 這個 class 是三欄版面；來源數超過兩個就用它，不再只看有沒有 other
-  const wide = present.length > 2;
-
   return (
     <section class="panel provider">
       <div class="panel-head">
@@ -676,7 +705,7 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
           <div style={`width: ${shares[i].toFixed(1)}%; background: ${SOURCE_COLOR(p.source)}`} />
         ))}
       </div>
-      <div class={wide ? "provider-grid has-other" : "provider-grid"}>
+      <div class="provider-grid">
         {present.map((p, i) => (
           <div class="provider-box">
             <div class="provider-name">
@@ -781,7 +810,7 @@ const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
                 <td>
                   <div class="share-bar">
                     <div class="share-bar-track">
-                      <div class="share-bar-fill" style={`width: ${sharePct}%`} />
+                      <div class="share-bar-fill" style={`width: ${sharePct.toFixed(1)}%`} />
                     </div>
                     <span class="share-bar-pct">{memberWholeShares[i]}%</span>
                   </div>
@@ -849,7 +878,6 @@ dashboard.get("/", (c) => {
         </a>
         <nav class="report-nav" aria-label="Pages">
           <span class="nav-current" aria-current="page">Dashboard</span>
-          <span class="nav-sep">/</span>
           <a href="/api/report/weekly">
             Weekly Report
             <span class="icon icon-arrow-right" aria-hidden="true" />
