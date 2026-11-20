@@ -191,3 +191,27 @@ describe("Dashboard KPI comparison and report status", () => {
     expect(totalRow).not.toContain("status-dot");
   });
 });
+
+describe("Dashboard period keycaps", () => {
+  it("renders each keycap as a plain link with aria-keyshortcuts so it works without JavaScript", async () => {
+    delete process.env.DASHBOARD_PASSWORD;
+    const db = createDatabase(":memory:");
+    const app = createApp(db);
+    const html = await (await app.request("/?period=month")).text();
+    db.close();
+
+    const nav = html.match(/<nav class="period-nav"[\s\S]*?<\/nav>/)?.[0] ?? "";
+    const links = [...nav.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)];
+    expect(links).toHaveLength(3);
+    for (const [period, key] of [
+      ["today", "D"],
+      ["week", "W"],
+      ["month", "M"],
+    ]) {
+      const link = links.find(([, attrs]) => attrs.includes(`href="/?period=${period}"`));
+      expect(link).toBeDefined();
+      expect(link?.[1]).toContain(`aria-keyshortcuts="${key}"`);
+      expect(link?.[2]).toContain(`<kbd>${key}</kbd>`);
+    }
+  });
+});

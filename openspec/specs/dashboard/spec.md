@@ -20,6 +20,12 @@ The system SHALL serve an HTML dashboard page at `GET /` that displays team toke
 - **WHEN** the user clicks a period toggle (today / week / month) on the dashboard
 - **THEN** the dashboard SHALL reload with the selected period's data
 
+#### Scenario: Period keyboard shortcuts
+
+- **WHEN** the user presses `D`, `W` or `M` on the dashboard without any modifier key (Meta, Ctrl, Alt, Shift) and focus is not in an input, textarea, select or contenteditable element
+- **THEN** the dashboard SHALL navigate to `?period=today`, `?period=week` or `?period=month` respectively; pressing the key of the already active period SHALL do nothing
+- **AND** each period keycap SHALL be an `<a>` linking to its `?period=` URL with `aria-keyshortcuts` set to its key, so the keycaps remain working links when JavaScript does not run
+
 
 <!-- @trace
 source: ccusage-tracker-mvp
