@@ -19,6 +19,13 @@ import {
   type CodexHooksFile,
   type CodexTrustState,
 } from "./codex-hooks";
+import { detectAntigravity } from "./agent-sources";
+import {
+  applyAntigravityHook,
+  formatAntigravityResultLine,
+  getAntigravityHooksPath,
+  type AntigravityHooksFile,
+} from "./antigravity-hooks";
 
 interface HookEntry {
   type: string;
@@ -185,6 +192,7 @@ export function applyTrackerHooks(settings: ClaudeSettings): {
 export interface InstallTargets {
   claude: boolean;
   codex: boolean;
+  antigravity?: boolean;
 }
 
 // 寫穿 symlink 的設定檔：link 是使用者看到的路徑，real 是實際被改寫的檔案。
@@ -204,6 +212,9 @@ export interface InstallResult {
   codexChanged: boolean;
   codexWired: boolean;
   codexIndexes: CodexGroupIndexes;
+  antigravityWired: boolean;
+  antigravityChanged: boolean;
+  antigravityDisabled: boolean;
   writtenThrough: WriteTarget[];
   backedUp: boolean;
 }
@@ -220,6 +231,17 @@ function readCodexHooksFile(path: string): CodexHooksFile {
     throw new Error("Codex hooks.json is not valid JSON; repair it before updating.");
   }
   return parsed as CodexHooksFile;
+}
+
+// 與 readCodexHooksFile 同一套：型態檢查早於讀檔，非 JSON 要求使用者修檔。
+function readAntigravityHooksFile(path: string): unknown {
+  const target = assertRegularFileTarget(path);
+  if (target === null) return {};
+  try {
+    return JSON.parse(readFileSync(target.realPath, "utf-8")) as unknown;
+  } catch {
+    throw new Error("Antigravity hooks.json is not valid JSON; repair ~/.gemini/config/hooks.json before updating.");
+  }
 }
 
 // scripts.codexSync 缺席（舊 server 回 404/410）時不接 Codex hook：hook 指向不存在的
@@ -263,6 +285,14 @@ export function installHook(
     ? applyCodexHooks(readCodexHooksFile(codexHooksPath))
     : { updated: {} as CodexHooksFile, stopChanged: false, sessionEndChanged: false, anyChanged: false };
 
+  // agent-sync.mjs 只在偵測到 Antigravity 時才寫：沒有 AGY 的機器不該多出搭便車的程序。
+  // server 沒提供時（404／410）保留舊檔、不碰 hooks.json —— hook 指向不存在的腳本比沒有 hook 更糟。
+  const antigravityWired = targets.antigravity === true && scripts.agentSync !== undefined;
+  const antigravityHooksPath = getAntigravityHooksPath();
+  const antigravity = antigravityWired
+    ? applyAntigravityHook(readAntigravityHooksFile(antigravityHooksPath))
+    : { updated: {} as AntigravityHooksFile, changed: false, disabled: false };
+
   const destDir = join(homedir(), ".config", "ccusage-tracker");
   const files = [
     { path: join(destDir, "session-end.mjs"), content: scripts.sessionEnd },
@@ -270,6 +300,8 @@ export function installHook(
     ...(scripts.codexSync === undefined ? [] : [{ path: join(destDir, "codex-sync.mjs"), content: scripts.codexSync }]),
     ...(claudeChanged ? [{ path: settingsPath, content: JSON.stringify(claude.updated, null, 2) + "\n" }] : []),
     ...(codex.anyChanged ? [{ path: codexHooksPath, content: JSON.stringify(codex.updated, null, 2) + "\n" }] : []),
+    ...(antigravityWired ? [{ path: join(destDir, "agent-sync.mjs"), content: scripts.agentSync! }] : []),
+    ...(antigravity.changed ? [{ path: antigravityHooksPath, content: JSON.stringify(antigravity.updated, null, 2) + "\n" }] : []),
   ];
   const installed = installFiles(files);
   return {
@@ -282,17 +314,21 @@ export function installHook(
     codexChanged: codex.anyChanged,
     codexWired,
     codexIndexes: codexWired ? findCodexTrackerIndexes(codex.updated) : {},
+    antigravityWired,
+    antigravityChanged: antigravity.changed,
+    antigravityDisabled: antigravity.disabled,
     writtenThrough: installed.writtenThrough,
     backedUp: installed.backedUp,
   };
 }
 
 export const NO_TOOL_MESSAGE =
-  "No supported tool detected (Claude Code or Codex). Install one, then run `tracker update`.";
+  "No supported tool detected (Claude Code, Codex or Antigravity). Install one, then run `tracker update`.";
 
 export interface WiringDeps {
   detectClaude: () => boolean;
   detectCodex: () => boolean;
+  detectAntigravity: () => boolean;
   installHook: (scripts: TrackerScripts, targets: InstallTargets) => InstallResult;
   readCodexConfig: () => string | null;
   log: (msg: string) => void;
@@ -302,6 +338,7 @@ export interface WiringDeps {
 export const defaultWiringDeps: Omit<WiringDeps, "log" | "warn"> = {
   detectClaude: () => detectClaude(),
   detectCodex,
+  detectAntigravity: () => detectAntigravity(),
   installHook,
   readCodexConfig: () => {
     const path = join(getCodexHome(), "config.toml");
@@ -318,10 +355,11 @@ export const defaultWiringDeps: Omit<WiringDeps, "log" | "warn"> = {
 export function wireTools(
   scripts: TrackerScripts,
   deps: WiringDeps,
-): { claudeDetected: boolean; codexDetected: boolean } {
+): { claudeDetected: boolean; codexDetected: boolean; antigravityDetected: boolean } {
   const claudeDetected = deps.detectClaude();
   const codexDetected = deps.detectCodex();
-  const result = deps.installHook(scripts, { claude: claudeDetected, codex: codexDetected });
+  const antigravityDetected = deps.detectAntigravity();
+  const result = deps.installHook(scripts, { claude: claudeDetected, codex: codexDetected, antigravity: antigravityDetected });
 
   if (!claudeDetected) deps.log("Claude Code: not detected");
   else if (result.claudeChanged) deps.log("Claude Code: hooks installed/updated (SessionStart, SessionEnd, Stop)");
@@ -353,11 +391,18 @@ export function wireTools(
     deps.warn("Codex hooks now handle reporting. Remove the ccusage-tracker `notify` entry from $CODEX_HOME/config.toml to avoid triggering it twice; this tool never edits that file.");
   }
 
+  if (!antigravityDetected) deps.log("Antigravity: not detected");
+  else deps.log(formatAntigravityResultLine({
+    wired: result.antigravityWired,
+    changed: result.antigravityChanged,
+    disabled: result.antigravityDisabled,
+  }));
+
   for (const { link, real } of result.writtenThrough) deps.log(`Wrote through symlink: ${link} -> ${real}`);
   if (result.backedUp) deps.log("Changed files backed up (.backup).");
-  if (!claudeDetected && !codexDetected) deps.log(NO_TOOL_MESSAGE);
+  if (!claudeDetected && !codexDetected && !antigravityDetected) deps.log(NO_TOOL_MESSAGE);
 
-  return { claudeDetected, codexDetected };
+  return { claudeDetected, codexDetected, antigravityDetected };
 }
 
 interface StagedFile {

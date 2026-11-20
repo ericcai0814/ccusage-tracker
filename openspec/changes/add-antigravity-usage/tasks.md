@@ -32,19 +32,19 @@
 
 ## 4. CLI：偵測、安裝、collector、status 與 sync
 
-- [ ] [P] 4.1 依規格「Collector dependency」與 design「Collector 版本：語意版本比較與 20.0.51」，先在 packages/cli/src/collector.test.ts 寫失敗測試，再改 packages/cli/src/collector.ts：匯出 `parseCollectorVersion` 與 `compareCollectorVersion`，`COLLECTOR_VERSION` 改為 20.0.51，`ensureCollector` 接受「是否偵測到 AGY」。案例：缺 collector 時執行 `npm install -g ccusage@20.0.51`；18.0.9 不安裝且警告含 20.0.51；20.0.20 加上 AGY 時警告含 `Antigravity` 與安裝指令；20.0.20 沒有 AGY 時不警告；20.1.0 不動作；skip 環境變數只印指令；安裝後探測到 18.0.9 時結果為 unsupported_major。驗證：`bun test packages/cli/src/collector.test.ts` 全綠。
-- [ ] [P] 4.2 依規格「Tool detection」與「Antigravity hook installation」，以及 design「CLI 來源表與 Antigravity 指令」「Antigravity hook 安裝：以 hook 名稱為 key」，先在 packages/cli/src/antigravity-hooks.test.ts 寫失敗測試，再實作 packages/cli/src/agent-sources.ts 與 packages/cli/src/antigravity-hooks.ts。
+- [x] [P] 4.1 依規格「Collector dependency」與 design「Collector 版本：語意版本比較與 20.0.51」，先在 packages/cli/src/collector.test.ts 寫失敗測試，再改 packages/cli/src/collector.ts：匯出 `parseCollectorVersion` 與 `compareCollectorVersion`，`COLLECTOR_VERSION` 改為 20.0.51，`ensureCollector` 接受「是否偵測到 AGY」。案例：缺 collector 時執行 `npm install -g ccusage@20.0.51`；18.0.9 不安裝且警告含 20.0.51；20.0.20 加上 AGY 時警告含 `Antigravity` 與安裝指令；20.0.20 沒有 AGY 時不警告；20.1.0 不動作；skip 環境變數只印指令；安裝後探測到 18.0.9 時結果為 unsupported_major。驗證：`bun test packages/cli/src/collector.test.ts` 全綠。
+- [x] [P] 4.2 依規格「Tool detection」與「Antigravity hook installation」，以及 design「CLI 來源表與 Antigravity 指令」「Antigravity hook 安裝：以 hook 名稱為 key」，先在 packages/cli/src/antigravity-hooks.test.ts 寫失敗測試，再實作 packages/cli/src/agent-sources.ts 與 packages/cli/src/antigravity-hooks.ts。
   - 偵測：`<root>/conversations` 存在、或 `agy`／`antigravity` 在 PATH 上，都算偵測到；只有 `~/.gemini/antigravity/bin` 不算。
   - `applyAntigravityHook`：已有 `my-linter-hook`、`safety-gate` 時兩者值與順序不變，`ccusage-tracker` 排在最後；重跑時 changed 為 false；舊 command 或多出的 `PostToolUse` 在原位置換成正規值；`enabled: false` 保留；非 JSON、非 object、或 `ccusage-tracker` 不是 object 時拋出要求修檔的錯誤；不寫 `timeout` 或 `matcher`。
   - `readAntigravityHookState` 與結果行：四種結果行逐字符合規格。
   - 驗證：該測試檔全綠。
-- [ ] 4.3 依規格「Setup command」「Symlinked configuration files」「Antigravity hook installation」，先在 packages/cli/src/hooks.test.ts 寫失敗測試，再改 packages/cli/src/scripts.ts 與 packages/cli/src/hooks.ts。
+- [x] 4.3 依規格「Setup command」「Symlinked configuration files」「Antigravity hook installation」，先在 packages/cli/src/hooks.test.ts 寫失敗測試，再改 packages/cli/src/scripts.ts 與 packages/cli/src/hooks.ts。
   - `agent-sync.mjs` 回 404／410 時視為缺席：不寫 `~/.gemini/config/hooks.json`，結果行為 `Antigravity: hook not installed (this server does not provide agent-sync.mjs)`，Claude 與 Codex 照常安裝。
   - `installHook` 把 `agent-sync.mjs` 與 AGY hooks 檔納入同一筆交易，寫入前建立 `.backup`；第二個檔驗證失敗時第一個檔不留 `.tmp`、`.rollback`、`.backup`。
   - `~/.gemini/config/hooks.json` 是指向一般檔案的 symlink 時，寫穿 symlink 並印出 `Wrote through symlink:` 行。
   - `wireTools` 印出 Antigravity 結果行，`NO_TOOL_MESSAGE` 列出三種工具。
   - 驗證：`bun test packages/cli/src/hooks.test.ts` 全綠。
-- [ ] 4.4 依規格「Setup command」「Noninteractive update」「Tool detection」，在 packages/cli/src/commands/setup.test.ts 與 packages/cli/src/commands/update.test.ts 先寫失敗測試，再改 packages/cli/src/commands/setup.ts 與 packages/cli/src/commands/update.ts，讓兩者共用 AGY 的偵測、安裝與 collector 流程。
+- [x] 4.4 依規格「Setup command」「Noninteractive update」「Tool detection」，在 packages/cli/src/commands/setup.test.ts 與 packages/cli/src/commands/update.test.ts 先寫失敗測試，再改 packages/cli/src/commands/setup.ts 與 packages/cli/src/commands/update.ts，讓兩者共用 AGY 的偵測、安裝與 collector 流程。
   - 只有 `~/.gemini/antigravity-cli/conversations` 的機器：setup 寫入 hook、執行 collector、exit 0。
   - 三個設定檔都有第三方 hook 時連跑 update 兩次：三檔與 config 的 sha256 不變，tracker 項目各只出現一次。
   - server 沒有 agent-sync 時：保留舊的 `agent-sync.mjs`、不寫 AGY hooks 檔。

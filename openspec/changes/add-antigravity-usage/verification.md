@@ -89,3 +89,47 @@ $ bun test            # server 全套
  411 pass
  0 fail
 ```
+
+## 4.1 Collector 版本
+
+先改測試（含隨 `COLLECTOR_VERSION` 改為 20.0.51 而更新的安裝指令字串），`parseCollectorVersion`／`compareCollectorVersion` 不存在時整檔載入失敗：`0 pass / 1 fail`。
+
+```
+$ cd packages/cli && bun test src/collector.test.ts
+ 17 pass
+ 0 fail
+```
+
+## 4.2 CLI 來源表與 hooks.json 處理
+
+模組不存在時：`0 pass / 1 fail`（Cannot find module './agent-sources'）。
+
+```
+$ cd packages/cli && bun test src/antigravity-hooks.test.ts
+ 27 pass
+ 0 fail
+```
+
+## 4.3 安裝交易與 wireTools
+
+installHook／wireTools 會走 `os.homedir()`，而 bun 在程序啟動時就快取它，所以 hooks.test.ts 的新案例一律在 bun 子程序以隔離 HOME 執行，本程序不呼叫 installHook。實作前：10 個新案例失敗。
+
+```
+$ cd packages/cli && bun test src/hooks.test.ts
+ 47 pass
+ 0 fail
+```
+
+## 4.4 setup／update
+
+改 setup.ts 前，CLI 全套 `197 pass / 21 fail`（setup 還沒把 `detectAntigravity` 交給 wireTools）。setup.test.ts 隨 `InstallTargets` 多出 `antigravity` 欄位與安裝版本 20.0.51，更新了既有斷言（targets 形狀、`ccusage@20.0.51`、結果行順序加入 Antigravity）。
+
+```
+$ cd packages/cli && bun test src/commands/setup.test.ts src/commands/update.test.ts
+ 62 pass
+ 0 fail
+$ bunx tsc --noEmit   # exit 0
+$ bun test            # CLI 全套
+ 228 pass
+ 0 fail
+```

@@ -654,3 +654,113 @@ describe("Node CLI Codex hook wiring", () => {
     expect(result.output).not.toContain("Report Codex daily usage now");
   });
 });
+
+describe("Node CLI Antigravity wiring", () => {
+  const agyHooksPath = () => join(home, ".gemini", "config", "hooks.json");
+  const answers = () => `Fixture\nhttp://127.0.0.1:${serverPort}\nfixture-team\n`;
+  const sha = (path: string) => new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex");
+  const agentScript = "// fixture agent-sync\nconsole.log('agy fixture');\n";
+
+  it("只有 ~/.gemini/antigravity-cli/conversations 的機器：setup 寫入 hook、跑收集器、exit 0", async () => {
+    replies["/scripts/agent-sync.mjs"] = { body: agentScript };
+    mkdirSync(join(home, ".gemini", "antigravity-cli", "conversations"), { recursive: true });
+
+    const result = await cli(["setup"], answers());
+
+    expect(result.code).toBe(0);
+    expect(result.output).toContain("Antigravity: hook installed (Stop). Restart Antigravity to load it.");
+    expect(result.output).toContain("Claude Code: not detected");
+    expect(result.output).toContain("Codex: not detected");
+    expect(result.output).toContain("Collector:");
+    expect(result.output).not.toContain("No supported tool detected");
+    expect(readFileSync(join(configDir, "agent-sync.mjs"), "utf8")).toBe(agentScript);
+    const hooks = JSON.parse(readFileSync(agyHooksPath(), "utf8"));
+    expect(hooks).toEqual({ "ccusage-tracker": { Stop: [{ type: "command",
+      command: `node "${join(configDir, "agent-sync.mjs")}" --hook antigravity` }] } });
+  });
+
+  it("三個設定檔都有第三方 hook：連跑兩次 update，第二次三檔與 config 位元組不變、tracker 各一份", async () => {
+    replies["/scripts/agent-sync.mjs"] = { body: agentScript };
+    const config = configure();
+    existingInstall();
+    mkdirSync(join(home, "codex"));
+    writeFileSync(join(home, "codex", "hooks.json"), JSON.stringify({ hooks: {
+      Stop: [{ hooks: [{ type: "command", command: "echo codex-third-party", timeout: 3 }] }] } }, null, 2));
+    mkdirSync(join(home, ".gemini", "antigravity-ide", "conversations"), { recursive: true });
+    mkdirSync(join(home, ".gemini", "config"), { recursive: true });
+    const linter = { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "lint", timeout: 5 }] }] };
+    const gate = { enabled: false, Stop: [{ type: "command", command: "gate" }] };
+    writeFileSync(agyHooksPath(), JSON.stringify({ "my-linter-hook": linter, "safety-gate": gate }, null, 2));
+    const files = [join(home, ".claude", "settings.json"), join(home, "codex", "hooks.json"), agyHooksPath(), join(configDir, "config.json")];
+
+    expect((await cli(["update"])).code).toBe(0);
+    const afterFirst = files.map(sha);
+    const second = await cli(["update"]);
+
+    expect(second.code).toBe(0);
+    expect(second.output).toContain("Antigravity: hook already up to date");
+    expect(files.map(sha)).toEqual(afterFirst);
+    expect(readFileSync(join(configDir, "config.json"), "utf8")).toBe(config);
+    const agy = JSON.parse(readFileSync(agyHooksPath(), "utf8"));
+    expect(Object.keys(agy)).toEqual(["my-linter-hook", "safety-gate", "ccusage-tracker"]);
+    expect(agy["my-linter-hook"]).toEqual(linter);
+    expect(agy["safety-gate"]).toEqual(gate);
+    const settings = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
+    for (const event of ["SessionStart", "SessionEnd", "Stop"]) {
+      const commands = settings.hooks[event].flatMap((m: { hooks: { command: string }[] }) => m.hooks.map((h) => h.command));
+      expect(commands.filter((c: string) => c.includes("/.config/ccusage-tracker/"))).toHaveLength(1);
+    }
+    expect(codexHooks().hooks!.Stop!.flatMap((g) => g.hooks).filter((h) => trackerHook(h.command))).toHaveLength(1);
+  });
+
+  it("server 沒有 agent-sync.mjs：保留舊的 agent-sync.mjs、不寫 hooks.json，Claude 照常安裝", async () => {
+    configure();
+    mkdirSync(join(home, ".claude"));
+    mkdirSync(join(home, ".gemini", "antigravity-cli", "conversations"), { recursive: true });
+    writeFileSync(join(configDir, "agent-sync.mjs"), "// previous agent-sync.mjs");
+    for (const status of [404, 410]) {
+      replies["/scripts/agent-sync.mjs"] = { status, body: "gone" };
+      const result = await cli(["update"]);
+
+      expect(result.code).toBe(0);
+      expect(result.output).toContain("Antigravity: hook not installed (this server does not provide agent-sync.mjs)");
+      expect(readFileSync(join(configDir, "agent-sync.mjs"), "utf8")).toBe("// previous agent-sync.mjs");
+      expect(existsSync(agyHooksPath())).toBe(false);
+      expect(existsSync(join(home, ".claude", "settings.json"))).toBe(true);
+    }
+  });
+
+  it("三種工具都沒偵測到：setup exit 0、update 非零，都列出三種工具", async () => {
+    replies["/scripts/agent-sync.mjs"] = { body: agentScript };
+    mkdirSync(join(home, ".gemini", "antigravity", "bin"), { recursive: true });
+
+    const setup = await cli(["setup"], answers());
+    const update = await cli(["update"]);
+
+    expect(setup.code).toBe(0);
+    expect(update.code).not.toBe(0);
+    for (const result of [setup, update]) {
+      expect(result.output).toContain("No supported tool detected (Claude Code, Codex or Antigravity)");
+      expect(result.output).toContain("Antigravity: not detected");
+    }
+    expect(existsSync(agyHooksPath())).toBe(false);
+    expect(existsSync(join(configDir, "agent-sync.mjs"))).toBe(false);
+  });
+
+  it("hooks.json 非法：整筆交易不寫任何檔，update 非零並要求修檔", async () => {
+    replies["/scripts/agent-sync.mjs"] = { body: agentScript };
+    configure();
+    const old = existingInstall();
+    mkdirSync(join(home, ".gemini", "config"), { recursive: true });
+    mkdirSync(join(home, ".gemini", "antigravity-cli", "conversations"), { recursive: true });
+    writeFileSync(agyHooksPath(), "[]");
+
+    const result = await cli(["update"]);
+
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("repair ~/.gemini/config/hooks.json");
+    expect(readFileSync(agyHooksPath(), "utf8")).toBe("[]");
+    expect(readFileSync(join(home, ".claude", "settings.json"), "utf8")).toBe(old.raw);
+    expect(existsSync(join(configDir, "agent-sync.mjs"))).toBe(false);
+  });
+});
