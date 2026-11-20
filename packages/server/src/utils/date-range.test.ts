@@ -69,6 +69,35 @@ describe("getPreviousDateRange", () => {
     expect(getPreviousDateRange("month", now)).toEqual({ from: "2026-09-30", to: "2026-10-21" });
   });
 
+  it("week on Monday and Sunday compares with the matching span last week", () => {
+    withTz("UTC");
+    const monday = new Date("2026-11-16T10:00:00Z");
+    expect(getDateRange("week", monday)).toEqual({ from: "2026-11-16", to: "2026-11-16" });
+    expect(getPreviousDateRange("week", monday)).toEqual({ from: "2026-11-09", to: "2026-11-09" });
+
+    const sunday = new Date("2026-11-22T10:00:00Z");
+    expect(getDateRange("week", sunday)).toEqual({ from: "2026-11-16", to: "2026-11-22" });
+    expect(getPreviousDateRange("week", sunday)).toEqual({ from: "2026-11-09", to: "2026-11-15" });
+  });
+
+  it("month on the 1st compares a single day in UTC and before 08:00 in UTC+8", () => {
+    withTz("UTC");
+    expect(getPreviousDateRange("month", new Date("2026-03-01T10:00:00Z"))).toEqual({
+      from: "2026-02-01",
+      to: "2026-02-01",
+    });
+
+    // 2026-03-01 02:00+08（UTC 仍在 02-28）：本期與上一期都只有換月當天的 1 天，不能讓 from > to
+    withTz("Asia/Taipei");
+    const mar1Early = new Date("2026-02-28T18:00:00Z");
+    expect(getDateRange("month", mar1Early)).toEqual({ from: "2026-02-28", to: "2026-02-28" });
+    expect(getPreviousDateRange("month", mar1Early)).toEqual({ from: "2026-01-31", to: "2026-01-31" });
+
+    const dec1Early = new Date("2026-11-30T18:00:00Z");
+    expect(getDateRange("month", dec1Early)).toEqual({ from: "2026-11-30", to: "2026-11-30" });
+    expect(getPreviousDateRange("month", dec1Early)).toEqual({ from: "2026-10-31", to: "2026-10-31" });
+  });
+
   // 同一個偏差的副作用：本期起日是上月最後一天，上月同一天夾到月底時也是那一天，
   // 所以月底那天會同時算進本期與上一期。這裡把行為釘住，修 getDateRange 時要一起改。
   it("month overlaps one day with the previous window at month end in UTC+8", () => {

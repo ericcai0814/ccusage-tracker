@@ -130,12 +130,12 @@ const PREVIOUS_LABEL: Record<Period, string> = { today: "昨天", week: "上週�
 // 用真的減號（U+2212），toLocaleString 對負數只會吐 ASCII 連字號
 const MINUS = "\u2212";
 
-// 上一期為 0、任一邊不是有限值、或算出來的變化量不是有限值 → 一律「無資料」，不印 NaN／Infinity。
+// 上一期為 0、任一邊超出可顯示範圍或不是有限值、或算出來的變化量不是有限值 → 一律「無資料」，不印 NaN／Infinity。
 // 方向以四捨五入後的值判斷：-0.4% 捨入成 0 要顯示持平，不能印成「−0%」。
 export function formatChange(current: number, previous: number, kind: "percent" | "count", period: Period): string {
   const label = PREVIOUS_LABEL[period];
   const noData = `${label}無資料`;
-  if (!Number.isFinite(current) || !Number.isFinite(previous) || !(previous > 0)) return noData;
+  if (!isDisplayableCost(current) || !isDisplayableCost(previous) || current < 0 || !(previous > 0)) return noData;
 
   const raw = kind === "percent" ? ((current - previous) / previous) * 100 : current - previous;
   if (!Number.isFinite(raw) || Math.abs(raw) >= MAX_DISPLAY_USD) return noData;

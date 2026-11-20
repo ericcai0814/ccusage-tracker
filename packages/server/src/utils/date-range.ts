@@ -49,12 +49,15 @@ export function getPreviousDateRange(period: Period, now: Date = new Date()): { 
     case "month":
     default: {
       const firstOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const from = firstOfPrevMonth.toISOString().split("T")[0];
+      // UTC+8 每月 1 日 00:00–07:59 本地已換月，但 current.to 還在 UTC 上月最後一天（與 current.from 同日）
+      if (current.from === current.to) return { from, to: from };
       const [year, month, day] = current.to.split("-").map(Number);
       // Date.UTC 的月份從 0 起算：month - 1 是本月，month - 2 是上月；第 0 日是上月最後一天
       const prevMonthDays = new Date(Date.UTC(year, month - 1, 0)).getUTCDate();
       const prevTo = new Date(Date.UTC(year, month - 2, Math.min(day, prevMonthDays)));
       return {
-        from: firstOfPrevMonth.toISOString().split("T")[0],
+        from,
         to: prevTo.toISOString().split("T")[0],
       };
     }

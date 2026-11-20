@@ -42,6 +42,11 @@ describe("formatChange", () => {
       [-Infinity, 100],
       // 兩邊都有限，但變化量相除後溢位
       [Number.MAX_VALUE, Number.MIN_VALUE],
+      // 單筆或兩期皆超出可顯示上限（主數字已顯示破折號）時，比較也必須退回無資料，不能印持平或 −100%
+      [1e308, 1e308],
+      [100, 1e308],
+      [1e308, 100],
+      [-10, 100],
     ];
     for (const [cur, prev] of cases) {
       const text = formatChange(cur, prev, "percent", "month");
@@ -159,5 +164,30 @@ describe("Dashboard KPI comparison and report status", () => {
     const html = await (await app.request("/?period=month")).text();
     expect(html).not.toContain('aria-label="超過 24 小時未回報"');
     expect(html).toContain('aria-label="24 小時內有回報"');
+  });
+
+  it("marks a member with null last_seen_at with a hollow stale dot and eliminates dots on others/total rows", async () => {
+    db.run("UPDATE members SET last_seen_at = NULL WHERE id = ?", ["m2"]);
+    for (let i = 3; i <= 12; i++) {
+      insertMember(db, `m${i}`, `Member${i}`, hashApiKey(`key${i}`));
+      usage(`m${i}`, "2026-06-10", i);
+      db.run("UPDATE members SET last_seen_at = ? WHERE id = ?", ["2026-06-15 08:00:00", `m${i}`]);
+    }
+
+    const html = await (await app.request("/?period=month")).text();
+    const staleDot =
+      '<span class="status-dot stale" role="img" aria-label="超過 24 小時未回報" title="超過 24 小時未回報"></span>';
+    expect(html).toMatch(
+      new RegExp(`${staleDot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}<span class="rank-name-text">Amber</span>`)
+    );
+    expect(html).toContain('<td class="stale-warn">Never</td>');
+
+    const othersRow = html.match(/<div class="rank-row others">[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? "";
+    expect(othersRow).toContain("其他 2 人");
+    expect(othersRow).not.toContain("status-dot");
+
+    const totalRow = html.match(/<tr class="total-row">[\s\S]*?<\/tr>/)?.[0] ?? "";
+    expect(totalRow).toContain("Total");
+    expect(totalRow).not.toContain("status-dot");
   });
 });
