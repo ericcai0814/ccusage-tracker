@@ -1,4 +1,4 @@
-// UI 比較用的示範資料：固定亂數種子，每次產出同樣的 6 人 × 近 35 天用量（Claude＋Codex）、
+// UI 比較用的示範資料：固定亂數種子，每次產出同樣的 6 人 × 近 70 天（涵蓋本月與上月同期）用量（Claude＋Codex）、
 // session 指標與月預算，讓不同版本的畫面能在同一份資料上截圖比較。
 // 用法：bun run scripts/seed-demo.ts <db 路徑>（檔案已存在會先刪掉）
 import { existsSync, unlinkSync } from "node:fs";
@@ -37,7 +37,7 @@ setSetting(db, MONTHLY_BUDGET_KEY, "450");
 const today = new Date();
 for (const m of MEMBERS) {
   insertMember(db, m.id, m.name, hashApiKey(`demo-${m.id}`));
-  for (let back = 34; back >= 0; back--) {
+  for (let back = 69; back >= 0; back--) {
     const day = new Date(today.getTime() - back * 86400000);
     const date = day.toISOString().split("T")[0];
     const weekday = day.getUTCDay();
