@@ -1,5 +1,8 @@
-import { describe, expect, it } from "bun:test";
-import { codexHooksLine, uploadAgeLine, uploadFailureHint } from "./status";
+import { afterEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { antigravityStatusLines, codexCollectorLine, codexHooksLine, uploadAgeLine, uploadFailureHint } from "./status";
 
 // last-error.txt 現在有兩種來源：ccusage 取數失敗，以及整體 deadline 被觸發。
 // 兩者的下一步完全不同 —— 對 deadline 逾時叫人去量 ccusage 會把診斷帶偏，
@@ -117,5 +120,113 @@ describe("codexHooksLine", () => {
     expect(codexHooksLine("[]", trusted, hooksPath)).toBe("Codex hooks: not installed");
     expect(codexHooksLine(JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "echo x" }] }] } }), trusted, hooksPath))
       .toBe("Codex hooks: not installed");
+  });
+});
+
+describe("codexCollectorLine", () => {
+  it("主版本 20 的任何 patch 都算已安裝", () => {
+    expect(codexCollectorLine("ccusage 20.0.51")).toBe("Codex collector: installed (ccusage 20.0.51)");
+    expect(codexCollectorLine("20.0.20")).toBe("Codex collector: installed (ccusage 20.0.20)");
+    expect(codexCollectorLine("20.1.0")).toBe("Codex collector: installed (ccusage 20.1.0)");
+  });
+
+  it("其他主版本或缺 collector → unavailable，附 20.0.51 的安裝指令", () => {
+    expect(codexCollectorLine("18.0.10")).toBe("Codex collector: unavailable (unsupported version: 18.0.10; install with: npm install -g ccusage@20.0.51)");
+    expect(codexCollectorLine(null)).toBe("Codex collector: unavailable (ccusage missing; install with: npm install -g ccusage@20.0.51)");
+  });
+});
+
+describe("antigravityStatusLines", () => {
+  const base = {
+    detected: true, scriptInstalled: true, hookState: "installed" as const, probe: "ccusage 20.0.51",
+    bufferEntries: 0, uploadError: null, lastUpload: Date.parse("2026-11-20T01:02:03.000Z"),
+  };
+
+  it("偵測到且全部就緒：依序印六行", () => {
+    expect(antigravityStatusLines(base)).toEqual([
+      "Antigravity script: installed",
+      "Antigravity hook: installed",
+      "Antigravity collector: installed (ccusage 20.0.51)",
+      "Antigravity buffer: 0 pending entries",
+      "Antigravity upload error: none recorded",
+      "Antigravity last successful upload: 2026-11-20T01:02:03.000Z",
+    ]);
+  });
+
+  it("hook 被停用：逐字符合規格", () => {
+    expect(antigravityStatusLines({ ...base, hookState: "disabled" })[1])
+      .toBe("Antigravity hook: installed, disabled in Antigravity (Settings > Customizations > Hooks)");
+  });
+
+  it("collector 為 20.0.20：說明沒有 Antigravity 讀取器並給安裝指令", () => {
+    expect(antigravityStatusLines({ ...base, probe: "ccusage 20.0.20" })[2])
+      .toBe("Antigravity collector: unavailable (ccusage 20.0.20 has no Antigravity reader; install with: npm install -g ccusage@20.0.51)");
+  });
+
+  it("20.1.0 接受、21.0.0 不接受、缺 collector 給安裝指令", () => {
+    expect(antigravityStatusLines({ ...base, probe: "20.1.0" })[2]).toBe("Antigravity collector: installed (ccusage 20.1.0)");
+    expect(antigravityStatusLines({ ...base, probe: "21.0.0" })[2]).toContain("unavailable");
+    expect(antigravityStatusLines({ ...base, probe: null })[2])
+      .toBe("Antigravity collector: unavailable (ccusage missing; install with: npm install -g ccusage@20.0.51)");
+  });
+
+  it("腳本缺、hook 缺、有待送與錯誤、從未成功", () => {
+    const lines = antigravityStatusLines({ ...base, scriptInstalled: false, hookState: "not_installed",
+      bufferEntries: 1, uploadError: "fixture offline", lastUpload: null });
+    expect(lines[0]).toBe("Antigravity script: not installed (run tracker update with a server that provides agent-sync.mjs)");
+    expect(lines[1]).toBe("Antigravity hook: not installed (run tracker update)");
+    expect(lines[3]).toBe("Antigravity buffer: 1 pending entry");
+    expect(lines[4]).toBe("Antigravity upload error: fixture offline");
+    expect(lines[5]).toBe("Antigravity last successful upload: none recorded (run tracker sync antigravity)");
+  });
+
+  it("未偵測到：只有一行", () => {
+    expect(antigravityStatusLines({ ...base, detected: false })).toEqual(["Antigravity: not detected"]);
+  });
+});
+
+// statusCommand 走 homedir()：在子程序以隔離 HOME 執行，PATH 只放 fixture。
+describe("status 指令的 Codex 與 Antigravity 區塊", () => {
+  const temporaries: string[] = [];
+  afterEach(() => {
+    while (temporaries.length) rmSync(temporaries.pop()!, { recursive: true, force: true });
+  });
+
+  function run(prepare: (home: string) => void): string {
+    const home = mkdtempSync(join(tmpdir(), "agy status "));
+    temporaries.push(home);
+    mkdirSync(join(home, ".config/ccusage-tracker"), { recursive: true });
+    mkdirSync(join(home, "bin"));
+    writeFileSync(join(home, "bin/ccusage"), "#!/bin/sh\necho 'ccusage 20.0.51'\n", { mode: 0o755 });
+    writeFileSync(join(home, ".config/ccusage-tracker/config.json"),
+      JSON.stringify({ server_url: "http://127.0.0.1:9", team_key: "fixture", member_name: "Fixture" }));
+    prepare(home);
+    const result = Bun.spawnSync([process.execPath, join(import.meta.dir, "../index.ts"), "status"], {
+      env: { HOME: home, CODEX_HOME: join(home, "codex"), PATH: join(home, "bin") },
+    });
+    expect(result.exitCode).toBe(0);
+    return result.stdout.toString();
+  }
+
+  it("Codex 未偵測、Antigravity 偵測到：先印 Codex: not detected，再印 Antigravity 六行", () => {
+    const out = run((home) => mkdirSync(join(home, ".gemini/antigravity-cli/conversations"), { recursive: true }));
+    const lines = out.split("\n");
+    const codex = lines.indexOf("Codex: not detected");
+    expect(codex).toBeGreaterThan(-1);
+    expect(lines.slice(codex + 1).filter((l) => l.startsWith("Antigravity")).map((l) => l.split(":")[0])).toEqual([
+      "Antigravity script", "Antigravity hook", "Antigravity collector", "Antigravity buffer",
+      "Antigravity upload error", "Antigravity last successful upload",
+    ]);
+    expect(out).toContain("Antigravity collector: installed (ccusage 20.0.51)");
+  });
+
+  it("Codex 為 20.0.51：不再誤報不支援", () => {
+    const out = run((home) => mkdirSync(join(home, "codex")));
+    expect(out).toContain("Codex collector: installed (ccusage 20.0.51)");
+  });
+
+  it("Antigravity 未偵測：只印一行，沒有其他 Antigravity 行", () => {
+    const out = run((home) => mkdirSync(join(home, ".gemini/antigravity/bin"), { recursive: true }));
+    expect(out.split("\n").filter((l) => l.includes("Antigravity"))).toEqual(["Antigravity: not detected"]);
   });
 });

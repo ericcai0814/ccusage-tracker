@@ -8,6 +8,9 @@ import {
   readCodexTrustState,
   type CodexHooksFile,
 } from "../codex-hooks";
+import { ANTIGRAVITY, detectAntigravity, getAgentSyncScriptPath } from "../agent-sources";
+import { readAntigravityHookState, type AntigravityHookState } from "../antigravity-hooks";
+import { COLLECTOR_INSTALL_COMMAND, hasAntigravityReader, parseCollectorVersion } from "../collector";
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
@@ -109,8 +112,23 @@ export async function statusCommand(): Promise<void> {
   // --target node，Bun global 不存在會拋 ReferenceError 被 catch 吞掉，於是一律誤報
   // 「沒裝」—— 對照 session-end.mjs 同樣以 node 執行、同樣用 node:child_process。
   const probe = probeCcusage();
-  console.log(probe ? `ccusage: installed (${probe})` : "ccusage: not found (install with: npm install -g ccusage@20.0.20)");
-  // Codex 未安裝時整個區塊沒有意義：一行講完，不用六行說「都沒有」。
+  console.log(probe ? `ccusage: installed (${probe})` : `ccusage: not found (install with: ${COLLECTOR_INSTALL_COMMAND})`);
+  printCodexStatus(configDir, probe);
+  const lines = antigravityStatusLines({
+    detected: detectAntigravity(),
+    scriptInstalled: existsSync(getAgentSyncScriptPath()),
+    hookState: readAntigravityHookState(),
+    probe,
+    bufferEntries: countLines(join(configDir, `${ANTIGRAVITY.statePrefix}-buffer.jsonl`)),
+    uploadError: readTextFile(join(configDir, `${ANTIGRAVITY.statePrefix}-last-error.txt`))?.trim() || null,
+    lastUpload: readTimestamp(join(configDir, `${ANTIGRAVITY.statePrefix}-last-upload.txt`)),
+  });
+  console.log("\n" + lines.join("\n"));
+}
+
+// Codex 未安裝時整個區塊沒有意義：一行講完，不用六行說「都沒有」。
+// 不提早結束 statusCommand：後面還有 Antigravity 的區塊。
+function printCodexStatus(configDir: string, probe: string | null): void {
   if (!detectCodex()) {
     console.log("\nCodex: not detected");
     return;
@@ -121,18 +139,74 @@ export async function statusCommand(): Promise<void> {
   const hooksPath = getCodexHooksPath();
   console.log(codexHooksLine(readTextFile(hooksPath), readTextFile(join(dirname(hooksPath), "config.toml")), hooksPath));
   console.log(`Codex Node runtime: ${process.versions.node}`);
-  const hasCodexCollector = probe !== null && /^(?:ccusage\s+)?20\.0\.20$/.test(probe);
-  console.log(hasCodexCollector
-    ? "Codex collector: installed (ccusage 20.0.20)"
-    : `Codex collector: unavailable (${probe ? `unsupported version: ${probe}` : "ccusage missing"}; install with: npm install -g ccusage@20.0.20)`);
-  const codexBufferPath = join(configDir, "codex-buffer.jsonl");
-  const codexLines = existsSync(codexBufferPath) ? readFileSync(codexBufferPath, "utf8").trim().split("\n").filter(Boolean).length : 0;
+  console.log(codexCollectorLine(probe));
+  const codexLines = countLines(join(configDir, "codex-buffer.jsonl"));
   console.log(`Codex buffer: ${codexLines} pending entr${codexLines === 1 ? "y" : "ies"}`);
   const codexErrorPath = join(configDir, "codex-last-error.txt");
   console.log(`Codex upload error: ${existsSync(codexErrorPath) ? readFileSync(codexErrorPath, "utf8").trim() : "none recorded"}`);
-  const codexUploadPath = join(configDir, "codex-last-upload.txt");
-  const codexUpload = existsSync(codexUploadPath) ? Number(readFileSync(codexUploadPath, "utf8").trim()) : NaN;
-  console.log(`Codex last successful upload: ${Number.isFinite(codexUpload) && codexUpload > 0 && !Number.isNaN(new Date(codexUpload).getTime()) ? new Date(codexUpload).toISOString() : "none recorded (run tracker sync codex)"}`);
+  const codexUpload = readTimestamp(join(configDir, "codex-last-upload.txt"));
+  console.log(`Codex last successful upload: ${codexUpload !== null ? new Date(codexUpload).toISOString() : "none recorded (run tracker sync codex)"}`);
+}
+
+function countLines(path: string): number {
+  return (readTextFile(path) ?? "").trim().split("\n").filter(Boolean).length;
+}
+
+function readTimestamp(path: string): number | null {
+  const value = Number((readTextFile(path) ?? "").trim());
+  return Number.isFinite(value) && value > 0 && !Number.isNaN(new Date(value).getTime()) ? value : null;
+}
+
+function displayVersion(probe: string): string {
+  return probe.trim().replace(/^ccusage\s+/, "");
+}
+
+// Codex 的 `ccusage codex daily` 在整個主版本 20 都存在：只看主版本，不比 patch。
+export function codexCollectorLine(probe: string | null): string {
+  const version = probe === null ? null : parseCollectorVersion(probe);
+  if (probe !== null && version !== null && version[0] === 20) return `Codex collector: installed (ccusage ${displayVersion(probe)})`;
+  return `Codex collector: unavailable (${probe ? `unsupported version: ${displayVersion(probe)}` : "ccusage missing"}; install with: ${COLLECTOR_INSTALL_COMMAND})`;
+}
+
+export interface AntigravityStatus {
+  detected: boolean;
+  scriptInstalled: boolean;
+  hookState: AntigravityHookState;
+  probe: string | null;
+  bufferEntries: number;
+  uploadError: string | null;
+  lastUpload: number | null;
+}
+
+const HOOK_STATE_TEXT: Record<AntigravityHookState, string> = {
+  installed: "installed",
+  disabled: "installed, disabled in Antigravity (Settings > Customizations > Hooks)",
+  outdated: "outdated (run tracker update)",
+  not_installed: "not installed (run tracker update)",
+  invalid: "unreadable (repair ~/.gemini/config/hooks.json, then run tracker update)",
+};
+
+function antigravityCollectorText(probe: string | null): string {
+  if (probe === null) return `unavailable (ccusage missing; install with: ${COLLECTOR_INSTALL_COMMAND})`;
+  if (hasAntigravityReader(probe)) return `installed (ccusage ${displayVersion(probe)})`;
+  const version = parseCollectorVersion(probe);
+  if (version !== null && version[0] === 20) {
+    return `unavailable (ccusage ${displayVersion(probe)} has no Antigravity reader; install with: ${COLLECTOR_INSTALL_COMMAND})`;
+  }
+  return `unavailable (unsupported version: ${displayVersion(probe)}; install with: ${COLLECTOR_INSTALL_COMMAND})`;
+}
+
+// 沒偵測到就一行；偵測到則固定六行，順序依規格。
+export function antigravityStatusLines(status: AntigravityStatus): string[] {
+  if (!status.detected) return ["Antigravity: not detected"];
+  return [
+    `Antigravity script: ${status.scriptInstalled ? "installed" : "not installed (run tracker update with a server that provides agent-sync.mjs)"}`,
+    `Antigravity hook: ${HOOK_STATE_TEXT[status.hookState]}`,
+    `Antigravity collector: ${antigravityCollectorText(status.probe)}`,
+    `Antigravity buffer: ${status.bufferEntries} pending entr${status.bufferEntries === 1 ? "y" : "ies"}`,
+    `Antigravity upload error: ${status.uploadError ?? "none recorded"}`,
+    `Antigravity last successful upload: ${status.lastUpload !== null ? new Date(status.lastUpload).toISOString() : "none recorded (run tracker sync antigravity)"}`,
+  ];
 }
 
 function readTextFile(path: string): string | null {

@@ -50,7 +50,7 @@
   - server 沒有 agent-sync 時：保留舊的 `agent-sync.mjs`、不寫 AGY hooks 檔。
   - 三種工具都沒偵測到時：setup exit 0、update exit 非 0，且都印出提示。
   - 驗證：兩個測試檔全綠。
-- [ ] 4.5 依規格「Status command」與「Antigravity command」，先在 packages/cli/src/commands/status.test.ts 與新檔 packages/cli/src/commands/sync.test.ts 寫失敗測試，再改 packages/cli/src/commands/status.ts、packages/cli/src/commands/sync.ts 與 packages/cli/src/index.ts。
+- [x] 4.5 依規格「Status command」與「Antigravity command」，先在 packages/cli/src/commands/status.test.ts 與新檔 packages/cli/src/commands/sync.test.ts 寫失敗測試，再改 packages/cli/src/commands/status.ts、packages/cli/src/commands/sync.ts 與 packages/cli/src/index.ts。
   - status：Codex 為 20.0.51 時印 `Codex collector: installed (ccusage 20.0.51)`；Antigravity 區塊依序印六行；hook 停用與 collector 為 20.0.20 時的字串逐字符合規格；Codex 未偵測時先印 `Codex: not detected`，再印 Antigravity 區塊；AGY 未偵測時只印一行 `Antigravity: not detected`。
   - sync：`tracker sync agy` 與 `tracker sync antigravity` 都執行 `agent-sync.mjs antigravity` 並回傳其 exit code；腳本不存在時印規格字串並 exit 1；`tracker sync gemini` 印 `Usage: tracker sync codex|antigravity` 並 exit 1。
   - 說明文字含 `Report Antigravity usage now (manual fallback / debugging)`。

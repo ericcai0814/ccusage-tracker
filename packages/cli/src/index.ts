@@ -32,6 +32,7 @@ switch (command) {
     console.log("  setup    Configure hook and server connection");
     console.log("  update   Refresh installed scripts/hooks using existing configuration");
     console.log("  sync codex  Report Codex usage now (manual fallback / debugging)");
+    console.log("  sync antigravity  Report Antigravity usage now (manual fallback / debugging)");
     console.log("  report   View team token usage report");
     console.log("  status   Check current configuration status");
     process.exit(command ? 1 : 0);

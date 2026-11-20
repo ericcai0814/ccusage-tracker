@@ -497,7 +497,7 @@ describe("Node CLI Codex entry points", () => {
       const status = await cli(["status"]);
       expect(status.code).toBe(0);
       expect(status.output).toContain("Codex collector: unavailable");
-      expect(status.output).toContain("npm install -g ccusage@20.0.20");
+      expect(status.output).toContain("npm install -g ccusage@20.0.51");
       expect(status.output).not.toContain("Node >=22");
     }
   });

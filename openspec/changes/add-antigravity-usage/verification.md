@@ -133,3 +133,20 @@ $ bun test            # CLI 全套
  228 pass
  0 fail
 ```
+
+## 4.5 status、sync 與說明文字
+
+新增案例後、實作前：status.test.ts 因匯入不到 `antigravityStatusLines`／`codexCollectorLine` 整檔失敗，sync.test.ts 的案例全紅。status 指令與 sync 指令的案例在 bun 子程序以隔離 HOME、只含 fixture 的 PATH 執行。
+
+```
+$ cd packages/cli && bun test src/commands/status.test.ts src/commands/sync.test.ts
+ 32 pass
+ 0 fail
+$ bun run build && node dist/index.js | grep "sync antigravity"
+  sync antigravity  Report Antigravity usage now (manual fallback / debugging)
+$ bun test   # CLI 全套
+ 247 pass
+ 0 fail
+```
+
+update.test.ts 中「status 的 Codex collector 安裝指令」斷言隨安裝版本改為 `ccusage@20.0.51`。
