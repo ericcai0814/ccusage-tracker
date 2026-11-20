@@ -388,6 +388,118 @@ describe("Dashboard overview", () => {
     });
   });
 
+  describe("Antigravity as a third source", () => {
+    const addAgy = (member: string, date: string, cost: number, models: string[]) =>
+      insertUsageRecord(db, member, {
+        member_name: member,
+        date,
+        session_id: "antigravity-daily",
+        input_tokens: 10,
+        output_tokens: 10,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+        total_cost_usd: cost,
+        models,
+      });
+
+    it("should draw three paths with the legend in table order and the Antigravity color", async () => {
+      addAgy("m1", "2026-06-11", 3, ["gemini-3-pro"]);
+      addAgy("m1", "2026-06-12", 2, ["gemini-3-pro"]);
+      const html = await (await app.request("/?period=month")).text();
+      const svg = html.slice(html.indexOf("<svg"), html.indexOf("</svg>"));
+      const legend = html.slice(html.indexOf('class="trend-legend"'), html.indexOf("<svg"));
+
+      expect(svg.match(/<path/g)).toHaveLength(3);
+      const order = ["Claude Code", "Codex", "Antigravity"].map((name) => legend.indexOf(name));
+      expect(order.every((i) => i > -1)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      expect(svg).toMatch(/<path[^>]*stroke="#f0b800"/);
+      expect(legend).not.toContain("其他");
+    });
+
+    it("should not label Antigravity-only data as other", async () => {
+      const agyDb = createDatabase(":memory:");
+      try {
+        insertMember(agyDb, "a1", "Agy", hashApiKey("agy"));
+        ["2026-06-10", "2026-06-11"].forEach((date) =>
+          insertUsageRecord(agyDb, "a1", {
+            member_name: "Agy", date, session_id: "antigravity-daily", input_tokens: 1, output_tokens: 1,
+            cache_creation_tokens: 0, cache_read_tokens: 0, total_cost_usd: 1, models: ["gemini-3-pro"],
+          })
+        );
+        const html = await (await createApp(agyDb).request("/?period=month")).text();
+        const legend = html.slice(html.indexOf('class="trend-legend"'), html.indexOf("<svg"));
+        expect(legend).toContain("Antigravity");
+        expect(legend).not.toContain("其他");
+      } finally {
+        agyDb.close();
+      }
+    });
+
+    it("should draw one bar per source and no path for a single day", async () => {
+      insertUsageRecord(db, "m1", {
+        member_name: "Eric", date: "2026-06-15", session_id: "daily", input_tokens: 1, output_tokens: 1,
+        cache_creation_tokens: 0, cache_read_tokens: 0, total_cost_usd: 4, models: ["claude-opus-5"],
+      });
+      addAgy("m1", "2026-06-15", 1, ["gemini-3-pro"]);
+      const html = await (await app.request("/?period=today")).text();
+
+      expect(html).not.toContain("<path");
+      expect(html.match(/class="trend-bar"/g)).toHaveLength(2);
+      expect(html).toContain("Antigravity");
+    });
+
+    it("should split 50/30/20 USD into Anthropic 50%, OpenAI 30% and Google 20%", async () => {
+      const splitDb = createDatabase(":memory:");
+      try {
+        insertMember(splitDb, "s1", "Split", hashApiKey("split"));
+        [
+          ["daily", 50],
+          ["codex-daily", 30],
+          ["antigravity-daily", 20],
+        ].forEach(([session_id, cost]) =>
+          insertUsageRecord(splitDb, "s1", {
+            member_name: "Split", date: "2026-06-12", session_id: session_id as string, input_tokens: 1,
+            output_tokens: 1, cache_creation_tokens: 0, cache_read_tokens: 0, total_cost_usd: cost as number, models: [],
+          })
+        );
+        const html = await (await createApp(splitDb).request("/?period=month")).text();
+        const section = html.slice(html.indexOf('class="panel provider"'), html.indexOf('class="panel models"'));
+        const pcts = [...section.matchAll(/class="provider-pct">\s*(\d+)%/g)].map((m) => Number(m[1]));
+
+        expect(section.indexOf("Anthropic")).toBeLessThan(section.indexOf("OpenAI"));
+        expect(section.indexOf("OpenAI")).toBeLessThan(section.indexOf("Google"));
+        expect(pcts).toEqual([50, 30, 20]);
+        expect(pcts.reduce((a, b) => a + b, 0)).toBe(100);
+        expect(section).toContain("#f0b800");
+      } finally {
+        splitDb.close();
+      }
+    });
+
+    it("should show Antigravity as the source of a model seen only there", async () => {
+      addAgy("m1", "2026-06-11", 1, ["gemini-3-pro"]);
+      const html = await (await app.request("/?period=month")).text();
+      const section = html.slice(html.indexOf('class="panel models"'), html.indexOf("</main>"));
+      expect(section).toMatch(/gemini-3-pro<\/td>\s*<td[^>]*>Antigravity<\/td>/);
+    });
+
+    it("should list one row per source when the same model comes from two sources", async () => {
+      insertUsageRecord(db, "m1", {
+        member_name: "Eric", date: "2026-06-13", session_id: "daily", input_tokens: 1, output_tokens: 1,
+        cache_creation_tokens: 0, cache_read_tokens: 0, total_cost_usd: 1, models: ["claude-opus-5-5"],
+      });
+      addAgy("m2", "2026-06-13", 1, ["claude-opus-5-5"]);
+      addAgy("m3", "2026-06-14", 1, ["claude-opus-5-5"]);
+      const html = await (await app.request("/?period=month")).text();
+      const section = html.slice(html.indexOf('class="panel models"'), html.indexOf("</main>"));
+
+      expect(section.match(/claude-opus-5-5<\/td>/g)).toHaveLength(2);
+      expect(section).toMatch(/claude-opus-5-5<\/td>\s*<td[^>]*>Claude Code<\/td>\s*<td[^>]*>1<\/td>\s*<td[^>]*>1<\/td>/);
+      expect(section).toMatch(/claude-opus-5-5<\/td>\s*<td[^>]*>Antigravity<\/td>\s*<td[^>]*>2<\/td>\s*<td[^>]*>2<\/td>/);
+    });
+  });
+
   describe("Member table", () => {
     it("should keep the existing per-member table", async () => {
       const html = await (await app.request("/?period=month")).text();
