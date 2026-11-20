@@ -150,3 +150,16 @@ $ bun test   # CLI 全套
 ```
 
 update.test.ts 中「status 的 Codex collector 安裝指令」斷言隨安裝版本改為 `ccusage@20.0.51`。
+
+## 5.1 文件
+
+```
+$ for f in README.md packages/cli/README.md CHANGELOG.md; do echo "$f: sync antigravity=$(grep -c 'sync antigravity' $f) 20.0.51=$(grep -c '20.0.51' $f)"; done
+README.md: sync antigravity=2 20.0.51=6
+packages/cli/README.md: sync antigravity=2 20.0.51=3
+CHANGELOG.md: sync antigravity=1 20.0.51=2
+$ grep -n -i "只支援\|only supports\|Claude Code or Codex\|Claude Code and Codex\|neither Claude Code nor Codex" README.md packages/cli/README.md CHANGELOG.md
+（無輸出）
+```
+
+CHANGELOG 舊版段落中「兩個工具都沒偵測到」屬於當時的紀錄，保留不改。README 的「計數與相容範圍」表新增 20.0.51 與 Antigravity 兩列；20.0.51 實跑結果見下方 5.2。

@@ -58,7 +58,7 @@
 
 ## 5. 文件、實跑驗證與 Antigravity 實機驗收
 
-- [ ] [P] 5.1 更新 README.md、packages/cli/README.md 與 CHANGELOG.md 的 Unreleased 段，寫明：
+- [x] [P] 5.1 更新 README.md、packages/cli/README.md 與 CHANGELOG.md 的 Unreleased 段，寫明：
   - AGY 的接法：update 後重開 Antigravity；三種觸發方式。
   - `tracker sync antigravity`（別名 `agy`）。
   - collector 改為 20.0.51，且 20.0.21 起才支援 AGY。
