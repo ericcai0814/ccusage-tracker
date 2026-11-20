@@ -63,3 +63,29 @@ $ bun test            # server 全套
 ```
 
 「worker 無法啟動」以 `--import` 注入的 probe 讓 `child_process.spawn` 拋錯，並斷言確實沒有 worker 啟動。
+
+## 3.1 Claude worker 搭便車
+
+測試在隔離 HOME 放一支假的 `agent-sync.mjs`（記錄 argv、印 stdout／stderr、睡 2 秒、exit 1），確認 worker 以 detached、stdio ignore 啟動它、只帶 `--trigger`、不等它。
+
+新增 5 個案例後、改腳本前：`21 pass / 3 fail`（腳本不存在與拿不到鎖的兩案本來就通過）。
+
+```
+$ cd packages/server && bun test src/claude-usage.test.ts
+ 24 pass
+ 0 fail
+```
+
+## 3.2 Codex worker 搭便車
+
+新增 6 個案例後、改腳本前：`44 pass / 4 fail`。既有案例一字未改。
+
+```
+$ cd packages/server && bun test src/codex-usage.test.ts src/routes/source-aggregation.test.ts
+ 53 pass
+ 0 fail
+$ bunx tsc --noEmit   # exit 0
+$ bun test            # server 全套
+ 411 pass
+ 0 fail
+```
