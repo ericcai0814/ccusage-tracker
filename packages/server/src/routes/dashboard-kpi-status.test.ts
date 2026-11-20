@@ -143,6 +143,16 @@ describe("Dashboard KPI comparison and report status", () => {
     expect(today).not.toMatch(/NaN|Infinity|∞/);
   });
 
+  it("compares today against yesterday", async () => {
+    // 今天 06-15：Eric $30；昨天 06-14：Eric $20 → 花費 +50%，token 與人數持平（兩天都只有 Eric、各 2,000 token）
+    usage("m1", "2026-06-15", 30);
+    usage("m1", "2026-06-14", 20);
+    const today = await (await app.request("/?period=today")).text();
+    expect(today).toContain("+50% vs 昨天");
+    expect(today.split("持平 vs 昨天")).toHaveLength(3);
+    expect(today).not.toMatch(/NaN|Infinity|∞/);
+  });
+
   it("marks a stale member with a hollow dot and text alternative", async () => {
     const html = await (await app.request("/?period=month")).text();
     const staleDot =

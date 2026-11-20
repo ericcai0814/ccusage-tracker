@@ -51,15 +51,22 @@ function formatRelativeTime(isoString: string | null): string {
   return `${days}d ago`;
 }
 
+// 回報狀態的過期門檻：判斷與狀態文字都從這裡推，改門檻時兩邊不會對不上
+const STALE_AFTER_HOURS = 24;
+const STALE_AFTER_MS = STALE_AFTER_HOURS * 60 * 60 * 1000;
+
 function isStale(isoString: string | null): boolean {
   if (!isoString) return true;
   const now = Date.now();
   const then = new Date(isoString + "Z").getTime();
-  return now - then > 24 * 60 * 60 * 1000;
+  return now - then > STALE_AFTER_MS;
 }
 
 // 回報狀態點：顏色之外還有形狀（實心／空心）與文字替代，不靠顏色單獨傳達
-const STATUS_LABEL = { fresh: "24 小時內有回報", stale: "超過 24 小時未回報" } as const;
+const STATUS_LABEL = {
+  fresh: `${STALE_AFTER_HOURS} 小時內有回報`,
+  stale: `超過 ${STALE_AFTER_HOURS} 小時未回報`,
+} as const;
 
 const ReportDot: FC<{ lastSeenAt: string | null }> = ({ lastSeenAt }) => {
   const state = isStale(lastSeenAt) ? "stale" : "fresh";
