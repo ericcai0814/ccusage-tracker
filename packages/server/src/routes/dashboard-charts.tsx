@@ -133,17 +133,16 @@ const TREND_SCRIPT = `(function(){
 
 // 單調三次曲線（Fritsch–Carlson）：平滑但不會在兩個點之間衝過頭、掉到 $0 以下。
 // 輸入是已經算好的像素座標，不碰金額，所以 1e308 這類資料不會在這裡溢位。
-function smoothPath(points: Array<[number, number]>): string {
+export function smoothPath(points: Array<[number, number]>): string {
   const n = points.length;
   if (n === 0) return "";
   const fmt = (v: number) => (Number.isFinite(v) ? v.toFixed(1) : "0");
   if (n === 1) return `M${fmt(points[0][0])},${fmt(points[0][1])}`;
 
-  const slopes: number[] = [];
-  for (let i = 0; i < n - 1; i++) {
-    const dx = points[i + 1][0] - points[i][0];
-    slopes.push(dx > 0 ? (points[i + 1][1] - points[i][1]) / dx : 0);
-  }
+  const slopes = points.slice(0, -1).map(([x0, y0], i) => {
+    const dx = points[i + 1][0] - x0;
+    return dx > 0 ? (points[i + 1][1] - y0) / dx : 0;
+  });
   const tangents = points.map((_, i) => {
     if (i === 0) return slopes[0];
     if (i === n - 1) return slopes[n - 2];
@@ -156,14 +155,12 @@ function smoothPath(points: Array<[number, number]>): string {
     return (3 * (h0 + h1)) / ((2 * h1 + h0) / a + (h1 + 2 * h0) / b);
   });
 
-  let d = `M${fmt(points[0][0])},${fmt(points[0][1])}`;
-  for (let i = 0; i < n - 1; i++) {
-    const [x0, y0] = points[i];
+  const curves = points.slice(0, -1).map(([x0, y0], i) => {
     const [x1, y1] = points[i + 1];
     const h = (x1 - x0) / 3;
-    d += ` C${fmt(x0 + h)},${fmt(y0 + tangents[i] * h)} ${fmt(x1 - h)},${fmt(y1 - tangents[i + 1] * h)} ${fmt(x1)},${fmt(y1)}`;
-  }
-  return d;
+    return `C${fmt(x0 + h)},${fmt(y0 + tangents[i] * h)} ${fmt(x1 - h)},${fmt(y1 - tangents[i + 1] * h)} ${fmt(x1)},${fmt(y1)}`;
+  });
+  return [`M${fmt(points[0][0])},${fmt(points[0][1])}`, ...curves].join(" ");
 }
 
 export const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
