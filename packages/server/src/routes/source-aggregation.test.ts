@@ -35,6 +35,13 @@ describe("Claude and Codex public reporting API", () => {
     expect(published).toBe(await Bun.file(new URL("../hook-scripts/codex-sync.mjs", import.meta.url)).text());
   });
 
+  it("serves the agent reporter script byte-for-byte", async () => {
+    const response = await app.request("/scripts/agent-sync.mjs");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/plain");
+    expect(await response.text()).toBe(await Bun.file(new URL("../hook-scripts/agent-sync.mjs", import.meta.url)).text());
+  });
+
   it("upserts each daily source independently and sums both once in reports", async () => {
     const date = new Date().toISOString().slice(0, 10);
     const headers = { Authorization: `Bearer ${TEAM_KEY}`, "Content-Type": "application/json" };

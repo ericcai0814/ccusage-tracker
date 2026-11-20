@@ -5,7 +5,7 @@
 
 ## 2. agent-sync.mjs 收集、上報與觸發
 
-- [ ] 2.1 依 design「通用上報腳本 agent-sync.mjs 與來源表」「AGY 用量換算：reasoning 併入 output」「Collector 版本：語意版本比較與 20.0.51」與規格「Canonical Antigravity snapshots」「Isolated Antigravity state」，在 packages/server/src/antigravity-usage.test.ts 以隔離 HOME、合成 ccusage（記錄 argv、可設定版本與輸出）與本機 loopback ingest 先寫失敗測試。案例如下：
+- [x] 2.1 依 design「通用上報腳本 agent-sync.mjs 與來源表」「AGY 用量換算：reasoning 併入 output」「Collector 版本：語意版本比較與 20.0.51」與規格「Canonical Antigravity snapshots」「Isolated Antigravity state」，在 packages/server/src/antigravity-usage.test.ts 以隔離 HOME、合成 ccusage（記錄 argv、可設定版本與輸出）與本機 loopback ingest 先寫失敗測試。案例如下：
   - 規格的 token 換算表：100／30／5／20／165 上報 output 40；200／50／0／0／250 上報 output 50；totalTokens 150 時拒收。
   - model 名稱清洗：`["Kimi K3 (Preview)", "gemini-3-pro", "gemini-3-pro", "()"]` 上報為 `["Kimi-K3-Preview", "gemini-3-pro"]`；`modelsUsed` 不是字串陣列時拒收。
   - collector 呼叫順序為 `--version` 後接 `antigravity daily --json --since --until --timezone`，從不以 `daily` 開頭。
@@ -18,8 +18,8 @@
   - AGY 失敗時 `buffer.jsonl` 與 `codex-buffer.jsonl` 位元組不變。
   - 兩個 worker 並行時只有一個拿到 `antigravity-worker.lock`。
   - 驗證：該檔先全紅。
-- [ ] 2.2 實作 packages/server/src/hook-scripts/agent-sync.mjs 的手動模式（`<source>`）與 worker 模式（`--worker <source>`），寫入 `antigravity-*` 狀態檔；在 packages/server/src/hook-scripts/agent-sync.d.mts 寫下 argv 契約；packages/server/src/scripts.ts 匯出腳本文字，packages/server/src/app.ts 新增 `/scripts/agent-sync.mjs` 路由。驗證：2.1 全綠；`node --check` 通過該檔；路由測試 GET `/scripts/agent-sync.mjs` 回 200，內容與原始檔逐字相同。
-- [ ] 2.3 依規格「Antigravity Stop hook never blocks Antigravity」與「Antigravity trigger throttle」，以及 design「觸發與節流：hook、搭便車、手動」，在 antigravity-usage.test.ts 先寫失敗測試，再實作 `--hook antigravity` 與 `--trigger`。
+- [x] 2.2 實作 packages/server/src/hook-scripts/agent-sync.mjs 的手動模式（`<source>`）與 worker 模式（`--worker <source>`），寫入 `antigravity-*` 狀態檔；在 packages/server/src/hook-scripts/agent-sync.d.mts 寫下 argv 契約；packages/server/src/scripts.ts 匯出腳本文字，packages/server/src/app.ts 新增 `/scripts/agent-sync.mjs` 路由。驗證：2.1 全綠；`node --check` 通過該檔；路由測試 GET `/scripts/agent-sync.mjs` 回 200，內容與原始檔逐字相同。
+- [x] 2.3 依規格「Antigravity Stop hook never blocks Antigravity」與「Antigravity trigger throttle」，以及 design「觸發與節流：hook、搭便車、手動」，在 antigravity-usage.test.ts 先寫失敗測試，再實作 `--hook antigravity` 與 `--trigger`。
   - hook 模式：含 `secret prompt` 的 payload 只啟動一次 worker，stdout 恰為 `{"decision":"stop"}`，worker argv 只有 `--worker antigravity`；`secret prompt` 與 transcript 路徑不出現在任何檔案、argv、stdout、stderr；超過 64 KB 或 stdin 不關時 3 秒內 exit 0；worker 無法啟動時 stdout 不含 `continue`。
   - 節流：hook 啟動後 2 分鐘內的 `--trigger` 不再啟動 worker；時間戳在未來時照跑並覆寫；手動 sync 不讀也不寫節流檔。
   - `--trigger` 只在 `<root>/conversations` 存在或 `ANTIGRAVITY_DATA_DIR` 非空時啟動；只有 `~/.gemini/antigravity/bin` 時不建立任何 `antigravity-*` 檔；`--trigger` 不輸出、exit 0。

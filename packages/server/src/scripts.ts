@@ -6,9 +6,14 @@
 import sessionEndMjs from "./hook-scripts/session-end.mjs" with { type: "text" };
 import sessionStartMjs from "./hook-scripts/session-start.mjs" with { type: "text" };
 import codexSyncMjs from "./hook-scripts/codex-sync.mjs" with { type: "text" };
+import agentSyncMjs from "./hook-scripts/agent-sync.mjs" with { type: "text" };
 
 export function generateCodexSyncMjsScript(): string {
   return codexSyncMjs;
+}
+
+export function generateAgentSyncMjsScript(): string {
+  return agentSyncMjs;
 }
 
 export function generateSetupScript(serverUrl: string, _teamKey: string): string {

@@ -27,3 +27,39 @@ $ cd packages/server && bun test src/routes/dashboard.test.ts
  168 expect() calls
 Ran 57 tests across 1 file.
 ```
+
+## 2.1 agent-sync.mjs 測試（先紅）
+
+`packages/server/src/antigravity-usage.test.ts`：合成 ccusage（記錄 argv、可設版本與輸出）、隔離 HOME，ingest 是以 `Bun.serve` 掛在 `127.0.0.1` 隨機埠上的真實 `createApp`（記憶體 DB）。
+
+腳本不存在時：`1 pass / 35 fail`。唯一通過的是「未知來源與未知旗標 exit 1」，因為 node 找不到腳本本來就 exit 1。
+
+## 2.2 手動與 worker 模式、路由
+
+```
+$ node --check packages/server/src/hook-scripts/agent-sync.mjs   # exit 0
+$ cd packages/server && bun test src/antigravity-usage.test.ts
+ 36 pass
+ 0 fail
+$ bun test src/routes/source-aggregation.test.ts src/antigravity-usage.test.ts src/scripts.test.ts
+ 76 pass
+ 0 fail
+```
+
+路由案例 `serves the agent reporter script byte-for-byte`（source-aggregation.test.ts）在接上 `/scripts/agent-sync.mjs` 之前為 fail，之後為 pass。
+
+## 2.3 hook、trigger 與節流
+
+新增 16 個案例後、實作前：`38 pass / 16 fail`（手動 sync 不寫節流檔的兩案本來就通過）。
+
+```
+$ cd packages/server && bun test src/antigravity-usage.test.ts   # 連跑兩次
+ 54 pass
+ 0 fail
+$ bunx tsc --noEmit   # exit 0
+$ bun test            # server 全套
+ 400 pass
+ 0 fail
+```
+
+「worker 無法啟動」以 `--import` 注入的 probe 讓 `child_process.spawn` 拋錯，並斷言確實沒有 worker 啟動。

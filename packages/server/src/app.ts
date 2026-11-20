@@ -6,7 +6,7 @@ import sessionIngest from "./routes/session-ingest";
 import report from "./routes/report";
 import weeklyReport from "./routes/weekly-report";
 import dashboard from "./routes/dashboard";
-import { generateSetupScript, generateUninstallScript, generateSessionStartScript, generateSessionEndScript, generateSetupPs1Script, generateSessionStartMjsScript, generateSessionEndMjsScript, generateCodexSyncMjsScript } from "./scripts";
+import { generateSetupScript, generateUninstallScript, generateSessionStartScript, generateSessionEndScript, generateSetupPs1Script, generateSessionStartMjsScript, generateSessionEndMjsScript, generateCodexSyncMjsScript, generateAgentSyncMjsScript } from "./scripts";
 import type { Database } from "bun:sqlite";
 
 export type AppEnv = {
@@ -85,6 +85,11 @@ export function createApp(db?: Database): Hono<AppEnv> {
   app.get("/scripts/codex-sync.mjs", (c) => {
     c.header("Content-Type", "text/plain; charset=utf-8");
     return c.text(generateCodexSyncMjsScript());
+  });
+
+  app.get("/scripts/agent-sync.mjs", (c) => {
+    c.header("Content-Type", "text/plain; charset=utf-8");
+    return c.text(generateAgentSyncMjsScript());
   });
 
   app.route("/api/admin", admin);
