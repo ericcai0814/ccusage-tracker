@@ -163,3 +163,104 @@ $ grep -n -i "只支援\|only supports\|Claude Code or Codex\|Claude Code and Co
 ```
 
 CHANGELOG 舊版段落中「兩個工具都沒偵測到」屬於當時的紀錄，保留不改。README 的「計數與相容範圍」表新增 20.0.51 與 Antigravity 兩列；20.0.51 實跑結果見下方 5.2。
+
+## 5.2 完整驗證
+
+### 全套指令
+
+四項 exit code 皆為 0。尾段：
+
+```
+$ pnpm test
+packages/cli test: Ran 247 tests across 10 files. [8.90s]
+packages/cli test: Done
+packages/server test:  411 pass
+packages/server test:  1 skip
+packages/server test:  0 fail
+packages/server test:  1226 expect() calls
+packages/server test: Ran 412 tests across 18 files. [40.88s]
+packages/server test: Done
+$ pnpm typecheck
+packages/server typecheck$ tsc --noEmit
+packages/cli typecheck$ tsc --noEmit
+packages/cli typecheck: Done
+packages/server typecheck: Done
+$ pnpm build
+Bundled 63 modules in 7ms
+
+  index.js  0.29 MB  (entry point)
+
+$ pnpm --filter ccusage-tracker build
+Bundled 13 modules in 3ms
+
+  index.js  57.50 KB  (entry point)
+
+```
+
+server 412 個案例中 1 個是既有的 opt-in 案例（`CCTRACKER_TEST_LEGACY_COLLECTOR` 未設定時 skip）。
+
+### 以 built CLI 對 loopback server 的 smoke 測試
+
+- server：真實 `createApp`，DB 為 scratch 檔案，以 `Bun.serve({ hostname: "127.0.0.1", port: 0 })` 只綁 loopback。
+- 隔離 HOME，只建 `~/.gemini/antigravity-cli/conversations`；PATH 只有合成 ccusage（版本 20.0.51、只回 Antigravity 一列）與 `/usr/bin:/bin`。
+- 每個 CLI 指令都包在 `sandbox-exec` 內執行，profile 拒絕寫入 `~/.claude`、`~/.codex`、`~/.gemini`、`~/.config/ccusage-tracker`、`~/dotfiles/claude`。守衛先以無害靶自測：在 sandbox 內寫 `~/.codex/__sandbox_probe` 得到 `Operation not permitted`，檔案不存在。
+
+```
+$ printf 'Smoke Tester\nhttp://127.0.0.1:<port>\nsmoke-team-key\n' | node packages/cli/dist/index.js setup
+Claude Code: not detected
+Codex: not detected
+Antigravity: hook installed (Stop). Restart Antigravity to load it.
+Collector: ccusage 20.0.51 (Claude, Codex and Antigravity ready)
+setup exit=0
+（~/.gemini/config/hooks.json 只含 ccusage-tracker → Stop → node "<home>/.config/ccusage-tracker/agent-sync.mjs" --hook antigravity）
+
+$ node packages/cli/dist/index.js update   # 兩次，都印 Antigravity: hook already up to date，exit 0
+sha256（setup 後 = 第一次 update 後 = 第二次 update 後）：
+cd4d13978533ca7200d1bdb6e3fa45b6c32696627fa36b22945c859d83813f2e  <home>/.gemini/config/hooks.json
+9bc50786f1ec3ac5d2c609f0aea5efe11c10d6650abfd5860979c25d577e3164  <home>/.config/ccusage-tracker/config.json
+ce57f40a70925871cc32cf7df5bda36edf08ceb7a31afcf58d08014e9310c923  <home>/.config/ccusage-tracker/agent-sync.mjs
+
+$ node packages/cli/dist/index.js sync agy
+Antigravity usage synced.   (exit 0)
+$ GET /api/report/daily → 一筆 session_id antigravity-daily，input 100、output 40（30 + reasoning 10）、cache_creation 5、cache_read 20
+```
+
+儀表板：sync 寫入的是本機日期 2026-11-21，而 server 的期間以 UTC 計（`getDateRange` 用 `toISOString()`，當時 UTC 仍是 11-20），所以剛 sync 完的月檢視不含這筆。這是 README 已記載的既有行為，不屬本 change。補一筆 2026-11-20 的 `antigravity-daily` 後，月檢視 HTML 含 `Antigravity` 5 次、`#f0b800` 4 次，圖例沒有 `其他`。再以 ingest API 補 11-16 至 11-20 三來源資料，三來源 HTML 檢查結果：SVG 3 條 `<path>`、Antigravity 線為 `stroke="#f0b800"`、圖例順序 Claude Code → Codex → Antigravity、供應商 Anthropic／OpenAI／Google、`claude-opus-5-5` 兩列。
+
+### 以真實 ccusage 20.0.51 跑既有 session-end.mjs 與 codex-sync.mjs
+
+- ccusage 20.0.51 以 `npm install --prefix <scratch>` 安裝；wrapper 對收集指令加 `--offline`，避免下載定價。
+- `CLAUDE_CONFIG_DIR=~/.claude`、`CODEX_HOME=~/.codex` 唯讀讀取真實用量；隔離 HOME 的 config 指向 loopback server。
+- 兩支腳本只寫 `homedir()/.config/ccusage-tracker`（已隔離），已逐行檢查寫檔呼叫。ccusage 是否寫入則由上述 `sandbox-exec` profile 在機制上拒絕，不靠推論。
+
+```
+claude      daily --json: exit 0, top=daily,totals rows=1 rowkeys=cacheCreationTokens,cacheReadTokens,date,inputTokens,modelBreakdowns,modelsUsed,outputTokens,totalCost,totalTokens
+codex       daily --json: exit 0, top=daily,totals rows=1 rowkeys=cacheCreationTokens,cacheReadTokens,costUSD,date,inputTokens,models,outputTokens,reasoningOutputTokens,totalTokens
+antigravity daily --json: exit 0, top=daily,totals rows=0（本機沒有 Antigravity 對話資料；totals.totalCost 為 -0.0）
+session-end.mjs --mode=worker: exit 0 → ingest 200, session_id daily
+codex-sync.mjs（手動）: "Codex usage synced." exit 0 → ingest 200, session_id codex-daily
+agent-sync.mjs antigravity: "No Antigravity usage for today." exit 0
+兩個 last-error 檔都不存在；last-upload.txt、codex-last-upload.txt 都已寫入
+```
+
+兩支既有驗證器都接受 20.0.51 的真實輸出。真實 JSON 存在 scratch，未入庫。
+
+### 真實設定檔前後 sha256
+
+與主線程的 baseline 逐一比對，全部相同；`~/.gemini/config/hooks.json` 前後都不存在：
+
+```
+1050bb8148d67c7efeaf93644853002223b04f4385d2d88059a6e738b687cd97  ~/dotfiles/claude/settings.json      OK
+6c53180f461414576f2b43f6e29b30c7799f484364672d585cc944b6aebb23a4  ~/.codex/hooks.json                 OK
+af99efc0236809abce7b509c1f8e8ca76d30a1ebb5a4419a83c5b93d2b5a2682  ~/.codex/config.toml                OK
+03cd8bc2ce45de4132d97efff542f7b4246e828f373518fc43d70eb95ba01e65  ~/.config/ccusage-tracker/config.json OK
+```
+
+### 未在本 session 完成的項目
+
+- `spectra validate add-antigravity-usage`：依交接指示跳過（Spectra CLI 不支援 worktree），由主線程執行。
+- `#f0b800` 的人眼確認：截圖與 HTML 已交給維護者，尚未確認。
+
+## 5.3 Antigravity 實機驗收
+
+未確認。本機沒有 Antigravity 對話資料，也沒有 `agy` 指令；需要一台裝有 Antigravity 且有對話的機器確認：Customizations > Hooks 列出 `ccusage-tracker`、一輪對話後產生 `antigravity-last-flush.txt` 並上報成功、`{"decision":"stop"}` 不被當成錯誤。

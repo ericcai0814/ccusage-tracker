@@ -66,7 +66,7 @@
   - 移除段落：手動刪掉 `~/.gemini/config/hooks.json` 的 `ccusage-tracker` key。
   - 依 design「接下一個工具的步驟」寫成開發者段落的五步清單。
   - 驗證：內容審閱；grep 三份文件都含 `sync antigravity` 與 `20.0.51`，且不再有「只支援 Claude 與 Codex」的敘述。
-- [ ] 5.2 完整驗證，各命令輸出寫入 change 目錄的 verification.md：
+- [x] 5.2 完整驗證，各命令輸出寫入 change 目錄的 verification.md：
   - `pnpm test`、`pnpm typecheck`、`pnpm build`、`pnpm --filter ccusage-tracker build` 全綠。
   - 以 built CLI 對 loopback server 做 smoke 測試，使用隔離 HOME（含 `~/.gemini/antigravity-cli/conversations`）與合成 ccusage：setup 後 `~/.gemini/config/hooks.json` 含 `ccusage-tracker`；update 兩次後各設定檔 sha256 不變；`tracker sync agy` 後 server 有一筆 `antigravity-daily`，儀表板 HTML 含 `Antigravity`。
   - 以本機真實 ccusage 20.0.51，對 loopback server 跑既有 `session-end.mjs` worker 與 `codex-sync.mjs`，確認兩支驗證器都接受 20.0.51 的真實輸出。
