@@ -53,6 +53,9 @@ export const THEME_CSS = `
     --destructive: #e5484d;
     --warning: #e0b041;
     --positive: #4cc38a;
+    /* status dots on --card #101413: fresh 5.56:1, stale ring 3.90:1 */
+    --status-fresh: #3a9e6e;
+    --status-stale: #6b7571;
     --radius: 12px;
     --radius-sm: 6px;
     --radius-md: 8px;
@@ -231,6 +234,8 @@ export const DASHBOARD_CSS = `
   .card-label { font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--muted-foreground); white-space: nowrap; }
   .card-value { font-family: var(--font-mono); font-size: 30px; line-height: 32px; font-weight: 500; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--foreground); }
   .card-unit { margin-top: 8px; font-size: 12px; line-height: 16px; color: var(--muted-foreground); }
+  /* change vs previous period: neutral on purpose, direction is carried by the sign */
+  .card-delta { margin-top: 4px; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 
   .budget { min-width: 0; padding-left: 16px; border-left: 1px solid var(--border); }
   .budget-line { font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--secondary-foreground); font-variant-numeric: tabular-nums; }
@@ -289,7 +294,8 @@ export const DASHBOARD_CSS = `
   .rank-list { display: grid; gap: 4px; }
   .rank-row { display: grid; grid-template-columns: 24px 96px 1fr 112px; gap: 12px; align-items: center; height: 36px; }
   .rank-idx { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
-  .rank-name { font-size: 13px; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rank-name { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; color: var(--foreground); }
+  .rank-name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rank-track { height: 6px; background: var(--muted); border-radius: 2px; overflow: hidden; }
   .rank-fill { height: 100%; border-radius: 2px; }
   .rank-val { text-align: right; font-family: var(--font-mono); font-size: 13px; line-height: 16px; color: var(--foreground); font-variant-numeric: tabular-nums; }
@@ -309,7 +315,13 @@ export const DASHBOARD_CSS = `
   .panel.models th:nth-child(2), .panel.models td:nth-child(2) { text-align: left; font-family: var(--font-sans); }
   .panel.members-table .panel-head { margin-bottom: 8px; }
 
-  .stale-warn { color: var(--warning); }
+  .stale-warn { color: var(--muted-foreground); }
+
+  /* report status: filled green = reported within 24h, hollow grey ring = stale; shape differs, not only hue */
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; box-sizing: border-box; }
+  .status-dot.fresh { background: var(--status-fresh); }
+  .status-dot.stale { background: transparent; border: 1.5px solid var(--status-stale); }
+  .member-cell { display: inline-flex; align-items: center; gap: 8px; }
   .total-row td { color: var(--foreground); border-top: 1px solid var(--border-strong); font-weight: 500; }
 
   .share-bar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 120px; }

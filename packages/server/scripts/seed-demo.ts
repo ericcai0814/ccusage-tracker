@@ -108,5 +108,13 @@ for (const m of MEMBERS) {
     }
   }
 }
+// insert 會把 last_seen_at 寫成「現在」，所以全部寫完才回填：每人最後一筆用量那天的 18:00 UTC，
+// 但不晚於現在。Leo 最近三天沒資料，會落在 24 小時之外，用來看過期的灰點。
+db.run(
+  `UPDATE members SET last_seen_at = MIN(
+     (SELECT MAX(date) FROM usage_records WHERE member_id = members.id) || ' 18:00:00',
+     datetime('now')
+   )`
+);
 db.close();
 process.stdout.write(`seeded ${dbPath}\n`);

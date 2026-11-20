@@ -13,7 +13,7 @@ import {
 } from "../queries";
 import { SOURCE_ORDER, sourceInfo } from "../sources";
 import { getMonthlyBudgetUsd } from "../settings";
-import { validatePeriod, getDateRange, VALID_PERIODS, type Period } from "../utils/date-range";
+import { validatePeriod, getDateRange, getPreviousDateRange, VALID_PERIODS, type Period } from "../utils/date-range";
 import type { AppEnv } from "../app";
 import { THEME_CSS, DASHBOARD_CSS, FONT_LINKS } from "./ui-theme";
 
@@ -114,6 +114,37 @@ function isStale(isoString: string | null): boolean {
   const now = Date.now();
   const then = new Date(isoString + "Z").getTime();
   return now - then > 24 * 60 * 60 * 1000;
+}
+
+// 回報狀態點：顏色之外還有形狀（實心／空心）與文字替代，不靠顏色單獨傳達
+const STATUS_LABEL = { fresh: "24 小時內有回報", stale: "超過 24 小時未回報" } as const;
+
+const ReportDot: FC<{ lastSeenAt: string | null }> = ({ lastSeenAt }) => {
+  const state = isStale(lastSeenAt) ? "stale" : "fresh";
+  return <span class={`status-dot ${state}`} role="img" aria-label={STATUS_LABEL[state]} title={STATUS_LABEL[state]} />;
+};
+
+// KPI「比上一期」。花費變多不一定是壞事，所以只給方向符號、不給紅綠。
+const PREVIOUS_LABEL: Record<Period, string> = { today: "昨天", week: "上週同期", month: "上月同期" };
+
+// 用真的減號（U+2212），toLocaleString 對負數只會吐 ASCII 連字號
+const MINUS = "\u2212";
+
+// 上一期為 0、任一邊不是有限值、或算出來的變化量不是有限值 → 一律「無資料」，不印 NaN／Infinity。
+// 方向以四捨五入後的值判斷：-0.4% 捨入成 0 要顯示持平，不能印成「−0%」。
+export function formatChange(current: number, previous: number, kind: "percent" | "count", period: Period): string {
+  const label = PREVIOUS_LABEL[period];
+  const noData = `${label}無資料`;
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || !(previous > 0)) return noData;
+
+  const raw = kind === "percent" ? ((current - previous) / previous) * 100 : current - previous;
+  if (!Number.isFinite(raw) || Math.abs(raw) >= MAX_DISPLAY_USD) return noData;
+
+  const rounded = Math.round(raw);
+  if (rounded === 0) return `持平 vs ${label}`;
+  const sign = rounded > 0 ? "+" : MINUS;
+  const magnitude = Math.abs(rounded).toLocaleString("en-US");
+  return kind === "percent" ? `${sign}${magnitude}% vs ${label}` : `${sign}${magnitude} 人 vs ${label}`;
 }
 
 
@@ -276,11 +307,12 @@ const BudgetNote: FC<{ status: BudgetStatus }> = ({ status }) => (
   </div>
 );
 
-const KpiCard: FC<{ zh: string; en: string; value: string; unit: string; children?: any }> = ({
+const KpiCard: FC<{ zh: string; en: string; value: string; unit: string; delta: string; children?: any }> = ({
   zh,
   en,
   value,
   unit,
+  delta,
   children,
 }) => (
   <div class={children ? "card has-budget" : "card"}>
@@ -291,27 +323,70 @@ const KpiCard: FC<{ zh: string; en: string; value: string; unit: string; childre
       </div>
       <div class="card-value">{value}</div>
       <div class="card-unit">{unit}</div>
+      <div class="card-delta">{delta}</div>
     </div>
     {children}
   </div>
 );
 
-const KpiRow: FC<{
+interface KpiFigures {
   totalCost: number;
   totalTokens: number;
   activeMembers: number;
   claudeTurns: number;
+}
+
+const KpiRow: FC<{
+  current: KpiFigures;
+  previous: KpiFigures;
+  period: Period;
   budget: BudgetStatus | null;
-}> = ({ totalCost, totalTokens, activeMembers, claudeTurns, budget }) => (
+}> = ({ current, previous, period, budget }) => (
   <div class={budget ? "cards has-budget" : "cards"}>
-    <KpiCard zh="總花費（估算）" en="Total Cost" value={formatCost(totalCost)} unit="USD，估算值">
+    <KpiCard
+      zh="總花費（估算）"
+      en="Total Cost"
+      value={formatCost(current.totalCost)}
+      unit="USD，估算值"
+      delta={formatChange(current.totalCost, previous.totalCost, "percent", period)}
+    >
       {budget ? <BudgetNote status={budget} /> : null}
     </KpiCard>
-    <KpiCard zh="總 token" en="Total Tokens" value={formatNumber(totalTokens)} unit="input＋output＋cache" />
-    <KpiCard zh="活躍成員" en="Active Members" value={String(activeMembers)} unit="本期有回報的人" />
-    <KpiCard zh="Claude 對話回合" en="Claude Turns" value={formatNumber(claudeTurns)} unit="只含 Claude Code，Codex 不回報" />
+    <KpiCard
+      zh="總 token"
+      en="Total Tokens"
+      value={formatNumber(current.totalTokens)}
+      unit="input＋output＋cache"
+      delta={formatChange(current.totalTokens, previous.totalTokens, "percent", period)}
+    />
+    <KpiCard
+      zh="活躍成員"
+      en="Active Members"
+      value={String(current.activeMembers)}
+      unit="本期有回報的人"
+      delta={formatChange(current.activeMembers, previous.activeMembers, "count", period)}
+    />
+    <KpiCard
+      zh="Claude 對話回合"
+      en="Claude Turns"
+      value={formatNumber(current.claudeTurns)}
+      unit="只含 Claude Code，Codex 不回報"
+      delta={formatChange(current.claudeTurns, previous.claudeTurns, "percent", period)}
+    />
   </div>
 );
+
+function kpiFigures(members: UsageSummary[], claudeTurns: number): KpiFigures {
+  return {
+    totalCost: members.reduce((sum, m) => sum + m.total_cost_usd, 0),
+    totalTokens: members.reduce(
+      (sum, m) => sum + m.input_tokens + m.output_tokens + m.cache_creation_tokens + m.cache_read_tokens,
+      0
+    ),
+    activeMembers: members.length,
+    claudeTurns,
+  };
+}
 
 interface TrendSeries {
   source: UsageSource;
@@ -640,7 +715,10 @@ const MemberRanking: FC<{ members: UsageSummary[] }> = ({ members }) => {
         {shown.map((m, i) => (
           <div class="rank-row">
             <span class="rank-idx">{String(i + 1).padStart(2, "0")}</span>
-            <span class="rank-name">{m.member_name}</span>
+            <span class="rank-name">
+              <ReportDot lastSeenAt={m.last_seen_at} />
+              <span class="rank-name-text">{m.member_name}</span>
+            </span>
             <div class="rank-track">
               <div
                 class="rank-fill"
@@ -798,7 +876,12 @@ const MemberTable: FC<{ members: UsageSummary[] }> = ({ members }) => {
             const sharePct = memberShares[i];
             return (
               <tr>
-                <td>{m.member_name}</td>
+                <td>
+                  <span class="member-cell">
+                    <ReportDot lastSeenAt={m.last_seen_at} />
+                    {m.member_name}
+                  </span>
+                </td>
                 <td>{formatNumber(m.input_tokens)}</td>
                 <td>{formatNumber(m.output_tokens)}</td>
                 <td>{formatNumber(m.cache_creation_tokens)}</td>
@@ -853,20 +936,20 @@ const PERIOD_KEY_SCRIPT = `(function(){
 dashboard.get("/", (c) => {
   const db = c.get("db");
   const period = validatePeriod(c.req.query("period"));
-  const { from, to } = getDateRange(period);
+  // 本期與上一期用同一個時間點推，避免跨過午夜時兩邊對不齊
+  const now = new Date();
+  const { from, to } = getDateRange(period, now);
+  const previousRange = getPreviousDateRange(period, now);
 
   const members = aggregateUsage(db, { from, to });
   const dailyBySource = aggregateUsageByDateAndSource(db, { from, to });
   const models = aggregateModelPresence(db, { from, to });
   const claudeTurns = sumClaudeTurns(db, { from, to });
 
-  const totalCost = members.reduce((sum, m) => sum + m.total_cost_usd, 0);
-  const totalTokens = members.reduce(
-    (sum, m) => sum + m.input_tokens + m.output_tokens + m.cache_creation_tokens + m.cache_read_tokens,
-    0
-  );
+  const current = kpiFigures(members, claudeTurns);
+  const previous = kpiFigures(aggregateUsage(db, previousRange), sumClaudeTurns(db, previousRange));
 
-  const budget = buildBudgetStatus(period, getMonthlyBudgetUsd(db), totalCost, to);
+  const budget = buildBudgetStatus(period, getMonthlyBudgetUsd(db), current.totalCost, to);
 
   return c.html(
     <Layout title={`${PERIOD_TITLE[period]} · ccusage tracker`}>
@@ -908,13 +991,7 @@ dashboard.get("/", (c) => {
         </nav>
       </div>
       <main>
-        <KpiRow
-          totalCost={totalCost}
-          totalTokens={totalTokens}
-          activeMembers={members.length}
-          claudeTurns={claudeTurns}
-          budget={budget}
-        />
+        <KpiRow current={current} previous={previous} period={period} budget={budget} />
         <TrendChart rows={dailyBySource} />
         <div class="panel-row">
           <MemberRanking members={members} />
@@ -925,7 +1002,7 @@ dashboard.get("/", (c) => {
       <section class="panel members-table">
         <div class="panel-head">
           <h2 class="panel-title">成員明細</h2>
-          <span class="panel-note">token 單位為個，Last Report 超過 24 小時標黃</span>
+          <span class="panel-note">token 單位為個；實心綠點＝24 小時內有回報，空心灰點＝超過 24 小時</span>
         </div>
         <MemberTable members={members} />
       </section>
