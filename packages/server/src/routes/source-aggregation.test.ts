@@ -35,6 +35,13 @@ describe("Claude and Codex public reporting API", () => {
     expect(published).toBe(await Bun.file(new URL("../hook-scripts/codex-sync.mjs", import.meta.url)).text());
   });
 
+  it("serves the agent reporter script byte-for-byte", async () => {
+    const response = await app.request("/scripts/agent-sync.mjs");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/plain");
+    expect(await response.text()).toBe(await Bun.file(new URL("../hook-scripts/agent-sync.mjs", import.meta.url)).text());
+  });
+
   it("upserts each daily source independently and sums both once in reports", async () => {
     const date = new Date().toISOString().slice(0, 10);
     const headers = { Authorization: `Bearer ${TEAM_KEY}`, "Content-Type": "application/json" };
@@ -66,6 +73,27 @@ describe("Claude and Codex public reporting API", () => {
       members: [{ member_name: "Source Tester", input_tokens: 700, output_tokens: 350,
         cache_creation_tokens: 25, cache_read_tokens: 475, total_cost_usd: 1 }],
     });
+  });
+
+  it("keeps one record per source when Claude, Codex and Antigravity are each ingested twice", async () => {
+    const date = new Date().toISOString().slice(0, 10);
+    const headers = { Authorization: `Bearer ${TEAM_KEY}`, "Content-Type": "application/json" };
+    const base = { member_name: "Three Sources", date, cache_creation_tokens: 0, cache_read_tokens: 0 };
+    const payloads = [
+      { ...base, session_id: "daily", input_tokens: 100, output_tokens: 10, total_cost_usd: 0.5, models: ["claude-opus-5-5"] },
+      { ...base, session_id: "codex-daily", input_tokens: 200, output_tokens: 20, total_cost_usd: 0.3, models: ["gpt-5"] },
+      { ...base, session_id: "antigravity-daily", input_tokens: 300, output_tokens: 40, cache_creation_tokens: 5,
+        total_cost_usd: 0.2, models: ["gemini-3-pro"] },
+    ];
+    for (const payload of [...payloads, ...payloads]) {
+      const response = await app.request("/api/ingest", { method: "POST", headers, body: JSON.stringify(payload) });
+      expect(response.status).toBe(200);
+    }
+    const daily = await app.request(`/api/report/daily?from=${date}&to=${date}`, { headers });
+    const { records } = await daily.json();
+    expect(records.map((r: { session_id: string }) => r.session_id).sort()).toEqual(["antigravity-daily", "codex-daily", "daily"]);
+    const summary = await app.request("/api/report/summary?period=today", { headers });
+    expect(await summary.json()).toMatchObject({ total_cost_usd: 1, total_tokens: 675, active_members: 1 });
   });
 
   it("updates the Node-built CLI then syncs installed Codex scripts into the real API", async () => {

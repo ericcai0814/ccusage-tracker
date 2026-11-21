@@ -11,6 +11,7 @@ import {
   type ModelPresence,
   type UsageSource,
 } from "../queries";
+import { SOURCE_ORDER, sourceInfo } from "../sources";
 import { getMonthlyBudgetUsd } from "../settings";
 import { validatePeriod, getDateRange, VALID_PERIODS, type Period } from "../utils/date-range";
 import type { AppEnv } from "../app";
@@ -935,24 +936,10 @@ const Layout: FC<{ title: string; children: any }> = ({ title, children }) => (
   </html>
 );
 
-// 資料色：已在 #0a0a0a 面上驗過 CVD 區辨與對比。S29 的紅色只做 chrome，不當資料色。
-const SOURCE_COLOR: Record<UsageSource, string> = {
-  claude: "#3987e5",
-  codex: "#d95926",
-  other: "#8a8a8a",
-};
-
-const SOURCE_LABEL: Record<UsageSource, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-  other: "其他",
-};
-
-const PROVIDER_LABEL: Record<UsageSource, string> = {
-  claude: "Anthropic",
-  codex: "OpenAI",
-  other: "其他",
-};
+// 名稱、資料色、供應商與順序都來自 sources.ts 的來源表。S29 的紅色只做 chrome，不當資料色。
+const SOURCE_COLOR = (source: UsageSource): string => sourceInfo(source).color;
+const SOURCE_LABEL = (source: UsageSource): string => sourceInfo(source).label;
+const PROVIDER_LABEL = (source: UsageSource): string => sourceInfo(source).provider;
 
 // 成員排行是同一個量的排序，用單色序列而不是分類色
 const RANK_COLORS = { first: "#6da7ec", top: "#3987e5", rest: "#256abf" };
@@ -1129,14 +1116,14 @@ interface TrendSeries {
 
 function buildTrendSeries(rows: DailySourceUsage[]): { dates: string[]; series: TrendSeries[] } {
   const dates = [...new Set(rows.map((r) => r.date))].sort();
-  const sources: UsageSource[] = (["claude", "codex", "other"] as const).filter((s) =>
+  const sources: UsageSource[] = SOURCE_ORDER.filter((s) =>
     rows.some((r) => r.source === s)
   );
 
   const series = sources.map((source) => ({
     source,
-    name: SOURCE_LABEL[source],
-    color: SOURCE_COLOR[source],
+    name: SOURCE_LABEL(source),
+    color: SOURCE_COLOR(source),
     values: dates.map((date) => rows.find((r) => r.date === date && r.source === source)?.total_cost_usd ?? 0),
   }));
 
@@ -1370,7 +1357,7 @@ const MemberRanking: FC<{ members: UsageSummary[] }> = ({ members }) => {
 };
 
 const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
-  const bySource = (["claude", "codex", "other"] as const).map((source) => ({
+  const bySource = SOURCE_ORDER.map((source) => ({
     source,
     cost: rows.filter((r) => r.source === source).reduce((sum, r) => sum + r.total_cost_usd, 0),
   }));
@@ -1389,7 +1376,8 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
     );
   }
 
-  const hasOther = present.some((p) => p.source === "other");
+  // has-other 這個 class 是三欄版面；來源數超過兩個就用它，不再只看有沒有 other
+  const wide = present.length > 2;
 
   return (
     <section class="panel provider">
@@ -1399,19 +1387,19 @@ const ProviderSplit: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
       </div>
       <div class="stack" role="img" aria-label="各供應商的成本占比">
         {present.map((p, i) => (
-          <div style={`width: ${shares[i].toFixed(1)}%; background: ${SOURCE_COLOR[p.source]}`} />
+          <div style={`width: ${shares[i].toFixed(1)}%; background: ${SOURCE_COLOR(p.source)}`} />
         ))}
       </div>
-      <div class={hasOther ? "provider-grid has-other" : "provider-grid"}>
+      <div class={wide ? "provider-grid has-other" : "provider-grid"}>
         {present.map((p, i) => (
           <div class="provider-box">
             <div class="provider-name">
-              <span class="provider-swatch" style={`background: ${SOURCE_COLOR[p.source]}`} aria-hidden="true" />
-              {PROVIDER_LABEL[p.source]}
+              <span class="provider-swatch" style={`background: ${SOURCE_COLOR(p.source)}`} aria-hidden="true" />
+              {PROVIDER_LABEL(p.source)}
             </div>
             <div class="provider-amt">{formatCost(p.cost)}</div>
             <div class="provider-pct">
-              {wholeShares[i]}% · {SOURCE_LABEL[p.source]}
+              {wholeShares[i]}% · {SOURCE_LABEL(p.source)}
             </div>
           </div>
         ))}
@@ -1443,7 +1431,7 @@ const ModelTable: FC<{ models: ModelPresence[] }> = ({ models }) => (
             {models.map((m) => (
               <tr>
                 <td>{m.model}</td>
-                <td>{SOURCE_LABEL[m.source]}</td>
+                <td>{SOURCE_LABEL(m.source)}</td>
                 <td>{m.days}</td>
                 <td>{m.members}</td>
               </tr>

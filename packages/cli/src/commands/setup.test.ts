@@ -25,6 +25,9 @@ interface MockOptions {
   claude?: boolean;
   codex?: boolean;
   codexScript?: boolean;
+  antigravity?: boolean;
+  agentScript?: boolean;
+  antigravityDisabled?: boolean;
   collector?: (string | null)[];
   configToml?: string | null;
   codexChanged?: boolean;
@@ -64,15 +67,23 @@ function createMockDeps(prompts: string[], options: MockOptions = {}): SetupDeps
         codexChanged: stopChanged || sessionEndChanged,
         codexWired,
         codexIndexes: codexWired ? { stop: { group: 0, hook: 0 }, sessionEnd: { group: 0, hook: 0 } } : {},
+        antigravityWired: targets.antigravity === true && scripts.agentSync !== undefined,
+        antigravityChanged: targets.antigravity === true && scripts.agentSync !== undefined,
+        antigravityDisabled: options.antigravityDisabled ?? false,
         writtenThrough: options.writtenThrough ?? [],
         backedUp: false,
       };
     },
     fetchHookScript: async (_server, scriptName) =>
-      scriptName === "codex-sync.mjs" && options.codexScript === false ? null : "// mock hook script",
+      (scriptName === "codex-sync.mjs" && options.codexScript === false) ||
+      (scriptName === "agent-sync.mjs" && options.agentScript === false)
+        ? null
+        : "// mock hook script",
     checkServer: async () => true,
     detectClaude: () => options.claude ?? true,
     detectCodex: () => options.codex ?? true,
+    // 預設未偵測：真實偵測會讀開發者本機的家目錄與 PATH
+    detectAntigravity: () => options.antigravity ?? false,
     probeCollector: () => {
       deps.probes += 1;
       return collector[Math.min(probeIndex++, collector.length - 1)];
@@ -157,22 +168,23 @@ describe("setup 逐工具接線", () => {
     const deps = createMockDeps(answers);
     await setupCommand(deps);
 
-    expect(deps.targets).toEqual({ claude: true, codex: true });
+    expect(deps.targets).toEqual({ claude: true, codex: true, antigravity: false });
     expect(output(deps)).toContain("Claude Code: hooks installed/updated (SessionStart, SessionEnd, Stop)");
     expect(output(deps)).toContain("Codex: hooks installed (Stop, SessionEnd).");
     expect(output(deps)).toContain("/hooks");
     expect(deps.exitCode).toBeNull();
   });
 
-  it("結果行順序：Config saved → Claude → Codex → Collector → Server → Setup complete", async () => {
-    const deps = createMockDeps(answers);
+  it("結果行順序：Config saved → Claude → Codex → Antigravity → Collector → Server → Setup complete", async () => {
+    const deps = createMockDeps(answers, { antigravity: true, collector: ["20.0.51"] });
     await setupCommand(deps);
 
     const lines = deps.logs.join("\n");
     const at = (needle: string) => lines.indexOf(needle);
     expect(at("Config saved")).toBeLessThan(at("Claude Code:"));
     expect(at("Claude Code:")).toBeLessThan(at("Codex:"));
-    expect(at("Codex:")).toBeLessThan(at("Collector:"));
+    expect(at("Codex:")).toBeLessThan(at("Antigravity:"));
+    expect(at("Antigravity:")).toBeLessThan(at("Collector:"));
     expect(at("Collector:")).toBeLessThan(at("Server is reachable"));
     expect(at("Server is reachable")).toBeLessThan(at("Setup complete"));
   });
@@ -181,7 +193,7 @@ describe("setup 逐工具接線", () => {
     const deps = createMockDeps(answers, { codex: false });
     await setupCommand(deps);
 
-    expect(deps.targets).toEqual({ claude: true, codex: false });
+    expect(deps.targets).toEqual({ claude: true, codex: false, antigravity: false });
     expect(output(deps)).toContain("Codex: not detected");
     expect(output(deps)).not.toContain("/hooks");
   });
@@ -313,11 +325,11 @@ describe("setup 逐工具接線", () => {
 
 describe("setup 的收集器步驟", () => {
   it("缺 collector：自動安裝已驗證版本並印出所執行的指令", async () => {
-    const deps = createMockDeps(answers, { collector: [null, "20.0.20"] });
+    const deps = createMockDeps(answers, { collector: [null, "20.0.51"] });
     await setupCommand(deps);
 
-    expect(deps.installedCollector).toEqual(["npm install -g ccusage@20.0.20"]);
-    expect(output(deps)).toContain("npm install -g ccusage@20.0.20");
+    expect(deps.installedCollector).toEqual(["npm install -g ccusage@20.0.51"]);
+    expect(output(deps)).toContain("npm install -g ccusage@20.0.51");
     expect(deps.exitCode).toBeNull();
   });
 
@@ -326,7 +338,7 @@ describe("setup 的收集器步驟", () => {
     await setupCommand(deps);
 
     expect(deps.installedCollector).toEqual([]);
-    expect(output(deps)).toContain("20.0.20");
+    expect(output(deps)).toContain("20.0.51");
     expect(deps.logs.some((l) => l.includes("Setup complete"))).toBe(true);
     expect(deps.exitCode).toBeNull();
   });
@@ -347,9 +359,57 @@ describe("setup 的收集器步驟", () => {
     const deps = createMockDeps(answers, { collector: [null, null] });
     await setupCommand(deps);
 
-    expect(deps.warns.some((w) => w.includes("npm install -g ccusage@20.0.20"))).toBe(true);
+    expect(deps.warns.some((w) => w.includes("npm install -g ccusage@20.0.51"))).toBe(true);
     expect(deps.exitCode).toBeNull();
     expect(deps.logs.some((l) => l.includes("Setup complete"))).toBe(true);
+  });
+});
+
+describe("setup 與 Antigravity", () => {
+  it("只偵測到 Antigravity：接上 hook、跑收集器、exit 0", async () => {
+    const deps = createMockDeps(answers, { claude: false, codex: false, antigravity: true, collector: ["20.0.51"] });
+    await setupCommand(deps);
+
+    expect(deps.targets).toEqual({ claude: false, codex: false, antigravity: true });
+    expect(output(deps)).toContain("Antigravity: hook installed (Stop). Restart Antigravity to load it.");
+    expect(output(deps)).not.toContain("No supported tool detected");
+    expect(deps.probes).toBe(1);
+    expect(deps.exitCode).toBeNull();
+  });
+
+  it("未偵測到 Antigravity：結果行只多一行 not detected", async () => {
+    const deps = createMockDeps(answers);
+    await setupCommand(deps);
+
+    expect(deps.targets?.antigravity).toBe(false);
+    expect(deps.logs.filter((l) => l.startsWith("Antigravity"))).toEqual(["Antigravity: not detected"]);
+  });
+
+  it("server 沒有 agent-sync.mjs：印出未接上的原因，Claude 與 Codex 照常", async () => {
+    const deps = createMockDeps(answers, { antigravity: true, agentScript: false });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain("Antigravity: hook not installed (this server does not provide agent-sync.mjs)");
+    expect(output(deps)).toContain("Claude Code: hooks installed/updated");
+    expect(deps.exitCode).toBeNull();
+  });
+
+  it("collector 20.0.20 且偵測到 Antigravity：提示升級但不替換", async () => {
+    const deps = createMockDeps(answers, { antigravity: true, collector: ["20.0.20"] });
+    await setupCommand(deps);
+
+    expect(deps.installedCollector).toEqual([]);
+    expect(deps.warns.join("\n")).toContain("Antigravity");
+    expect(deps.warns.join("\n")).toContain("npm install -g ccusage@20.0.51");
+  });
+
+  it("三種工具都沒偵測到：提示列出三種工具，exit 0", async () => {
+    const deps = createMockDeps(answers, { claude: false, codex: false, antigravity: false });
+    await setupCommand(deps);
+
+    expect(output(deps)).toContain("No supported tool detected (Claude Code, Codex or Antigravity)");
+    expect(deps.probes).toBe(0);
+    expect(deps.exitCode).toBeNull();
   });
 });
 

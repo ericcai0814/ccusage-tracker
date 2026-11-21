@@ -20,6 +20,7 @@ const LAST_FLUSH_FILE = join(CONFIG_DIR, 'last-flush.txt');
 const LAST_ERROR_FILE = join(CONFIG_DIR, 'last-error.txt');
 const LAST_UPLOAD_FILE = join(CONFIG_DIR, 'last-upload.txt');
 const LOCK_FILE = join(CONFIG_DIR, 'worker.lock');
+const AGENT_SYNC_FILE = join(CONFIG_DIR, 'agent-sync.mjs');
 const CONTEXT_LIMIT = 200000;
 const THROTTLE_MS = 5 * 60 * 1000;
 
@@ -324,7 +325,7 @@ async function postCurrentUsage(cfg) {
   // 18.0.9/18.0.10、20.0.20 是驗證證據，不是 patch 白名單。
   // legacy daily 是 Claude-only；20 必須選 claude，並通過下方 schema 驗證。
   if (versionResult.status !== 0 || (!legacy && major !== 20)) {
-    markError('ccusage 指令系列不支援或未安裝；已驗證版本為 18.0.9、18.0.10、20.0.20');
+    markError('ccusage 指令系列不支援或未安裝；已驗證版本為 18.0.9、18.0.10、20.0.20、20.0.51');
     return;
   }
   // 保留舊 hook 的 flags，避免向 legacy collector 傳入新版限定參數。
@@ -440,7 +441,20 @@ async function runWorker() {
     await flushBuffer(cfg.server_url, cfg.team_key);
   } finally {
     releaseLock();
+    triggerAgentSync();
   }
+}
+
+// 搭便車：Claude 上報跑完時補觸發一次其他工具（目前是 Antigravity）的上報，
+// 補上該工具自己的 hook 沒觸發的情況。agent-sync.mjs 自己判斷偵測與節流。
+// 只傳 --trigger：不轉交 model、transcript 或任何 payload；失敗也不寫 Claude 的狀態檔。
+function triggerAgentSync() {
+  if (!existsSync(AGENT_SYNC_FILE)) return;
+  try {
+    const child = spawn(process.execPath, [AGENT_SYNC_FILE, '--trigger'], { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => { /* 靜默 */ });
+    child.unref();
+  } catch { /* 靜默 */ }
 }
 
 // hook：把上報丟給背景 worker，不等它。stdio 全部斷開、detached 自成 process group，

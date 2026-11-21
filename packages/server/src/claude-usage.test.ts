@@ -226,3 +226,108 @@ describe("Claude reporter runtime source and replay safety", () => {
     } finally { f.cleanup(); }
   });
 });
+
+// 搭便車觸發：worker 跑完之後啟動 agent-sync.mjs --trigger，補上 Antigravity hook 沒觸發的情況。
+// 假的 agent-sync.mjs 只記錄 argv 再睡 2 秒，用來確認 detached、不等它、也不轉交任何參數。
+const TRIGGER_STUB = `import fs from 'node:fs';
+fs.appendFileSync(process.env.HOME + '/trigger-calls.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');
+console.log('STUB STDOUT'); console.error('STUB STDERR');
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+process.exit(1);\n`;
+
+describe("Claude worker triggers the Antigravity reporter", () => {
+  const triggerCalls = (home: string) => existsSync(join(home, "trigger-calls.jsonl"))
+    ? readFileSync(join(home, "trigger-calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+  const waitForCalls = async (home: string, deadlineMs = 3000) => {
+    const deadline = Date.now() + deadlineMs;
+    while (triggerCalls(home).length === 0 && Date.now() < deadline) await Bun.sleep(30);
+    // 反證「只有一次」也要多等一下
+    await Bun.sleep(300);
+  };
+  const runWorkerWith = (f: ReturnType<typeof fixture>, args: string[]) =>
+    spawnSync(node, ["--import", join(f.home, "mock.mjs"), join(import.meta.dir, "hook-scripts/session-end.mjs"), "--mode=worker", ...args], {
+      cwd: f.home, encoding: "utf8", timeout: 10000,
+      env: { HOME: f.home, CODEX_HOME: join(f.home, "codex"), CLAUDE_CONFIG_DIR: join(f.home, "claude"), PATH: join(f.home, "bin"), TZ: "Asia/Taipei" },
+    });
+
+  it("starts agent-sync.mjs --trigger once after the flush, detached and without its own arguments", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "agent-sync.mjs"), TRIGGER_STUB);
+      const started = Date.now();
+      const r = runWorkerWith(f, ["--model=PRIVATE-MODEL", "--transcript=/PRIVATE/transcript.jsonl"]);
+      expect(r.status).toBe(0);
+      // worker 不等觸發的程序：stub 要睡 2 秒
+      expect(Date.now() - started).toBeLessThan(1800);
+      expect(r.stdout + r.stderr).not.toContain("STUB");
+      await waitForCalls(f.home);
+      expect(triggerCalls(f.home)).toEqual([["--trigger"]]);
+      expect(f.requests()).toHaveLength(1);
+      expect(existsSync(join(f.dir, "last-upload.txt"))).toBe(true);
+      expect(existsSync(join(f.dir, "last-error.txt"))).toBe(false);
+      expect(existsSync(join(f.dir, "buffer.jsonl"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("does not start anything when agent-sync.mjs is absent", async () => {
+    const f = fixture();
+    try {
+      expect(f.run().status).toBe(0);
+      await Bun.sleep(500);
+      expect(triggerCalls(f.home)).toEqual([]);
+      expect(existsSync(join(f.dir, "last-error.txt"))).toBe(false);
+      expect(existsSync(join(f.dir, "buffer.jsonl"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("does not trigger from a worker that could not take the lock", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "agent-sync.mjs"), TRIGGER_STUB);
+      writeFileSync(join(f.dir, "worker.lock"), process.pid + " " + Date.now());
+      expect(f.run().status).toBe(0);
+      await Bun.sleep(700);
+      expect(triggerCalls(f.home)).toEqual([]);
+      expect(f.requests()).toEqual([]);
+    } finally { f.cleanup(); }
+  });
+
+  it("keeps the Claude error, buffer and upload state of a failed run unchanged", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "agent-sync.mjs"), TRIGGER_STUB);
+      writeFileSync(join(f.home, "version"), "99.0.0");
+      expect(f.run().status).toBe(0);
+      const error = readFileSync(join(f.dir, "last-error.txt"), "utf8");
+      await waitForCalls(f.home);
+      expect(triggerCalls(f.home)).toEqual([["--trigger"]]);
+      expect(readFileSync(join(f.dir, "last-error.txt"), "utf8")).toBe(error);
+      expect(existsSync(join(f.dir, "buffer.jsonl"))).toBe(false);
+      expect(existsSync(join(f.dir, "last-upload.txt"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("still triggers once after releasing the lock when the worker's upload throws", async () => {
+    // 非字串的 cwd 讓 extractMetrics 拋錯，Promise.all 因而 reject；
+    // server 不可達或 collector 失敗都在內部吃掉，走不到這條路徑。
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "agent-sync.mjs"), TRIGGER_STUB);
+      const transcript = join(f.home, "transcript.jsonl");
+      writeFileSync(transcript, JSON.stringify({ type: "user", cwd: 123 }) + "\n");
+      expect(runWorkerWith(f, ["--transcript=" + transcript]).status).toBe(0);
+      await waitForCalls(f.home);
+      expect(triggerCalls(f.home)).toEqual([["--trigger"]]);
+      expect(existsSync(join(f.dir, "worker.lock"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("lists 20.0.51 among the verified collector versions", () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.home, "version"), "99.0.0");
+      expect(f.run().status).toBe(0);
+      expect(readFileSync(join(f.dir, "last-error.txt"), "utf8")).toContain("20.0.51");
+    } finally { f.cleanup(); }
+  });
+});

@@ -12,6 +12,7 @@ const LOCK = join(DIR, 'codex-worker.lock');
 const ERROR = join(DIR, 'codex-last-error.txt');
 const UPLOAD = join(DIR, 'codex-last-upload.txt');
 const FLUSH = join(DIR, 'codex-last-flush.txt');
+const AGENT_SYNC = join(DIR, 'agent-sync.mjs');
 const DEADLINE_MS = 180000;
 // 與 Claude 的 Stop hook 同一個語意與長度：Codex 的 Stop 每輪對話都觸發，
 // 沒有節流的話每講一句話就重跑一次全量收集器。
@@ -90,9 +91,9 @@ function config() {
 function collect(today, timezone) {
   const options = { encoding: 'utf8', shell: true, timeout: 10000, killSignal: 'SIGKILL', maxBuffer: 8 * 1024 * 1024 };
   const version = spawnSync('ccusage --version', options);
-  if (version.status !== 0) fail('ccusage is missing or failed. Install ccusage@20.0.20.');
+  if (version.status !== 0) fail('ccusage is missing or failed. Install ccusage@20.0.51.');
   if (!/^20\.\d+\.\d+$/.test(version.stdout?.trim().replace(/^ccusage /, '') ?? '')) {
-    fail('Unsupported ccusage command family for Codex. Use the verified ccusage@20.0.20.');
+    fail('Unsupported ccusage command family for Codex. Use the verified ccusage@20.0.51.');
   }
   if (!/^[a-zA-Z0-9_+./-]+$/.test(timezone)) fail('Cannot determine a supported local timezone.');
   const compact = today.replaceAll('-', '');
@@ -257,8 +258,20 @@ async function main() {
   await sync();
 }
 
+// 搭便車：worker 跑完（不論成敗）補觸發一次其他工具（目前是 Antigravity）的上報，
+// 補上該工具自己的 hook 沒觸發的情況。只傳 --trigger，不轉交任何 payload；
+// 觸發失敗不改 Codex 的錯誤檔、buffer 或 exit code。
+function triggerAgentSync() {
+  if (!worker || !existsSync(AGENT_SYNC)) return;
+  try {
+    const child = spawn(process.execPath, [AGENT_SYNC, '--trigger'], { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => { /* 靜默 */ });
+    child.unref();
+  } catch { /* 靜默 */ }
+}
+
 main().catch((e) => {
   // Only our fixed diagnostics are printed; never print collector output, config, or notify content.
   error(e instanceof Error && !e.code ? e.message : 'Codex sync failed. Check tracker directory permissions.');
   process.exitCode = 1;
-}).finally(unlock);
+}).finally(() => { unlock(); triggerAgentSync(); });

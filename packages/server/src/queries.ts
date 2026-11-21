@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { nanoid } from "nanoid";
+import { buildSourceCaseSql, resolveSource, type UsageSource } from "./sources";
 
 export interface Member {
   id: string;
@@ -628,21 +629,10 @@ export function getSessionLog(
 
 // --- Overview Queries (dashboard v2) ---
 
-// 沒有 source 欄位，來源只能從 session_id 反推：hook 送 `daily`、codex-sync 送 `codex-daily`。
-// 其他值目前不會出現，但手動灌的資料可能有，所以歸到 other 而不是丟掉。
-export type UsageSource = "claude" | "codex" | "other";
+// 來源由 session_id 反推，規則集中在 sources.ts 的來源表。
+export { resolveSource, type UsageSource };
 
-const SOURCE_CASE_SQL = `CASE session_id
-  WHEN 'daily' THEN 'claude'
-  WHEN 'codex-daily' THEN 'codex'
-  ELSE 'other'
-END`;
-
-export function resolveSource(sessionId: string | null): UsageSource {
-  if (sessionId === "daily") return "claude";
-  if (sessionId === "codex-daily") return "codex";
-  return "other";
-}
+const SOURCE_CASE_SQL = buildSourceCaseSql();
 
 export interface DailySourceUsage {
   date: string;

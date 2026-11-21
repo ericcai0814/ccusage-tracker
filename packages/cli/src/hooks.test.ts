@@ -672,3 +672,172 @@ describe("shell 會改寫字面意義的字元一律視為第三方", () => {
     }
   });
 });
+
+// installHook／wireTools 走 homedir()：在本程序呼叫會寫到開發者真實的家目錄，
+// 所以一律在子程序以隔離 HOME 執行，子程序啟動時才讀到新的 $HOME。
+describe("Antigravity 加入同一筆安裝交易", () => {
+  const VALID = "export default 1;\n";
+  const temporaries: string[] = [];
+  afterEach(() => {
+    while (temporaries.length) rmSync(temporaries.pop()!, { recursive: true, force: true });
+  });
+
+  function agyHome(): string {
+    const home = mkdtempSync(join(tmpdir(), "agy install "));
+    temporaries.push(home);
+    mkdirSync(join(home, ".claude"));
+    mkdirSync(join(home, ".gemini/antigravity-cli/conversations"), { recursive: true });
+    mkdirSync(join(home, "bin"));
+    return home;
+  }
+
+  function wire(home: string, scripts: Record<string, string>): { lines: string[]; error?: string } {
+    const runner = join(home, "runner.ts");
+    writeFileSync(runner, `import { wireTools, defaultWiringDeps } from ${JSON.stringify(join(import.meta.dir, "hooks.ts"))};
+const lines: string[] = [];
+try {
+  wireTools(${JSON.stringify(scripts)}, { ...defaultWiringDeps, log: (m) => lines.push(m), warn: (m) => lines.push(m) });
+  console.log(JSON.stringify({ lines }));
+} catch (e) { console.log(JSON.stringify({ lines, error: (e as Error).message })); }
+`);
+    const result = Bun.spawnSync([process.execPath, runner], {
+      env: { HOME: home, CODEX_HOME: join(home, "codex"), PATH: join(home, "bin") },
+    });
+    expect(result.exitCode).toBe(0);
+    return JSON.parse(result.stdout.toString().trim().split("\n").at(-1)!);
+  }
+
+  const scripts = { sessionEnd: VALID, sessionStart: VALID, agentSync: VALID };
+  const agyHooks = (home: string) => join(home, ".gemini/config/hooks.json");
+
+  it("寫入 agent-sync.mjs 與 hooks.json，既有 hooks.json 先留 .backup", () => {
+    const home = agyHome();
+    mkdirSync(join(home, ".gemini/config"), { recursive: true });
+    const before = JSON.stringify({ "my-linter-hook": { PreToolUse: [] } }, null, 2) + "\n";
+    writeFileSync(agyHooks(home), before);
+
+    const { lines, error } = wire(home, scripts);
+
+    expect(error).toBeUndefined();
+    expect(readFileSync(join(home, ".config/ccusage-tracker/agent-sync.mjs"), "utf8")).toBe(VALID);
+    const written = JSON.parse(readFileSync(agyHooks(home), "utf8"));
+    expect(Object.keys(written)).toEqual(["my-linter-hook", "ccusage-tracker"]);
+    expect(readFileSync(agyHooks(home) + ".backup", "utf8")).toBe(before);
+    expect(lines).toContain("Antigravity: hook installed (Stop). Restart Antigravity to load it.");
+    expect(lines).toContain("Claude Code: hooks installed/updated (SessionStart, SessionEnd, Stop)");
+    expect(wire(home, scripts).lines).toContain("Antigravity: hook already up to date");
+  });
+
+  it("server 沒有 agent-sync.mjs：不寫 hooks.json，Claude 照常安裝", () => {
+    const home = agyHome();
+    const { lines, error } = wire(home, { sessionEnd: VALID, sessionStart: VALID });
+
+    expect(error).toBeUndefined();
+    expect(existsSync(agyHooks(home))).toBe(false);
+    expect(existsSync(join(home, ".config/ccusage-tracker/agent-sync.mjs"))).toBe(false);
+    expect(existsSync(join(home, ".claude/settings.json"))).toBe(true);
+    expect(lines).toContain("Antigravity: hook not installed (this server does not provide agent-sync.mjs)");
+  });
+
+  it("沒偵測到 Antigravity：不寫 agent-sync.mjs 也不寫 hooks.json", () => {
+    const home = agyHome();
+    rmSync(join(home, ".gemini"), { recursive: true });
+    mkdirSync(join(home, ".gemini/antigravity/bin"), { recursive: true });
+    const { lines } = wire(home, scripts);
+
+    expect(existsSync(agyHooks(home))).toBe(false);
+    expect(existsSync(join(home, ".config/ccusage-tracker/agent-sync.mjs"))).toBe(false);
+    expect(lines).toContain("Antigravity: not detected");
+  });
+
+  it("hooks.json 是指向一般檔案的 symlink：寫穿 symlink 並印出 Wrote through symlink", () => {
+    const home = agyHome();
+    const real = join(home, "dotfiles/gemini/hooks.json");
+    mkdirSync(dirname(real), { recursive: true });
+    mkdirSync(join(home, ".gemini/config"), { recursive: true });
+    writeFileSync(real, "{}\n");
+    symlinkSync(real, agyHooks(home));
+
+    const { lines, error } = wire(home, scripts);
+
+    expect(error).toBeUndefined();
+    expect(lstatSync(agyHooks(home)).isSymbolicLink()).toBe(true);
+    expect(Object.keys(JSON.parse(readFileSync(real, "utf8")))).toEqual(["ccusage-tracker"]);
+    expect(lines).toContain(`Wrote through symlink: ${agyHooks(home)} -> ${realpathSync(real)}`);
+  });
+
+  it("hooks.json 驗證失敗：第一個檔案（settings.json）不留 .tmp、.rollback、.backup，也沒被改", () => {
+    const home = agyHome();
+    const settings = '{"model":"opus"}\n';
+    writeFileSync(join(home, ".claude/settings.json"), settings);
+    mkdirSync(join(home, ".gemini/config"), { recursive: true });
+    mkdirSync(join(home, "a-directory"));
+    symlinkSync(join(home, "a-directory"), agyHooks(home));
+
+    const { error } = wire(home, scripts);
+
+    expect(error).toContain("Refusing to replace non-regular file");
+    expect(readFileSync(join(home, ".claude/settings.json"), "utf8")).toBe(settings);
+    expect(readdirSync(join(home, ".claude"))).toEqual(["settings.json"]);
+    expect(existsSync(join(home, ".config/ccusage-tracker/agent-sync.mjs"))).toBe(false);
+  });
+
+  for (const [name, content] of [
+    ["不是 JSON", "not json"],
+    ["不是 object", "[]"],
+    ["ccusage-tracker 不是 object", '{"ccusage-tracker":"node x"}'],
+  ] as const) {
+    it(`hooks.json ${name}：整筆交易不寫任何檔，要求修檔`, () => {
+      const home = agyHome();
+      mkdirSync(join(home, ".gemini/config"), { recursive: true });
+      writeFileSync(agyHooks(home), content);
+
+      const { error } = wire(home, scripts);
+
+      expect(error).toMatch(/repair ~\/\.gemini\/config\/hooks\.json/);
+      expect(readFileSync(agyHooks(home), "utf8")).toBe(content);
+      expect(existsSync(join(home, ".claude/settings.json"))).toBe(false);
+      expect(existsSync(join(home, ".config/ccusage-tracker"))).toBe(false);
+    });
+  }
+});
+
+describe("NO_TOOL_MESSAGE 與 agent-sync.mjs 的下載", () => {
+  it("列出三種工具", async () => {
+    const { NO_TOOL_MESSAGE } = await import("./hooks");
+    expect(NO_TOOL_MESSAGE).toContain("Claude Code");
+    expect(NO_TOOL_MESSAGE).toContain("Codex");
+    expect(NO_TOOL_MESSAGE).toContain("Antigravity");
+  });
+
+  for (const status of [404, 410]) {
+    it(`agent-sync.mjs 回 ${status} 視為選配缺席`, async () => {
+      const { downloadScripts, fetchHookScript } = await import("./scripts");
+      const original = globalThis.fetch;
+      globalThis.fetch = (async (input: string | URL | Request) =>
+        new Response(String(input).endsWith("agent-sync.mjs") ? "gone" : "export default 1;", {
+          status: String(input).endsWith("agent-sync.mjs") ? status : 200,
+        })) as typeof fetch;
+      try {
+        expect(await fetchHookScript("http://127.0.0.1:1", "agent-sync.mjs")).toBeNull();
+        const scripts = await downloadScripts("http://127.0.0.1:1");
+        expect("agentSync" in scripts).toBe(false);
+        expect(scripts.codexSync).toBe("export default 1;");
+      } finally {
+        globalThis.fetch = original;
+      }
+    });
+  }
+
+  it("agent-sync.mjs 回 500 時整個下載失敗", async () => {
+    const { downloadScripts } = await import("./scripts");
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request) =>
+      new Response("x", { status: String(input).endsWith("agent-sync.mjs") ? 500 : 200 })) as typeof fetch;
+    try {
+      await expect(downloadScripts("http://127.0.0.1:1")).rejects.toThrow("agent-sync.mjs");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});

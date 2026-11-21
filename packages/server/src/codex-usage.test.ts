@@ -416,3 +416,89 @@ describe("Codex hook 進入點", () => {
     } finally { f.cleanup(); }
   });
 });
+
+// 搭便車觸發：只有 --worker 模式在 sync 結束後（不論成敗）啟動一次 agent-sync.mjs --trigger。
+// 假的 agent-sync.mjs 只記錄 argv 再睡 2 秒，用來確認 detached、不等它、也不轉交任何參數。
+describe("Codex worker triggers the Antigravity reporter", () => {
+  const stub = `import fs from 'node:fs';
+fs.appendFileSync(process.env.HOME + '/trigger-calls.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');
+console.log('STUB STDOUT'); console.error('STUB STDERR');
+Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2000);
+process.exit(1);\n`;
+  const calls = (home: string) => existsSync(join(home, "trigger-calls.jsonl"))
+    ? readFileSync(join(home, "trigger-calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
+  const waitForCalls = async (home: string) => {
+    const deadline = Date.now() + 3000;
+    while (calls(home).length === 0 && Date.now() < deadline) await Bun.sleep(30);
+    await Bun.sleep(300);
+  };
+
+  it("triggers once after a successful worker sync without waiting for it", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "agent-sync.mjs"), stub);
+      const started = Date.now();
+      const r = f.run(["--worker"]);
+      expect(r.status).toBe(0);
+      expect(Date.now() - started).toBeLessThan(1800);
+      expect(r.stdout + r.stderr).not.toContain("STUB");
+      await waitForCalls(f.home);
+      expect(calls(f.home)).toEqual([["--trigger"]]);
+      expect(f.requests()).toHaveLength(1);
+      expect(existsSync(join(f.dir, "codex-last-error.txt"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("triggers after a failed upload and keeps the Codex error and pending snapshot", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "agent-sync.mjs"), stub);
+      writeFileSync(join(f.home, "offline"), "yes");
+      f.run(["--worker"]);
+      await waitForCalls(f.home);
+      expect(calls(f.home)).toEqual([["--trigger"]]);
+      expect(readFileSync(join(f.dir, "codex-last-error.txt"), "utf8")).toContain("Codex upload failed");
+      const pending = readFileSync(join(f.dir, "codex-buffer.jsonl"), "utf8");
+      expect(JSON.parse(pending.trim())).toMatchObject({ session_id: "codex-daily", input_tokens: 600 });
+    } finally { f.cleanup(); }
+  });
+
+  it("does not trigger from manual sync", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "agent-sync.mjs"), stub);
+      expect(f.run().status).toBe(0);
+      await Bun.sleep(700);
+      expect(calls(f.home)).toEqual([]);
+    } finally { f.cleanup(); }
+  });
+
+  it("behaves as before when agent-sync.mjs is absent", async () => {
+    const f = fixture();
+    try {
+      expect(f.run(["--worker"]).status).toBe(0);
+      await Bun.sleep(500);
+      expect(calls(f.home)).toEqual([]);
+      expect(f.requests()).toHaveLength(1);
+      expect(existsSync(join(f.dir, "codex-last-error.txt"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
+  it("names ccusage@20.0.51 in the install guidance", () => {
+    const f = fixture();
+    try {
+      rmSync(f.collector);
+      expect(f.run().status).toBe(1);
+      expect(readFileSync(join(f.dir, "codex-last-error.txt"), "utf8")).toContain("ccusage@20.0.51");
+    } finally { f.cleanup(); }
+  });
+
+  it("names ccusage@20.0.51 for an unsupported command family", () => {
+    const f = fixture();
+    try {
+      f.set({ daily: [row], totals: {} }, { version: "99.0.0" });
+      expect(f.run().status).toBe(1);
+      expect(readFileSync(join(f.dir, "codex-last-error.txt"), "utf8")).toContain("ccusage@20.0.51");
+    } finally { f.cleanup(); }
+  });
+});

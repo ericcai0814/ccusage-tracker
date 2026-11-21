@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+收 Google Antigravity（AGY）的每日用量。server 與 CLI 都要更新：先部署 server，成員再跑 `tracker update` 並重開 Antigravity。版本號另開 change 發版時再定。
+
+### Added
+
+- 新的上報腳本 `agent-sync.mjs`（server 以 `/scripts/agent-sync.mjs` 提供）：執行 `ccusage antigravity daily`，以 session_id `antigravity-daily` 上報當日快照，只傳 token、成本估計、model 名稱與成員識別。output 等於可見 output 加上 reasoning（`totalTokens` 減四項合計的差額），與 Codex「reasoning 只算一次」一致；不認得的 model 顯示名只清洗、不拒收。
+- 三種觸發，共用 Antigravity 自己的 5 分鐘節流、鎖、buffer 與錯誤檔，失敗不影響 Claude 與 Codex：
+  - Antigravity Stop hook：setup／update 在 `~/.gemini/config/hooks.json` 寫入頂層 key `ccusage-tracker`，只接 Stop。hook 讀完 stdin 即丟（payload 含使用者最後一句 prompt），固定輸出 `{"decision":"stop"}`。
+  - 搭便車：Claude 與 Codex 的背景 worker 結束時，若本機偵測得到 Antigravity，就觸發一次 Antigravity 上報。
+  - 手動：`tracker sync antigravity`（別名 `tracker sync agy`）。
+- 工具偵測加入 Antigravity：`~/.gemini/antigravity`、`-cli`、`-ide`、`-backup`、`-acp` 或 `~/.config/antigravity` 底下有 `conversations` 目錄，或 `agy`／`antigravity` 在 PATH 上。
+- `status` 新增 Antigravity 區塊（script、hook、collector、buffer、上傳錯誤、最後成功上傳）；未偵測時只印 `Antigravity: not detected`。
+- 儀表板加入 Antigravity：資料色暫定 `#f0b800`（已用色盲模擬算過與現有三色的區辨度，待人眼確認），供應商為 Google。
+
+### Changed
+
+- collector 的安裝版本從 `ccusage@20.0.20` 改為 `ccusage@20.0.51`，版本一律用語意版本比較。20.0.21 起才有 `antigravity` 指令；已裝 20.0.21 以下的 20.x 時，只有偵測到 Antigravity 才提示升級，不替換使用者的安裝。Claude 與 Codex 在 20.0.51 的真實輸出已在本機實跑，兩支既有驗證器都接受。
+- server 新增來源表（`packages/server/src/sources.ts`）：`UsageSource`、SQL 的來源歸屬、`resolveSource`，以及儀表板的名稱、顏色、供應商與來源順序都由它產生。之後接新工具，每一層各加一筆即可。ingest API 與 DB schema 不變。
+- 儀表板的趨勢圖與供應商切分改為每個有資料的來源各一條線、各一段，不再固定兩條、兩段。
+
+### Fixed
+
+- `status` 的 Codex collector 判斷改為只看主版本 20。原本精確比對 20.0.20，改裝 20.0.51 後會被誤報為不支援。
+
+### Known issues
+
+- Antigravity 實機驗收尚未完成：`{"decision":"stop"}` 是否被接受、macOS 上的 Stop hook 是否觸發，都要等有 Antigravity 對話資料的機器確認。
+- Windows 版 Antigravity IDE 1.107.0 有 Stop hook 從未觸發的論壇回報；這種情況靠搭便車或手動 sync 補送。
+- 沒有定價的 model 成本算 0，Antigravity 成本會被低估；手動 sync 會列出這些 model。
+- 第一次使用 Antigravity 之後要再跑一次 `tracker update`（PATH 上沒有 `agy`／`antigravity`、又還沒開過對話時偵測不到）。
+- 移除：`uninstall.sh` 不處理 Antigravity，請手動刪掉 `~/.gemini/config/hooks.json` 的 `ccusage-tracker` key。
+
 ## 2026-11-01 — server 部署遷移
 
 只換部署環境，沒有程式變更：server 維持 0.5.0（`/api/health` 回 `version: 0.5.0`），CLI 維持 0.2.1。

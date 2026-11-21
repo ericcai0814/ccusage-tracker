@@ -4,14 +4,17 @@ export interface TrackerScripts {
   sessionEnd: string;
   sessionStart: string;
   codexSync?: string;
+  agentSync?: string;
 }
 
-// Only this optional endpoint can be absent on older tracker servers.
+// Only these optional endpoints can be absent on older tracker servers.
+const OPTIONAL_SCRIPTS = ["codex-sync.mjs", "agent-sync.mjs"];
+
 export async function fetchHookScript(serverUrl: string, scriptName: string): Promise<string | null> {
   const response = await fetch(`${serverUrl.replace(/\/+$/, "")}/scripts/${scriptName}`, {
     signal: AbortSignal.timeout(10000),
   });
-  if (scriptName === "codex-sync.mjs" && [404, 410].includes(response.status)) return null;
+  if (OPTIONAL_SCRIPTS.includes(scriptName) && [404, 410].includes(response.status)) return null;
   if (!response.ok) throw new Error(`Could not download ${scriptName} (HTTP ${response.status}).`);
   return response.text();
 }
@@ -20,15 +23,21 @@ export async function downloadScripts(
   serverUrl: string,
   fetchScript = fetchHookScript,
 ): Promise<TrackerScripts> {
-  const [sessionEnd, sessionStart, codexSync] = await Promise.all([
+  const [sessionEnd, sessionStart, codexSync, agentSync] = await Promise.all([
     fetchScript(serverUrl, "session-end.mjs"),
     fetchScript(serverUrl, "session-start.mjs"),
     fetchScript(serverUrl, "codex-sync.mjs"),
+    fetchScript(serverUrl, "agent-sync.mjs"),
   ]);
-  if (!sessionEnd?.trim() || !sessionStart?.trim() || codexSync === "") {
+  if (!sessionEnd?.trim() || !sessionStart?.trim() || codexSync === "" || agentSync === "") {
     throw new Error("Server returned an empty or missing hook script.");
   }
-  return { sessionEnd, sessionStart, ...(codexSync === null ? {} : { codexSync }) };
+  return {
+    sessionEnd,
+    sessionStart,
+    ...(codexSync === null ? {} : { codexSync }),
+    ...(agentSync === null ? {} : { agentSync }),
+  };
 }
 
 export function validateScripts(scripts: TrackerScripts): void {
