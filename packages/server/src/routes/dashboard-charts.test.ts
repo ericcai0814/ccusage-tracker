@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { TrendChart, smoothAreaPoints, smoothPath } from "./dashboard-charts";
+import { TrendChart, smoothAreaPoints, smoothPath, spreadLabels } from "./dashboard-charts";
 
 // 鎖住 smoothPath 的逐字輸出：改寫內部實作時，SVG path 字串不能有任何差異
 describe("smoothPath", () => {
@@ -92,5 +92,52 @@ describe("TrendChart end-label collision avoidance", () => {
     const labelYs = [...html.matchAll(/class="trend-end-label" x="[\d.]+" y="([\d.]+)"/g)].map((m) => Number(m[1]));
     expect(labelYs).toHaveLength(3);
     expect(new Set(labelYs).size).toBe(3);
+  });
+});
+
+describe("spreadLabels", () => {
+  it("spaces labels that all share the same y by at least the gap", () => {
+    const input = [
+      { i: 0, y: 100 },
+      { i: 1, y: 100 },
+      { i: 2, y: 100 },
+    ];
+    expect(spreadLabels(input, 9, 300)).toEqual([
+      { i: 0, y: 100 },
+      { i: 1, y: 109 },
+      { i: 2, y: 118 },
+    ]);
+    // 不改輸入
+    expect(input).toEqual([
+      { i: 0, y: 100 },
+      { i: 1, y: 100 },
+      { i: 2, y: 100 },
+    ]);
+  });
+
+  it("pins the last label to maxY and pushes earlier labels back up when it overflows", () => {
+    const input = [
+      { i: 0, y: 239 },
+      { i: 1, y: 239 },
+      { i: 2, y: 239 },
+    ];
+    expect(spreadLabels(input, 9, 239)).toEqual([
+      { i: 0, y: 221 },
+      { i: 1, y: 230 },
+      { i: 2, y: 239 },
+    ]);
+  });
+
+  it("leaves labels untouched when they are already far enough apart", () => {
+    const input = [
+      { i: 2, y: 50 },
+      { i: 0, y: 80 },
+      { i: 1, y: 120 },
+    ];
+    expect(spreadLabels(input, 9, 239)).toEqual(input);
+  });
+
+  it("returns an empty array for no labels", () => {
+    expect(spreadLabels([], 9, 239)).toEqual([]);
   });
 });

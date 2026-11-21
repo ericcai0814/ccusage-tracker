@@ -197,6 +197,25 @@ export function smoothAreaPoints(points: Point[], baseY: number, steps = 8): str
   return outline.map(([x, y]) => `${fmtCoord(x)},${fmtCoord(y)}`).join(" ");
 }
 
+export type LabelPos = { readonly i: number; readonly y: number };
+
+// 末端標籤避讓（純函式，不改輸入）：ys 須已依 y 遞增排序。
+// 前向把太近的標籤往下推到至少 gap；若最後一個超過 maxY，就把它釘在 maxY，再往回把上面的推開。
+export function spreadLabels(ys: readonly LabelPos[], gap: number, maxY: number): LabelPos[] {
+  const forward = ys.reduce<LabelPos[]>((acc, o) => {
+    const prev = acc[acc.length - 1];
+    const y = prev !== undefined && o.y - prev.y < gap ? prev.y + gap : o.y;
+    return [...acc, { ...o, y }];
+  }, []);
+  const last = forward[forward.length - 1];
+  if (last === undefined || !(last.y > maxY)) return forward;
+  return forward.reduceRight<LabelPos[]>((acc, o, k) => {
+    const next = acc[0];
+    const y = k === forward.length - 1 ? maxY : next.y - o.y < gap ? next.y - gap : o.y;
+    return [{ ...o, y }, ...acc];
+  }, []);
+}
+
 export const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
   const { dates, series } = buildTrendSeries(rows);
 
@@ -266,23 +285,11 @@ export const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
   const drawOrder = series.map((s, i) => ({ s, i })).sort((a, b) => (a.i === lead ? 1 : 0) - (b.i === lead ? 1 : 0));
   // 末端標籤避讓：多來源在最後一天同為 $0 或金額接近時，依 y 排序後拉開至少 9 單位，避免字疊字
   const MIN_LABEL_GAP = 9;
-  const labelOrder = series
-    .map((s, i) => ({ i, y: Number(yData(s.values[n - 1])) + 3 }))
-    .sort((a, b) => a.y - b.y);
-  for (let k = 1; k < labelOrder.length; k++) {
-    if (labelOrder[k].y - labelOrder[k - 1].y < MIN_LABEL_GAP) {
-      labelOrder[k].y = labelOrder[k - 1].y + MIN_LABEL_GAP;
-    }
-  }
-  const maxLabelY = H - B + 3;
-  if (labelOrder.length > 0 && labelOrder[labelOrder.length - 1].y > maxLabelY) {
-    labelOrder[labelOrder.length - 1].y = maxLabelY;
-    for (let k = labelOrder.length - 2; k >= 0; k--) {
-      if (labelOrder[k + 1].y - labelOrder[k].y < MIN_LABEL_GAP) {
-        labelOrder[k].y = labelOrder[k + 1].y - MIN_LABEL_GAP;
-      }
-    }
-  }
+  const labelOrder = spreadLabels(
+    series.map((s, i) => ({ i, y: Number(yData(s.values[n - 1])) + 3 })).sort((a, b) => a.y - b.y),
+    MIN_LABEL_GAP,
+    H - B + 3
+  );
   const endLabelY = new Map(labelOrder.map((o) => [o.i, o.y.toFixed(1)]));
   const rawLabels = dates.map((_, i) => i).filter((i) => i % labelStep === 0 || i === n - 1);
   const shownLabels =
