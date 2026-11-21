@@ -52,8 +52,6 @@ export const THEME_CSS = `
     --radius: 12px;
     --radius-sm: 6px;
     --radius-md: 8px;
-    --chart-4: #6b7571;
-    --chart-5: #3a423f;
     --bar-lead: #d3dad6;
     --bar-rest: #6b7571;
     --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -171,7 +169,6 @@ export const THEME_CSS = `
   .empty, .panel-empty, .empty-state {
     padding: 40px 0; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground);
   }
-  .empty { border: 1px dashed var(--border-strong); border-radius: var(--radius); }
 
   .footer {
     display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -245,9 +242,9 @@ export const DASHBOARD_CSS = `
 
   /* Trend: the one bright moment */
   .panel.trend { margin-bottom: 12px; padding: 24px; }
-  .trend .panel-head { margin-bottom: 8px; }
+  .trend .panel-head { margin-bottom: 12px; }
   .trend .panel-title { font-size: 15px; }
-  .trend-legend { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 16px; font-size: 13px; color: var(--secondary-foreground); }
+  .trend-legend { display: flex; gap: 8px 24px; flex-wrap: wrap; margin-bottom: 16px; font-size: 13px; color: var(--secondary-foreground); }
   .trend-legend > span { display: inline-flex; align-items: center; gap: 8px; }
   .trend-legend .key { display: inline-block; width: 16px; height: 2px; border-radius: 1px; }
   .trend-legend .key.quiet { height: 1px; }
@@ -332,6 +329,7 @@ export const DASHBOARD_CSS = `
     .card-value { font-size: 22px; line-height: 28px; }
     .card-label { display: none; }
     .panel.trend { padding: 16px; }
+    .trend-legend { gap: 8px 16px; }
     .panel-row { grid-template-columns: 1fr; }
     .rank-row { grid-template-columns: 20px 72px 1fr 88px; gap: 8px; }
     .trend-bar-row { grid-template-columns: 88px 1fr 80px; }

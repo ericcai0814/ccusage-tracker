@@ -264,6 +264,26 @@ export const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
   const leadColor = series[lead]?.color ?? sourceInfo(SOURCE_ORDER[0]).color;
   // 主線畫在最上層：安靜的那條先畫
   const drawOrder = series.map((s, i) => ({ s, i })).sort((a, b) => (a.i === lead ? 1 : 0) - (b.i === lead ? 1 : 0));
+  // 末端標籤避讓：多來源在最後一天同為 $0 或金額接近時，依 y 排序後拉開至少 9 單位，避免字疊字
+  const MIN_LABEL_GAP = 9;
+  const labelOrder = series
+    .map((s, i) => ({ i, y: Number(yData(s.values[n - 1])) + 3 }))
+    .sort((a, b) => a.y - b.y);
+  for (let k = 1; k < labelOrder.length; k++) {
+    if (labelOrder[k].y - labelOrder[k - 1].y < MIN_LABEL_GAP) {
+      labelOrder[k].y = labelOrder[k - 1].y + MIN_LABEL_GAP;
+    }
+  }
+  const maxLabelY = H - B + 3;
+  if (labelOrder.length > 0 && labelOrder[labelOrder.length - 1].y > maxLabelY) {
+    labelOrder[labelOrder.length - 1].y = maxLabelY;
+    for (let k = labelOrder.length - 2; k >= 0; k--) {
+      if (labelOrder[k + 1].y - labelOrder[k].y < MIN_LABEL_GAP) {
+        labelOrder[k].y = labelOrder[k + 1].y - MIN_LABEL_GAP;
+      }
+    }
+  }
+  const endLabelY = new Map(labelOrder.map((o) => [o.i, o.y.toFixed(1)]));
   const rawLabels = dates.map((_, i) => i).filter((i) => i % labelStep === 0 || i === n - 1);
   const shownLabels =
     rawLabels.length >= 3 && n - 1 - rawLabels[rawLabels.length - 2] < Math.ceil(labelStep * 0.6)
@@ -339,7 +359,7 @@ export const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
                   <title>{`${dates[i]} · ${s.name} ${formatCost(v)}`}</title>
                 </circle>
               ))}
-              <text class="trend-end-label" x={(x(n - 1) + 8).toFixed(1)} y={(Number(yData(s.values[n - 1])) + 3).toFixed(1)}>
+              <text class="trend-end-label" x={(x(n - 1) + 8).toFixed(1)} y={endLabelY.get(si) ?? (Number(yData(s.values[n - 1])) + 3).toFixed(1)}>
                 {s.name}
               </text>
             </g>
