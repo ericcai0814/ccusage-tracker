@@ -10,11 +10,11 @@ export interface SourceEntry<Id extends string = string> {
   color: string;
 }
 
-// 資料色：已在 #0a0a0a 面上驗過 CVD 區辨與對比。#f0b800 仍待人眼確認。
+// 資料色：#00ffb1 在 --card #101413 與 --muted #1a201e 上 WCAG 對比 >=12:1；與另三色 CIEDE2000 >=25（正常／Machado 2009 紅、綠色盲）。淺綠細線待人眼確認。
 export const SOURCES = [
   { id: "claude", sessionId: "daily", label: "Claude Code", provider: "Anthropic", color: "#3987e5" },
   { id: "codex", sessionId: "codex-daily", label: "Codex", provider: "OpenAI", color: "#d95926" },
-  { id: "antigravity", sessionId: "antigravity-daily", label: "Antigravity", provider: "Google", color: "#f0b800" },
+  { id: "antigravity", sessionId: "antigravity-daily", label: "Antigravity", provider: "Google", color: "#00ffb1" },
 ] as const satisfies readonly SourceEntry[];
 
 // 手動灌的資料或未知的 session_id 歸到 other，不丟掉。
