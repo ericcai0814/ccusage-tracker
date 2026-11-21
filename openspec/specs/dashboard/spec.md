@@ -155,22 +155,22 @@ tests:
 ---
 ### Requirement: Overview trend chart
 
-The dashboard SHALL render a daily cost trend for the selected period as an inline SVG with one line per source (Claude Code and Codex), a legend that is always present, and a direct label at the end of each line. Each data point SHALL carry a `<title>` with the date and value. The chart SHALL use a single y axis. When the period contains a single day, the dashboard SHALL render a two-bar comparison instead of lines.
+The dashboard SHALL render a daily cost trend for the selected period as an inline SVG with one line per source in the source table (`packages/server/src/sources.ts`; currently Claude Code, Codex and Antigravity), in table order, a legend that is always present, and a direct label at the end of each line. Each data point SHALL carry a `<title>` with the date and value. The chart SHALL use a single y axis. When the period contains a single day, the dashboard SHALL render a bar comparison with one bar per source that has data that day instead of lines.
 
-#### Scenario: Month view with both sources
+#### Scenario: Month view with all three sources
 
-- **WHEN** the dashboard loads with `period=month` and both `daily` and `codex-daily` records exist
-- **THEN** the HTML SHALL contain one `<svg>` with two `<path>` elements and the legend texts `Claude Code` and `Codex`
+- **WHEN** the dashboard loads with `period=month` and `daily`, `codex-daily` and `antigravity-daily` records exist
+- **THEN** the HTML SHALL contain one `<svg>` with three `<path>` elements and the legend texts `Claude Code`, `Codex` and `Antigravity` in that order
 
 #### Scenario: Single-day period
 
 - **WHEN** the dashboard loads with `period=today`
-- **THEN** the HTML SHALL NOT contain a trend `<path>` and SHALL contain the two-bar comparison for that day
+- **THEN** the HTML SHALL NOT contain a trend `<path>` and SHALL contain one bar per source that has data that day
 
 ---
 ### Requirement: Rankings and provider split
 
-The dashboard SHALL render a member ranking sorted by cost with a single-hue horizontal bar per member (at most 10 rows, the rest folded into one "others" row), a provider split that maps `daily` to Anthropic and `codex-daily` to OpenAI as a two-segment stacked bar with amounts and percentages, and a model table listing each model's source, distinct days present and distinct members.
+The dashboard SHALL render a member ranking sorted by cost with a single-hue horizontal bar per member (at most 10 rows, the rest folded into one "others" row), a provider split that maps each source in the source table to its provider (currently `daily` to Anthropic, `codex-daily` to OpenAI and `antigravity-daily` to Google) as a stacked bar with one segment per provider, amounts and percentages, and a model table listing each model's source, distinct days present and distinct members.
 
 #### Scenario: Ranking order
 
