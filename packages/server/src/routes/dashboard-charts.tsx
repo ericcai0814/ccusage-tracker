@@ -230,7 +230,7 @@ export const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
     );
   }
 
-  // 單日期間畫兩條橫條 —— 一個點的折線沒有趨勢可言
+  // 單日期間每個有資料的來源各畫一條橫條 —— 一個點的折線沒有趨勢可言
   if (dates.length === 1) {
     const maxCost = Math.max(...series.map((s) => finiteCost(s.values[0])), 0);
     return (

@@ -155,7 +155,7 @@ tests:
 ---
 ### Requirement: Overview trend chart
 
-The dashboard SHALL render a daily cost trend for the selected period as an inline SVG with one line per source in the source table (`packages/server/src/sources.ts`; currently Claude Code, Codex and Antigravity), in table order, a legend that is always present, and a direct label at the end of each line. Each data point SHALL carry a `<title>` with the date and value. The chart SHALL use a single y axis. When the period contains a single day, the dashboard SHALL render a bar comparison with one bar per source that has data that day instead of lines.
+The dashboard SHALL render a daily cost trend for the selected period as an inline SVG with one line per source in the source table (`packages/server/src/sources.ts`; currently Claude Code, Codex and Antigravity) that has data in the period, in table order, with records whose `session_id` is not in the table shown as a separate Other line, a legend that is always present, and a direct label at the end of each line. Each data point SHALL carry a `<title>` with the date and value. The chart SHALL use a single y axis. When the period contains a single day, the dashboard SHALL render a bar comparison with one bar per source that has data that day instead of lines.
 
 #### Scenario: Month view with all three sources
 
@@ -170,7 +170,7 @@ The dashboard SHALL render a daily cost trend for the selected period as an inli
 ---
 ### Requirement: Rankings and provider split
 
-The dashboard SHALL render a member ranking sorted by cost with a single-hue horizontal bar per member (at most 10 rows, the rest folded into one "others" row), a provider split that maps each source in the source table to its provider (currently `daily` to Anthropic, `codex-daily` to OpenAI and `antigravity-daily` to Google) as a stacked bar with one segment per provider, amounts and percentages, and a model table listing each model's source, distinct days present and distinct members.
+The dashboard SHALL render a member ranking sorted by cost with a single-hue horizontal bar per member (at most 10 rows, the rest folded into one "others" row), a provider split that maps each source in the source table to its provider (currently `daily` to Anthropic, `codex-daily` to OpenAI and `antigravity-daily` to Google) as a stacked bar with one segment per source that has data, each labelled with its provider, amounts and percentages, and a model table listing each model's source, distinct days present and distinct members.
 
 #### Scenario: Ranking order
 
