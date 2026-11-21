@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { smoothPath } from "./dashboard-charts";
+import { smoothAreaPoints, smoothPath } from "./dashboard-charts";
 
 // 鎖住 smoothPath 的逐字輸出：改寫內部實作時，SVG path 字串不能有任何差異
 describe("smoothPath", () => {
@@ -53,5 +53,26 @@ describe("smoothPath", () => {
         [50, NaN],
       ])
     ).toBe("M4.0,50.0 C4.0,50.0 4.0,0 4.0,80.0 C19.3,0 34.7,0 50.0,0");
+  });
+});
+
+describe("smoothAreaPoints", () => {
+  it("returns nothing for fewer than two points", () => {
+    expect(smoothAreaPoints([[4, 120]], 236)).toBe("");
+  });
+
+  it("follows the smoothPath curve and closes on the baseline", () => {
+    const pts: Array<[number, number]> = [
+      [4, 200],
+      [164, 120],
+      [324, 150],
+    ];
+    const coords = smoothAreaPoints(pts, 236, 4).split(" ");
+    // 起點、每段 4 個取樣、收回 0 軸的兩個角
+    expect(coords).toHaveLength(1 + 2 * 4 + 2);
+    expect(coords[0]).toBe("4.0,200.0");
+    expect(coords[4]).toBe("164.0,120.0");
+    expect(coords[8]).toBe("324.0,150.0");
+    expect(coords.slice(-2)).toEqual(["324.0,236.0", "4.0,236.0"]);
   });
 });

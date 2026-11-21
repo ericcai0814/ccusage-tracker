@@ -107,8 +107,9 @@ const TREND_SCRIPT = `(function(){
     [].forEach.call(svg.querySelectorAll('.trend-xtick'),function(el){el.setAttribute('x',mx(el.getAttribute('x')));});
     dots.forEach(function(el){el.setAttribute('cx',mx(el.getAttribute('cx')));});
     [].forEach.call(svg.querySelectorAll('.trend-line,.trend-area'),function(el){
-      var d=el.getAttribute('d')||'';
-      el.setAttribute('d',d.replace(/(-?\\d+(?:\\.\\d+)?),(-?\\d+(?:\\.\\d+)?)/g,function(_,x,y){return mx(x)+','+y;}));
+      var attr=el.tagName.toLowerCase()==='polygon'?'points':'d';
+      var d=el.getAttribute(attr)||'';
+      el.setAttribute(attr,d.replace(/(-?\\d+(?:\\.\\d+)?),(-?\\d+(?:\\.\\d+)?)/g,function(_,x,y){return mx(x)+','+y;}));
     });
     hit.setAttribute('width',String(span));
   }
@@ -133,12 +134,11 @@ const TREND_SCRIPT = `(function(){
 
 // 單調三次曲線（Fritsch–Carlson）：平滑但不會在兩個點之間衝過頭、掉到 $0 以下。
 // 輸入是已經算好的像素座標，不碰金額，所以 1e308 這類資料不會在這裡溢位。
-export function smoothPath(points: Array<[number, number]>): string {
-  const n = points.length;
-  if (n === 0) return "";
-  const fmt = (v: number) => (Number.isFinite(v) ? v.toFixed(1) : "0");
-  if (n === 1) return `M${fmt(points[0][0])},${fmt(points[0][1])}`;
+type Point = [number, number];
+type Segment = { p0: Point; c1: Point; c2: Point; p1: Point };
 
+function smoothSegments(points: Point[]): Segment[] {
+  const n = points.length;
   const slopes = points.slice(0, -1).map(([x0, y0], i) => {
     const dx = points[i + 1][0] - x0;
     return dx > 0 ? (points[i + 1][1] - y0) / dx : 0;
@@ -155,12 +155,46 @@ export function smoothPath(points: Array<[number, number]>): string {
     return (3 * (h0 + h1)) / ((2 * h1 + h0) / a + (h1 + 2 * h0) / b);
   });
 
-  const curves = points.slice(0, -1).map(([x0, y0], i) => {
+  return points.slice(0, -1).map(([x0, y0], i) => {
     const [x1, y1] = points[i + 1];
     const h = (x1 - x0) / 3;
-    return `C${fmt(x0 + h)},${fmt(y0 + tangents[i] * h)} ${fmt(x1 - h)},${fmt(y1 - tangents[i + 1] * h)} ${fmt(x1)},${fmt(y1)}`;
+    return {
+      p0: [x0, y0],
+      c1: [x0 + h, y0 + tangents[i] * h],
+      c2: [x1 - h, y1 - tangents[i + 1] * h],
+      p1: [x1, y1],
+    };
   });
+}
+
+const fmtCoord = (v: number) => (Number.isFinite(v) ? v.toFixed(1) : "0");
+
+export function smoothPath(points: Point[]): string {
+  const n = points.length;
+  if (n === 0) return "";
+  const fmt = fmtCoord;
+  if (n === 1) return `M${fmt(points[0][0])},${fmt(points[0][1])}`;
+
+  const curves = smoothSegments(points).map(
+    ({ c1, c2, p1 }) => `C${fmt(c1[0])},${fmt(c1[1])} ${fmt(c2[0])},${fmt(c2[1])} ${fmt(p1[0])},${fmt(p1[1])}`
+  );
   return [`M${fmt(points[0][0])},${fmt(points[0][1])}`, ...curves].join(" ");
+}
+
+// 主線下方的面積：沿 smoothPath 的同一組曲線取樣成 polygon，再收到 0 軸。
+// 用 polygon 而不是 path，SVG 裡的 path 數量就等於來源數。
+export function smoothAreaPoints(points: Point[], baseY: number, steps = 8): string {
+  if (points.length < 2) return "";
+  const bezier = (a: number, b: number, c: number, d: number, t: number) => {
+    const u = 1 - t;
+    return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d;
+  };
+  const ts = Array.from({ length: steps }, (_, k) => (k + 1) / steps);
+  const curve = smoothSegments(points).flatMap(({ p0, c1, c2, p1 }) =>
+    ts.map((t): Point => [bezier(p0[0], c1[0], c2[0], p1[0], t), bezier(p0[1], c1[1], c2[1], p1[1], t)])
+  );
+  const outline: Point[] = [points[0], ...curve, [points[points.length - 1][0], baseY], [points[0][0], baseY]];
+  return outline.map(([x, y]) => `${fmtCoord(x)},${fmtCoord(y)}`).join(" ");
 }
 
 export const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
@@ -281,11 +315,7 @@ export const TrendChart: FC<{ rows: DailySourceUsage[] }> = ({ rows }) => {
           return (
             <g>
               {isLead ? (
-                <path
-                  class="trend-area"
-                  fill="url(#trend-lead-fill)"
-                  d={`${line} L${x(n - 1).toFixed(1)},${yTick(0)} L${x(0).toFixed(1)},${yTick(0)} Z`}
-                />
+                <polygon class="trend-area" fill="url(#trend-lead-fill)" points={smoothAreaPoints(pts, Number(yTick(0)))} />
               ) : null}
               <path
                 class="trend-line"

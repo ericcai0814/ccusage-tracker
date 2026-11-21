@@ -1,5 +1,5 @@
 import type { UsageSource } from "../queries";
-import { sourceInfo } from "../sources";
+import { SOURCES, sourceInfo } from "../sources";
 
 // total_cost_usd 是 SQLite 的 REAL，兩筆極大值相加就會溢位成 Infinity；資料庫也可能被
 // 直接改寫繞過 admin API 的範圍檢查。算不出可信的數字時寧可顯示破折號，不要印 NaN。
@@ -77,3 +77,6 @@ export function formatUsdRounded(n: number): string {
 // 名稱與資料色都來自 sources.ts 的來源表；接新來源不用改這裡。
 export const SOURCE_COLOR = (source: UsageSource): string => sourceInfo(source).color;
 export const SOURCE_LABEL = (source: UsageSource): string => sourceInfo(source).label;
+
+// 頁首與頁尾列出的工具名稱，順序同來源表。
+export const SOURCE_NAMES: readonly string[] = SOURCES.map((s) => s.label);

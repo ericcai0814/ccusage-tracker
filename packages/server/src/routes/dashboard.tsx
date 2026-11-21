@@ -29,6 +29,7 @@ import {
   formatUsdRounded,
   SOURCE_COLOR,
   SOURCE_LABEL,
+  SOURCE_NAMES,
 } from "./dashboard-format";
 import { TrendChart } from "./dashboard-charts";
 
@@ -115,7 +116,7 @@ const Layout: FC<{ title: string; children: any }> = ({ title, children }) => (
         {children}
         <footer class="footer">
           <span>ccusage-tracker · powered by ccusage</span>
-          <span>Claude Code · Codex</span>
+          <span>{SOURCE_NAMES.join(" · ")}</span>
         </footer>
       </div>
     </body>
@@ -124,6 +125,11 @@ const Layout: FC<{ title: string; children: any }> = ({ title, children }) => (
 
 // 名稱、資料色、供應商與順序都來自 sources.ts 的來源表。S29 的紅色只做 chrome，不當資料色。
 const PROVIDER_LABEL = (source: UsageSource): string => sourceInfo(source).provider;
+
+// 對話回合只有 Claude Code 的 session-end hook 會回報，其他來源只送每日用量
+const TURNS_NOTE = `只含 ${SOURCE_LABEL("claude")}，${SOURCE_ORDER.filter((s) => s !== "claude" && s !== "other")
+  .map(SOURCE_LABEL)
+  .join("、")} 不回報`;
 
 // 成員排行是同一個量的排序，用單色序列而不是分類色
 // 第一名用 ramp 最亮的一階，其餘退成同一階中性灰：顏色留給來源，不給排名
@@ -282,7 +288,7 @@ const KpiRow: FC<{
       zh="Claude 對話回合"
       en="Claude Turns"
       value={formatNumber(current.claudeTurns)}
-      unit="只含 Claude Code，Codex 不回報"
+      unit={TURNS_NOTE}
       delta={formatChange(current.claudeTurns, previous.claudeTurns, "percent", period)}
     />
   </div>
@@ -573,7 +579,7 @@ dashboard.get("/", (c) => {
         <a class="wordmark" href="/">
           <span class="icon icon-terminal" aria-hidden="true" />
           ccusage tracker
-          <span class="wordmark-sub">Claude Code ＋ Codex</span>
+          <span class="wordmark-sub">{SOURCE_NAMES.join(" ＋ ")}</span>
         </a>
         <nav class="report-nav" aria-label="Pages">
           <span class="nav-current" aria-current="page">Dashboard</span>

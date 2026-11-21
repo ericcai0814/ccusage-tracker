@@ -20,6 +20,7 @@ import {
 } from "../queries";
 import type { AppEnv } from "../app";
 import { THEME_CSS, WEEKLY_CSS, FONT_LINKS } from "./ui-theme";
+import { SOURCE_NAMES } from "./dashboard-format";
 
 const WEEK_REGEX = /^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$/;
 
@@ -384,7 +385,7 @@ const WeeklyReportPage: FC<{
           <a class="wordmark" href="/">
             <span class="icon icon-terminal" aria-hidden="true" />
             ccusage tracker
-            <span class="wordmark-sub">Claude Code ＋ Codex</span>
+            <span class="wordmark-sub">{SOURCE_NAMES.join(" ＋ ")}</span>
           </a>
           <nav class="report-nav" aria-label="Pages">
             <a href="/">

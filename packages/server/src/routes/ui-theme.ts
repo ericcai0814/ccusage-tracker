@@ -3,14 +3,7 @@
 // font-family 與子選擇器整條失效（舊版整頁掉回襯線字就是這個原因）。
 // 注意：這份字串會原樣出現在 HTML 裡，測試會掃整頁的負向字串，註解只寫英文。
 
-// 資料色：同一組值給 CSS 的 --chart-1/2 與 dashboard 的 SOURCE_COLOR
-// 在 --card #101413 上：Claude #f5b25d 對比 10.00:1（L=0.519）、Codex #3e789e 對比 3.91:1（L=0.173），
-// 兩色自身亮度對比 2.56:1，灰階與色盲下皆可清楚區辨。
-export const DATA_COLOR = {
-  claude: "#f5b25d",
-  codex: "#3e789e",
-  other: "#8b9490",
-} as const;
+// 來源的資料色不在這裡：名稱、顏色、供應商都由 sources.ts 的來源表產生，元件以 inline style 帶入。
 
 export const FONT_LINKS = [
   "https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap",
@@ -59,9 +52,6 @@ export const THEME_CSS = `
     --radius: 12px;
     --radius-sm: 6px;
     --radius-md: 8px;
-    --chart-1: ${DATA_COLOR.claude};
-    --chart-2: ${DATA_COLOR.codex};
-    --chart-3: ${DATA_COLOR.other};
     --chart-4: #6b7571;
     --chart-5: #3a423f;
     --bar-lead: #d3dad6;
