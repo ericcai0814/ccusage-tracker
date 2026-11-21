@@ -307,6 +307,21 @@ describe("Claude worker triggers the Antigravity reporter", () => {
     } finally { f.cleanup(); }
   });
 
+  it("still triggers once after releasing the lock when the worker's upload throws", async () => {
+    // 非字串的 cwd 讓 extractMetrics 拋錯，Promise.all 因而 reject；
+    // server 不可達或 collector 失敗都在內部吃掉，走不到這條路徑。
+    const f = fixture();
+    try {
+      writeFileSync(join(f.dir, "agent-sync.mjs"), TRIGGER_STUB);
+      const transcript = join(f.home, "transcript.jsonl");
+      writeFileSync(transcript, JSON.stringify({ type: "user", cwd: 123 }) + "\n");
+      expect(runWorkerWith(f, ["--transcript=" + transcript]).status).toBe(0);
+      await waitForCalls(f.home);
+      expect(triggerCalls(f.home)).toEqual([["--trigger"]]);
+      expect(existsSync(join(f.dir, "worker.lock"))).toBe(false);
+    } finally { f.cleanup(); }
+  });
+
   it("lists 20.0.51 among the verified collector versions", () => {
     const f = fixture();
     try {

@@ -439,9 +439,9 @@ async function runWorker() {
     // 排在後面還多一個好處：當日快照剛落 buffer 就會被立刻重送一次（/api/ingest 是
     // (member, date, session_id) 的 upsert，重複送安全）
     await flushBuffer(cfg.server_url, cfg.team_key);
-    triggerAgentSync();
   } finally {
     releaseLock();
+    triggerAgentSync();
   }
 }
 
