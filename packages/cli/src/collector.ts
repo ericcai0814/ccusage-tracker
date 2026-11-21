@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { ANTIGRAVITY } from "./agent-sources";
 
 // 已驗證可供 Claude、Codex 與 Antigravity 共用的收集器版本。Codex 的 `ccusage codex daily`
 // 只在 major 20 存在，所以 setup／update 只認主版本 20，不做精確 patch 白名單；
 // `ccusage antigravity daily` 從 20.0.21 起才有，這一條用語意版本比較。
 export const COLLECTOR_VERSION = "20.0.51";
-export const ANTIGRAVITY_MIN_COLLECTOR = "20.0.21";
+export const ANTIGRAVITY_MIN_COLLECTOR = ANTIGRAVITY.minCollector;
 export const COLLECTOR_INSTALL_COMMAND = `npm install -g ccusage@${COLLECTOR_VERSION}`;
 const SKIP_ENV = "CCUSAGE_TRACKER_SKIP_COLLECTOR_INSTALL";
 const INSTALL_TIMEOUT_MS = 180000;
