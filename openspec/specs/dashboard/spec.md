@@ -20,6 +20,12 @@ The system SHALL serve an HTML dashboard page at `GET /` that displays team toke
 - **WHEN** the user clicks a period toggle (today / week / month) on the dashboard
 - **THEN** the dashboard SHALL reload with the selected period's data
 
+#### Scenario: Period keyboard shortcuts
+
+- **WHEN** the user presses `D`, `W` or `M` on the dashboard without any modifier key (Meta, Ctrl, Alt, Shift) and focus is not in an input, textarea, select or contenteditable element
+- **THEN** the dashboard SHALL navigate to `?period=today`, `?period=week` or `?period=month` respectively; pressing the key of the already active period SHALL do nothing
+- **AND** each period keycap SHALL be an `<a>` linking to its `?period=` URL with `aria-keyshortcuts` set to its key, so the keycaps remain working links when JavaScript does not run
+
 
 <!-- @trace
 source: ccusage-tracker-mvp
@@ -61,6 +67,22 @@ The dashboard SHALL display, in order: a KPI row (total cost, total tokens, acti
 
 - **WHEN** no usage records exist for the period
 - **THEN** every section SHALL render its empty-state text and the response SHALL be 200
+
+#### Scenario: KPI comparison with the previous period
+
+- **WHEN** the dashboard loads for a period
+- **THEN** each KPI card SHALL show its change against the previous period computed with the same algorithm as the current window shifted back one period: `today` against yesterday (`vs 昨天`), `week` against last Monday through the same weekday (`vs 上週同期`), `month` against the 1st through the same day of last month, clamped to last month's final day (`vs 上月同期`)
+- **AND** total cost, total tokens and Claude turns SHALL show a whole-number percentage with `+` or a true minus sign (U+2212), active members SHALL show the head-count difference (`+1 人`), and a change that rounds to zero SHALL read `持平`
+- **AND** when the previous value is zero or either value is not finite, the card SHALL show `<previous label>無資料` (e.g. `上月同期無資料`) and never `NaN` or `Infinity`
+- **AND** the change text SHALL use the neutral muted color; direction SHALL be carried by the sign only, not by red or green
+
+#### Scenario: Member report status
+
+- **WHEN** a member row appears in the member ranking or the member table
+- **THEN** the row SHALL carry a status dot: a filled green dot when `last_seen_at` is within 24 hours, a hollow grey dot when it is older or null
+- **AND** each dot SHALL have a text alternative (`aria-label` and `title`): `24 小時內有回報` or `超過 24 小時未回報`
+- **AND** the member table's Last Report cell SHALL keep the relative time text, shown in the muted color when stale
+- **AND** the folded "others" ranking row and the total row SHALL NOT carry a dot
 
 ---
 ### Requirement: Dashboard authentication (optional)
@@ -133,22 +155,22 @@ tests:
 ---
 ### Requirement: Overview trend chart
 
-The dashboard SHALL render a daily cost trend for the selected period as an inline SVG with one line per source (Claude Code and Codex), a legend that is always present, and a direct label at the end of each line. Each data point SHALL carry a `<title>` with the date and value. The chart SHALL use a single y axis. When the period contains a single day, the dashboard SHALL render a two-bar comparison instead of lines.
+The dashboard SHALL render a daily cost trend for the selected period as an inline SVG with one line per source in the source table (`packages/server/src/sources.ts`; currently Claude Code, Codex and Antigravity) that has data in the period, in table order, with records whose `session_id` is not in the table shown as a separate Other line, a legend that is always present, and a direct label at the end of each line. Each data point SHALL carry a `<title>` with the date and value. The chart SHALL use a single y axis. When the period contains a single day, the dashboard SHALL render a bar comparison with one bar per source that has data that day instead of lines.
 
-#### Scenario: Month view with both sources
+#### Scenario: Month view with all three sources
 
-- **WHEN** the dashboard loads with `period=month` and both `daily` and `codex-daily` records exist
-- **THEN** the HTML SHALL contain one `<svg>` with two `<path>` elements and the legend texts `Claude Code` and `Codex`
+- **WHEN** the dashboard loads with `period=month` and `daily`, `codex-daily` and `antigravity-daily` records exist
+- **THEN** the HTML SHALL contain one `<svg>` with three `<path>` elements and the legend texts `Claude Code`, `Codex` and `Antigravity` in that order
 
 #### Scenario: Single-day period
 
 - **WHEN** the dashboard loads with `period=today`
-- **THEN** the HTML SHALL NOT contain a trend `<path>` and SHALL contain the two-bar comparison for that day
+- **THEN** the HTML SHALL NOT contain a trend `<path>` and SHALL contain one bar per source that has data that day
 
 ---
 ### Requirement: Rankings and provider split
 
-The dashboard SHALL render a member ranking sorted by cost with a single-hue horizontal bar per member (at most 10 rows, the rest folded into one "others" row), a provider split that maps `daily` to Anthropic and `codex-daily` to OpenAI as a two-segment stacked bar with amounts and percentages, and a model table listing each model's source, distinct days present and distinct members.
+The dashboard SHALL render a member ranking sorted by cost with a single-hue horizontal bar per member (at most 10 rows, the rest folded into one "others" row), a provider split that maps each source in the source table to its provider (currently `daily` to Anthropic, `codex-daily` to OpenAI and `antigravity-daily` to Google) as a stacked bar with one segment per source that has data, each labelled with its provider, amounts and percentages, and a model table listing each model's source, distinct days present and distinct members.
 
 #### Scenario: Ranking order
 

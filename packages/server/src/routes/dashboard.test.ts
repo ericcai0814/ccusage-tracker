@@ -413,7 +413,7 @@ describe("Dashboard overview", () => {
       const order = ["Claude Code", "Codex", "Antigravity"].map((name) => legend.indexOf(name));
       expect(order.every((i) => i > -1)).toBe(true);
       expect([...order].sort((a, b) => a - b)).toEqual(order);
-      expect(svg).toMatch(/<path[^>]*stroke="#f0b800"/);
+      expect(svg).toMatch(/<path[^>]*stroke="#00ffb1"/);
       expect(legend).not.toContain("其他");
     });
 
@@ -471,7 +471,7 @@ describe("Dashboard overview", () => {
         expect(section.indexOf("OpenAI")).toBeLessThan(section.indexOf("Google"));
         expect(pcts).toEqual([50, 30, 20]);
         expect(pcts.reduce((a, b) => a + b, 0)).toBe(100);
-        expect(section).toContain("#f0b800");
+        expect(section).toContain("#00ffb1");
       } finally {
         splitDb.close();
       }

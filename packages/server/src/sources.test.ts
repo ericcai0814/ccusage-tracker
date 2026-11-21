@@ -21,7 +21,7 @@ describe("server source table", () => {
     expect(SOURCES.map((s) => [s.id, s.sessionId, s.label, s.provider, s.color])).toEqual([
       ["claude", "daily", "Claude Code", "Anthropic", "#3987e5"],
       ["codex", "codex-daily", "Codex", "OpenAI", "#d95926"],
-      ["antigravity", "antigravity-daily", "Antigravity", "Google", "#f0b800"],
+      ["antigravity", "antigravity-daily", "Antigravity", "Google", "#00ffb1"],
     ]);
     expect([OTHER_SOURCE.id, OTHER_SOURCE.label, OTHER_SOURCE.provider, OTHER_SOURCE.color]).toEqual([
       "other",
