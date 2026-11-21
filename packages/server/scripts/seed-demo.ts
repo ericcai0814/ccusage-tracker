@@ -1,4 +1,4 @@
-// UI 比較用的示範資料：固定亂數種子，每次產出同樣的 6 人 × 近 70 天（涵蓋本月與上月同期）用量（Claude＋Codex）、
+// UI 比較用的示範資料：固定亂數種子，每次產出同樣的 6 人 × 近 70 天（涵蓋本月與上月同期）用量（Claude＋Codex＋Antigravity）、
 // session 指標與月預算，讓不同版本的畫面能在同一份資料上截圖比較。
 // 用法：bun run scripts/seed-demo.ts <db 路徑>（檔案已存在會先刪掉）
 import { existsSync, unlinkSync } from "node:fs";
@@ -13,22 +13,28 @@ if (!dbPath) {
 }
 if (existsSync(dbPath)) unlinkSync(dbPath);
 
-let seed = 20261121;
-function rand(): number {
-  seed = (seed * 1664525 + 1013904223) % 4294967296;
-  return seed / 4294967296;
+function lcg(start: number): () => number {
+  let seed = start;
+  return () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
 }
+const rand = lcg(20261121);
+// Antigravity 用自己的亂數序列：加進來不會改動 Claude／Codex 既有的示範數字
+const agyRand = lcg(20261122);
 
 const MEMBERS = [
-  { id: "m1", name: "Eric", claude: 9.5, codex: 2.2 },
-  { id: "m2", name: "Johnson", claude: 6.1, codex: 0 },
-  { id: "m3", name: "Wendy", claude: 4.3, codex: 1.6 },
-  { id: "m4", name: "Kevin", claude: 2.8, codex: 3.4 },
-  { id: "m5", name: "Amy", claude: 1.9, codex: 0 },
-  { id: "m6", name: "Leo", claude: 0.7, codex: 0.4 },
+  { id: "m1", name: "Eric", claude: 9.5, codex: 2.2, agy: 1.8 },
+  { id: "m2", name: "Johnson", claude: 6.1, codex: 0, agy: 0 },
+  { id: "m3", name: "Wendy", claude: 4.3, codex: 1.6, agy: 2.6 },
+  { id: "m4", name: "Kevin", claude: 2.8, codex: 3.4, agy: 0.9 },
+  { id: "m5", name: "Amy", claude: 1.9, codex: 0, agy: 0 },
+  { id: "m6", name: "Leo", claude: 0.7, codex: 0.4, agy: 0 },
 ];
 const CLAUDE_MODELS = ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"];
 const CODEX_MODELS = ["gpt-5.1-codex", "gpt-5.1-codex-mini"];
+const AGY_MODELS = ["gemini-3-pro", "gemini-3-flash"];
 const PROJECTS = ["ccusage-tracker", "one-tsa", "bigtable-web", "ewill-web"];
 
 const db = createDatabase(dbPath);
@@ -73,6 +79,22 @@ for (const m of MEMBERS) {
         cache_read_tokens: Math.round(codexTokens * 0.64),
         total_cost_usd: Math.round(codexCost * 100) / 100,
         models: CODEX_MODELS.slice(0, 1 + Math.floor(rand() * 2)),
+      });
+    }
+
+    if (m.agy > 0 && agyRand() > 0.35) {
+      const agyCost = m.agy * (0.5 + agyRand() * 1.0);
+      const agyTokens = Math.round(agyCost * 290000);
+      insertUsageRecord(db, m.id, {
+        member_name: m.name,
+        date,
+        session_id: "antigravity-daily",
+        input_tokens: Math.round(agyTokens * 0.35),
+        output_tokens: Math.round(agyTokens * 0.07),
+        cache_creation_tokens: 0,
+        cache_read_tokens: Math.round(agyTokens * 0.58),
+        total_cost_usd: Math.round(agyCost * 100) / 100,
+        models: AGY_MODELS.slice(0, 1 + Math.floor(agyRand() * 2)),
       });
     }
 
