@@ -3,8 +3,12 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { isOnPath } from "./codex-hooks";
 
-// 由 agent-sync.mjs 上報的工具。工具偵測、`tracker sync <目標>` 與 status 的區塊都讀這張表；
-// 接下一個工具時在這裡加一筆，並在 server 的 agent-sync.mjs 與 sources.ts 各加一筆。
+// 由 agent-sync.mjs 上報的工具。目前只有 `tracker sync <目標>`（commands/sync.ts 經
+// resolveAgentSource）逐筆讀這張表；其餘地方是寫死的：直接點名 ANTIGRAVITY 的有
+// collector.ts（最低版本）與 commands/status.ts（區塊與狀態檔），呼叫 detectAntigravity 的有
+// hooks.ts 與 commands/setup.ts；collector.ts 的 DetectedTools 另有 antigravityDetected 欄位。
+// 接下一個工具時除了在這裡加一筆，上述檔案、sync.ts 的 USAGE 與 index.ts 的說明都要補，
+// 還要仿 antigravity-hooks.ts 寫該工具自己的 hook 檔；server 的 agent-sync.mjs 與 sources.ts 也各加一筆。
 export interface AgentSource {
   id: string;
   aliases: readonly string[];
